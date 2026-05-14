@@ -51,7 +51,7 @@ fi
 # design §8. Default includes all four named plugins; operators who
 # want a minimal binary may override.
 WORKLOAD_TAGS=${WORKLOAD_TAGS:-wl_wireguard,wl_postfix,wl_dovecot,wl_nginx_apache}
-LDFLAGS="-buildid= -X main.buildID=$GIT_SHA"
+LDFLAGS="-buildid= -X main.buildID=$VERSION"
 for ARCH in amd64 arm64; do
     echo "==> Build $ARCH (workload tags: $WORKLOAD_TAGS)"
     mkdir -p "$DIST/$ARCH"
