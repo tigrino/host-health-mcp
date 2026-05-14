@@ -145,14 +145,33 @@ linked sections before treating any constraint as flexible.
 
 ## Status
 
-The design gate is closed. No production code exists yet. The next
-deliverable per the architect brief is the daemon and helper source under
-`daemon/`, the plugin source under `plugin/`, and the build script and
-packaging configs under `build/`.
+Design gate is closed. Implementation skeleton in place and building
+clean across both arches.
 
-The three documents still to produce per REQ 9.5 are `doc/tools.md`,
-`doc/install.md`, `doc/changelog.md`, and the `doc/examples/` set. Those
-are written alongside implementation, not before.
+All 17 tools per REQ 4.1-4.17 register and respond. Depth varies:
+
+- Full implementations: `manifest`, `system`, `pressure`, `kernel`,
+  `sockets`, `dns`, `mail` (queue depth via helper), `certs`,
+  `backup` (mtime-based signal), `sensors`, `systemd_units`,
+  `updates` (helper round-trip), `storage` (per-device error
+  reporting via helper), `workload` (compile-time plugin
+  framework; wireguard plugin real, postfix near-real, dovecot +
+  nginx_apache stubs), `logs` (helper journal_query + redactor),
+  `network`, `security` (presence-only MVP - deep fields await
+  helper ops).
+- Helper ops implemented: `read_reboot_marker`, `smart_summary`,
+  `mdraid_detail`, `lvm_report`, `postqueue`, `apt_pending`,
+  `needrestart`, `wireguard_show` (with PSK + private-key strip),
+  `journal_query`.
+- Helper ops still stubbed: `read_audit_status` (netlink dialog),
+  `read_aide_summary` (binary file parser), `zpool_status`,
+  `btrfs_scrub`.
+- Tests: foundational packages covered (proto, cache, ratelimit,
+  redact, lvm parser, wireguard parser). Tool packages await
+  integration tests.
+
+The four documents still to produce per REQ 9.5 are `doc/tools.md`,
+`doc/install.md`, `doc/changelog.md`, and the `doc/examples/` set.
 
 ## Style and conventions
 

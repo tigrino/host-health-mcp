@@ -64,9 +64,21 @@ func main() {
 	tools := []mcp.Tool{
 		{Name: prefix + "manifest", DaemonRPC: "manifest", Description: "host-health-mcp daemon self-description (read-only)", TimeoutS: 3},
 		{Name: prefix + "system", DaemonRPC: "system", Description: "host uptime, load, memory, disk, kernel (read-only)", TimeoutS: 3},
+		{Name: prefix + "systemd_units", DaemonRPC: "systemd_units", Description: "manifest-whitelisted systemd unit state (read-only)", TimeoutS: 3},
+		{Name: prefix + "network", DaemonRPC: "network", Description: "interfaces, default routes, resolver (read-only)", TimeoutS: 3},
+		{Name: prefix + "dns", DaemonRPC: "dns", Description: "DNS resolver and probe results (read-only)", TimeoutS: 5},
+		{Name: prefix + "security", DaemonRPC: "security", Description: "AIDE/auditd/rkhunter/debsums/IPS/SSH posture (read-only)", TimeoutS: 5},
+		{Name: prefix + "certs", DaemonRPC: "certs", Description: "manifest-declared certificate inventory (read-only)", TimeoutS: 3},
+		{Name: prefix + "mail", DaemonRPC: "mail", Description: "MTA queue depth and recent send/fail state (read-only)", TimeoutS: 5},
+		{Name: prefix + "backup", DaemonRPC: "backup", Description: "last backup run timestamps and backend (read-only)", TimeoutS: 3},
+		{Name: prefix + "workload", DaemonRPC: "workload", Description: "compile-time-enabled workload plugin output (read-only)", TimeoutS: 5},
+		{Name: prefix + "logs", DaemonRPC: "logs", Description: "journald or audit summary by severity/window/source (read-only)", TimeoutS: 8},
 		{Name: prefix + "pressure", DaemonRPC: "pressure", Description: "PSI averages cpu/io/memory (read-only)", TimeoutS: 3},
 		{Name: prefix + "kernel", DaemonRPC: "kernel", Description: "kernel taint, MCE/EDAC, OOM, cmdline keys (read-only)", TimeoutS: 3},
 		{Name: prefix + "sockets", DaemonRPC: "sockets", Description: "listening socket inventory (read-only)", TimeoutS: 3},
+		{Name: prefix + "updates", DaemonRPC: "updates", Description: "pending APT updates and needrestart services (read-only)", TimeoutS: 10},
+		{Name: prefix + "storage", DaemonRPC: "storage", Description: "mdraid, LVM, SMART, btrfs, zfs (read-only)", TimeoutS: 10},
+		{Name: prefix + "sensors", DaemonRPC: "sensors", Description: "hwmon temperatures, fans, voltages (read-only)", TimeoutS: 3},
 	}
 
 	srv := mcp.New(cli, tools)
