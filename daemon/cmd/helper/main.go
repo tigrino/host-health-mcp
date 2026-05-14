@@ -47,6 +47,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("helper: %v", err)
 	}
+	gid, err := cfg.ResolveGID()
+	if err != nil {
+		log.Fatalf("helper: %v", err)
+	}
 
 	reg := dispatch.New()
 	ops.RegisterAll(reg)
@@ -54,6 +58,7 @@ func main() {
 	srv := server.New(server.Config{
 		SocketPath: cfg.SocketPath,
 		AllowedUID: uid,
+		SocketGID:  gid,
 		SocketMode: 0o660,
 		Registry:   reg,
 	})

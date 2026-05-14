@@ -3,6 +3,37 @@ title: Host Health MCP - Changelog
 author: Albert 'Tigr' Zenkoff <albert@tigr.net>
 ---
 
+# 1.2.1 (2026-05-14)
+
+## Helper
+
+- Helper unix socket and its runtime directory `/run/host-health-mcp/`
+  are now chowned to `root:host-health-mcp` at startup so the daemon
+  (running as an unprivileged user) can traverse the dir and connect
+  to the socket. Previously both were `root:root` and every helper
+  call failed with `permission denied`, blocking SMART, mdraid, LVM,
+  zpool, btrfs, postqueue, wireguard, apt, needrestart, journal,
+  AIDE, auditd, reboot, and nft ops.
+- New `daemon_group` key in `helper.yml` (defaults to
+  `host-health-mcp`).
+- Base helper unit now ships with `CapabilityBoundingSet=CAP_CHOWN`;
+  the `caps-template.sh` postinst always unions `CAP_CHOWN` into the
+  generated drop-in.
+
+# 1.2.0 (2026-05-14)
+
+## Plugin
+
+- Schema-version handshake (version-matrix C1-C4): on the first
+  non-manifest call per host per session, the plugin probes the
+  daemon's `/v1/manifest`, extracts `schema_version`, and caches the
+  classification. A major-version mismatch returns
+  `schema_incompatible` for every subsequent call to that host
+  without a network round-trip.
+- Plugin module gains `internal/schema` with the compile-time
+  `SchemaVersion` constant, kept in lockstep with the daemon at
+  release time.
+
 # 1.1.0 (2026-05-14)
 
 ## Plugin
@@ -21,14 +52,6 @@ author: Albert 'Tigr' Zenkoff <albert@tigr.net>
   the `http.Transport` pools connections per host. Target host is
   supplied per call. A single plugin registration in an MCP client
   reaches every fleet host without restart.
-- Schema-version handshake (version-matrix C1-C4): on the first
-  non-manifest call per host per session, the plugin probes the
-  daemon's `/v1/manifest`, extracts `schema_version`, and caches the
-  classification. A major-version mismatch returns `schema_incompatible`
-  for every subsequent call to that host without a network round-trip.
-- Plugin module gains `internal/schema` with the compile-time
-  `SchemaVersion` constant, kept in lockstep with the daemon at
-  release time.
 
 ## Build
 

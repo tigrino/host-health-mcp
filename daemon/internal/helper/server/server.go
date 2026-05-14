@@ -1,8 +1,10 @@
 // Package server implements the helper's unix-socket listener. The
 // socket lives at /run/host-health-mcp/helper.sock with mode 0660,
-// owned by root:host-health-mcp. The helper verifies via SO_PEERCRED
-// that connecting peers belong to the daemon's uid before accepting
-// any frame (design §6.7).
+// owned root:<daemon-group>. The helper chowns both the socket and
+// its parent runtime directory at bind time so the daemon (which
+// runs as an unprivileged user) can traverse the dir and connect to
+// the socket. SO_PEERCRED then verifies the connecting peer's uid
+// matches the daemon's (design §6.7).
 package server
 
 import (
@@ -12,6 +14,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -28,6 +31,10 @@ type Config struct {
 	// AllowedUID is the only uid permitted to connect. SO_PEERCRED is
 	// consulted on every accept.
 	AllowedUID uint32
+	// SocketGID is the group the socket and its parent directory are
+	// chowned to after bind so the daemon can traverse and connect.
+	// Zero leaves ownership as root:root (used in tests).
+	SocketGID uint32
 	// SocketMode is the file mode applied to the socket after bind.
 	SocketMode os.FileMode
 	// Registry is the dispatch table.
@@ -63,6 +70,25 @@ func (s *Server) Serve(ctx context.Context) error {
 	if err := os.Chmod(s.cfg.SocketPath, s.cfg.SocketMode); err != nil {
 		ln.Close()
 		return fmt.Errorf("server: chmod socket: %w", err)
+	}
+	// systemd's RuntimeDirectory= creates /run/host-health-mcp/ as
+	// root:root because the helper unit runs as root:root. The
+	// daemon (an unprivileged user) cannot traverse a root:root 0750
+	// directory. Chown the parent and the socket itself to the
+	// daemon's primary group so it can connect. Requires CAP_CHOWN
+	// in the helper unit's bounding set; the shipped base unit
+	// keeps CAP_CHOWN even when manifest-derived caps would
+	// otherwise be empty.
+	if s.cfg.SocketGID != 0 {
+		parent := filepath.Dir(s.cfg.SocketPath)
+		if err := os.Chown(parent, 0, int(s.cfg.SocketGID)); err != nil {
+			ln.Close()
+			return fmt.Errorf("server: chown runtime dir %s: %w", parent, err)
+		}
+		if err := os.Chown(s.cfg.SocketPath, 0, int(s.cfg.SocketGID)); err != nil {
+			ln.Close()
+			return fmt.Errorf("server: chown socket: %w", err)
+		}
 	}
 	s.ln = ln
 

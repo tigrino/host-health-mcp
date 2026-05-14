@@ -44,6 +44,11 @@ caps=""
 have() { echo "$enabled" | grep -qw "$1"; }
 add()  { case " $caps " in *" $1 "*) ;; *) caps="$caps $1" ;; esac; }
 
+# CAP_CHOWN is required regardless of which ops are enabled: the
+# helper chowns its unix socket and runtime directory at startup so
+# the daemon can connect. Keep it in the union always.
+add CAP_CHOWN
+
 # Crude YAML extraction: the lines we care about are flat arrays under
 # enabled_tools: and workload_plugins:. python3 -c is an option if
 # more rigour is needed; this script keeps to POSIX sh.

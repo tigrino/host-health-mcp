@@ -22,6 +22,11 @@ type Config struct {
 	// whose SO_PEERCRED reports a different uid.
 	DaemonUser string `yaml:"daemon_user"`
 
+	// DaemonGroup is the system group that owns the helper socket so
+	// the daemon can connect. Defaults to DaemonUser when empty; on
+	// Debian a system useradd creates a matching group.
+	DaemonGroup string `yaml:"daemon_group"`
+
 	// SocketPath is the absolute path of the unix-socket the helper
 	// listens on. Default /run/host-health-mcp/helper.sock.
 	SocketPath string `yaml:"socket_path"`
@@ -37,6 +42,7 @@ type Config struct {
 func Defaults() Config {
 	return Config{
 		DaemonUser:   "host-health-mcp",
+		DaemonGroup:  "host-health-mcp",
 		SocketPath:   "/run/host-health-mcp/helper.sock",
 		OpDeadlineMS: map[string]int{},
 	}
@@ -74,5 +80,23 @@ func (c Config) ResolveUID() (uint32, error) {
 		return 0, fmt.Errorf("helper config: parse uid %s: %w", u.Uid, err)
 	}
 	return uint32(uid), nil
+}
+
+// ResolveGID resolves the configured daemon group to a numeric gid.
+// Falls back to DaemonUser when DaemonGroup is empty.
+func (c Config) ResolveGID() (uint32, error) {
+	name := c.DaemonGroup
+	if name == "" {
+		name = c.DaemonUser
+	}
+	g, err := user.LookupGroup(name)
+	if err != nil {
+		return 0, fmt.Errorf("helper config: lookup group %s: %w", name, err)
+	}
+	gid, err := strconv.ParseUint(g.Gid, 10, 32)
+	if err != nil {
+		return 0, fmt.Errorf("helper config: parse gid %s: %w", g.Gid, err)
+	}
+	return uint32(gid), nil
 }
 

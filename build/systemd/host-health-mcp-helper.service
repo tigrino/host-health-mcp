@@ -17,11 +17,14 @@ Group=root
 NoNewPrivileges=yes
 
 # Capability bounding set is templated at install time from manifest.yml.
-# The shipped default is empty; the post-install scriptlet writes
-# /etc/systemd/system/host-health-mcp-helper.service.d/caps.conf with
-# the union of ops the operator has enabled (design 7 cap-bounding-set
-# templating).
-CapabilityBoundingSet=
+# The shipped default keeps CAP_CHOWN so the helper can chown its unix
+# socket and runtime directory to root:host-health-mcp at startup
+# (otherwise the daemon, running as an unprivileged user, cannot
+# connect). The post-install scriptlet writes
+# /etc/systemd/system/host-health-mcp-helper.service.d/caps.conf
+# carrying CAP_CHOWN UNION the per-op caps the operator has enabled
+# (design 7 cap-bounding-set templating).
+CapabilityBoundingSet=CAP_CHOWN
 AmbientCapabilities=
 
 ProtectSystem=strict
