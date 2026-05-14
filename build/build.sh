@@ -26,6 +26,13 @@ echo "==> go vet"
 echo "==> go test"
 ( cd "$REPO/daemon" && go test ./... )
 
+# Custom forbidden-call linter (REQ 10.2). Required.
+echo "==> forbidden-call linter"
+LINTER_BIN=$(mktemp)
+trap 'rm -f "$LINTER_BIN"' EXIT
+( cd "$REPO/build/linter" && go build -o "$LINTER_BIN" ./forbidden )
+( cd "$REPO" && "$LINTER_BIN" -root daemon )
+
 # Optional linters: only run if installed. Production CI should
 # require these per REQ 10.2.
 if command -v staticcheck >/dev/null 2>&1; then

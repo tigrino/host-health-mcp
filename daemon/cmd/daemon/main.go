@@ -29,7 +29,10 @@ import (
 	"tigr.net/host-health-mcp/daemon/internal/daemon/tools/manifest"
 	"tigr.net/host-health-mcp/daemon/internal/daemon/tools/pressure"
 	"tigr.net/host-health-mcp/daemon/internal/daemon/tools/sockets"
+	systemdunits "tigr.net/host-health-mcp/daemon/internal/daemon/tools/systemd_units"
+	"tigr.net/host-health-mcp/daemon/internal/daemon/tools/storage"
 	"tigr.net/host-health-mcp/daemon/internal/daemon/tools/system"
+	"tigr.net/host-health-mcp/daemon/internal/daemon/tools/updates"
 )
 
 var buildID = "dev"
@@ -63,14 +66,22 @@ func main() {
 		host = "unknown"
 	}
 
-	// Tool registry. Only the locally-reading tools are registered in
-	// this build; helper-invoking tools come online as their packages
-	// are implemented.
+	// Helper client. The in-flight cap (8) matches design §7.4; the
+	// per-tool fan-out caps inside each helper-invoking tool (e.g.
+	// storage caps its per-call SMART fan-out at 8) bound parallelism
+	// further.
+	hc := helperinvoke.NewClient(cfg.HelperSocketPath, 8)
+
+	// Tool registry. Local-only tools register without the helper
+	// client; helper-invoking tools take it as a constructor arg.
 	reg := tools.New()
 	reg.Register(system.New())
 	reg.Register(pressure.New())
 	reg.Register(kernel.New())
 	reg.Register(sockets.New())
+	reg.Register(updates.New(hc))
+	reg.Register(storage.New(hc))
+	reg.Register(systemdunits.New(manifestCfg.WhitelistedUnits))
 	reg.Register(manifest.New(manifest.Snapshot{
 		DaemonVersion:    buildID,
 		BuildID:          buildID,
@@ -78,13 +89,6 @@ func main() {
 		EnabledTools:     reg.Names(),
 		WhitelistedUnits: manifestCfg.WhitelistedUnits,
 	}))
-
-	// helperinvoke client is reserved for future tools; constructing
-	// here both proves the wiring and lets the daemon fail-fast if the
-	// socket path is misconfigured at startup. Cap helper concurrency
-	// at the default for now; expensive_tool_buckets gates the source
-	// pressure regardless.
-	_ = helperinvoke.NewClient(cfg.HelperSocketPath, 8)
 
 	cch := cache.New()
 	go func() {
