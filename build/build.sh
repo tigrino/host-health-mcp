@@ -20,11 +20,13 @@ mkdir -p "$DIST"
 
 echo "==> Build host-health-mcp $VERSION (git $GIT_SHA, SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH)"
 
-# Step 1-3: vet, test, linters.
+# Step 1-3: vet, test, linters. Both modules.
 echo "==> go vet"
 ( cd "$REPO/daemon" && go vet ./... )
+( cd "$REPO/plugin" && go vet ./... )
 echo "==> go test"
 ( cd "$REPO/daemon" && go test ./... )
+( cd "$REPO/plugin" && go test ./... )
 
 # Custom forbidden-call linter (REQ 10.2). Required.
 echo "==> forbidden-call linter"
@@ -61,6 +63,10 @@ for ARCH in amd64 arm64; do
         CGO_ENABLED=0 GOOS=linux GOARCH=$ARCH \
         go build -trimpath -ldflags="$LDFLAGS" \
         -o "$DIST/$ARCH/host-health-mcp-helper" ./cmd/helper )
+    ( cd "$REPO/plugin" && \
+        CGO_ENABLED=0 GOOS=linux GOARCH=$ARCH \
+        go build -trimpath -ldflags="$LDFLAGS" \
+        -o "$DIST/$ARCH/host-health-mcp-plugin" ./cmd/plugin )
 done
 
 # Step 5: nfpm per arch.
