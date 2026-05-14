@@ -1,0 +1,18 @@
+# Build output
+build/dist/
+
+# Go artefacts
+*.test
+*.out
+coverage.txt
+
+# Editor / OS
+*.swp
+*.swo
+*~
+.DS_Store
+.idea/
+.vscode/
+
+# Local task log
+.claude_task_log.txt
