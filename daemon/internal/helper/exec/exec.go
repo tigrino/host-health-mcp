@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"sync"
 	"syscall"
 	"time"
 
@@ -58,15 +59,34 @@ func Run(ctx context.Context, name string, args ...string) ([]byte, error) {
 	cmd.Stdout = &cappedWriter{buf: &stdout, max: MaxStdout}
 	cmd.Stderr = &stderr
 
+	// killTimer is captured at cancel time so the post-Wait code can
+	// Stop it. Without this, a child that exits within KillGrace
+	// after a SIGTERM would still have a pending timer firing
+	// `cmd.Process.Kill()` against a reaped pid - safe on modern
+	// kernels via pidfd, but the dependency on that invariant is
+	// best avoided.
+	var (
+		timerMu   sync.Mutex
+		killTimer *time.Timer
+	)
 	cmd.Cancel = func() error {
 		_ = cmd.Process.Signal(syscall.SIGTERM)
-		time.AfterFunc(KillGrace, func() {
+		timerMu.Lock()
+		killTimer = time.AfterFunc(KillGrace, func() {
 			_ = cmd.Process.Kill()
 		})
+		timerMu.Unlock()
 		return nil
 	}
 
 	err := cmd.Run()
+
+	timerMu.Lock()
+	if killTimer != nil {
+		killTimer.Stop()
+	}
+	timerMu.Unlock()
+
 	if err != nil {
 		return nil, classify(err, &stdout, &stderr, cmd)
 	}

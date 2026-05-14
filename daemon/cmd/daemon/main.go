@@ -166,6 +166,8 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
+	go limiter.RunSweeper(ctx)
+
 	if _, err := daemon.SdNotify(false, daemon.SdNotifyReady); err != nil {
 		log.Printf("daemon: sd_notify ready: %v (continuing)", err)
 	}

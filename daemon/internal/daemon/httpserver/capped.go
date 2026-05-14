@@ -3,6 +3,7 @@ package httpserver
 import (
 	"net"
 	"sync"
+	"time"
 )
 
 // cappedListener limits in-flight TLS handshakes. New connections above
@@ -21,17 +22,23 @@ func newCappedListener(inner net.Listener, cap int) *cappedListener {
 }
 
 func (l *cappedListener) Accept() (net.Conn, error) {
-	c, err := l.Listener.Accept()
-	if err != nil {
-		return nil, err
-	}
-	select {
-	case l.sem <- struct{}{}:
-		return &cappedConn{Conn: c, sem: l.sem}, nil
-	default:
-		c.Close()
-		// Continue accepting; loop until we get an admittable conn.
-		return l.Accept()
+	// Loop (not recurse): under a flood we may close many connections
+	// per admitted one; Go has no tail-call optimisation, so a
+	// recursive Accept would grow the goroutine stack until panic.
+	for {
+		c, err := l.Listener.Accept()
+		if err != nil {
+			return nil, err
+		}
+		select {
+		case l.sem <- struct{}{}:
+			return &cappedConn{Conn: c, sem: l.sem}, nil
+		default:
+			c.Close()
+			// A short pause when the cap is saturated avoids burning a
+			// core on accept/close churn under a SYN flood.
+			time.Sleep(5 * time.Millisecond)
+		}
 	}
 }
 

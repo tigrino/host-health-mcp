@@ -14,6 +14,7 @@ import (
 	"os"
 	"sync"
 	"syscall"
+	"time"
 
 	"tigr.net/host-health-mcp/daemon/internal/helper/dispatch"
 	"tigr.net/host-health-mcp/daemon/internal/shared/proto"
@@ -105,6 +106,12 @@ func (s *Server) closeAll() {
 	s.mu.Unlock()
 }
 
+// idleTimeout bounds how long the helper will wait for the next
+// request frame on an established connection. Defence-in-depth
+// against a daemon-side fd leak or partial-write attacker holding
+// open a helper goroutine indefinitely.
+const idleTimeout = 60 * time.Second
+
 func (s *Server) handleConn(ctx context.Context, c net.Conn) {
 	defer c.Close()
 	defer s.untrack(c)
@@ -114,16 +121,20 @@ func (s *Server) handleConn(ctx context.Context, c net.Conn) {
 	}
 
 	for {
+		_ = c.SetReadDeadline(time.Now().Add(idleTimeout))
 		var req proto.Request
 		if err := proto.ReadFrame(c, &req); err != nil {
 			return
 		}
+		_ = c.SetReadDeadline(time.Time{})
 
 		resp := s.dispatch(ctx, &req)
 
-		if err := proto.WriteFrame(c, resp); err != nil {
+		_ = c.SetWriteDeadline(time.Now().Add(idleTimeout))
+		if err := proto.WriteFrameWithCap(c, resp, proto.MaxResponseFrame); err != nil {
 			return
 		}
+		_ = c.SetWriteDeadline(time.Time{})
 	}
 }
 

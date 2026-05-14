@@ -65,6 +65,10 @@ func WireguardShow(ctx context.Context, _ string) (any, error) {
 	var currentName string
 
 	scanner := bufio.NewScanner(bytes.NewReader(stdout))
+	// `wg show all dump` can emit long rows when a peer carries many
+	// allowed_ips; raise the line cap so the default 64 KiB doesn't
+	// silently truncate.
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if line == "" {
@@ -143,6 +147,12 @@ func WireguardShow(ctx context.Context, _ string) (any, error) {
 	}
 	if current != nil {
 		out.Interfaces = append(out.Interfaces, *current)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, &dispatch.Error{
+			Code:    proto.CodeToolFailed,
+			Message: "wg dump scanner: " + err.Error(),
+		}
 	}
 	return out, nil
 }

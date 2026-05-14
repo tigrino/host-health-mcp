@@ -42,13 +42,35 @@ func New() *Cache {
 }
 
 // Key constructs a stable cache key for a (tool, args) pair. args is
-// the raw JSON request body; identical bodies hash to the same key.
+// the raw JSON request body; identical *semantic* bodies hash to the
+// same key after canonicalisation (whitespace, key ordering). On
+// invalid JSON Key falls back to raw-byte hashing so a caller can't
+// poison the cache by sending mangled JSON to bypass cache hits.
 func Key(tool string, args []byte) string {
+	canon := canonicaliseJSON(args)
 	h := sha256.New()
 	h.Write([]byte(tool))
 	h.Write([]byte{0})
-	h.Write(args)
+	h.Write(canon)
 	return tool + ":" + hex.EncodeToString(h.Sum(nil)[:16])
+}
+
+// canonicaliseJSON re-encodes the input through encoding/json so
+// whitespace differences and (top-level) key ordering converge to a
+// canonical form. json.Marshal sorts map keys lexicographically; for
+// objects-of-objects this propagates. Arrays preserve order
+// (semantically meaningful). Returns the original bytes when the
+// input is not valid JSON.
+func canonicaliseJSON(b []byte) []byte {
+	var v any
+	if err := json.Unmarshal(b, &v); err != nil {
+		return b
+	}
+	out, err := json.Marshal(v)
+	if err != nil {
+		return b
+	}
+	return out
 }
 
 // Lookup returns the cached entry for key if it is present and not

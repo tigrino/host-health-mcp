@@ -6,6 +6,7 @@
 package ratelimit
 
 import (
+	"context"
 	"sync"
 	"time"
 )
@@ -45,6 +46,26 @@ func New(global BucketCfg, perTool map[string]BucketCfg) *Limiter {
 		toolBkts:   make(map[string]*bucket),
 		lastSwept:  time.Now(),
 		sweepEvery: 5 * time.Minute,
+	}
+}
+
+// RunSweeper starts a background goroutine that sweeps idle buckets
+// at a fixed interval (1 min). Stops when ctx is cancelled. The
+// Allow path's lazy sweep alone is not enough to bound map growth
+// under a caller-CN flux; the goroutine guarantees forward progress.
+func (l *Limiter) RunSweeper(ctx context.Context) {
+	t := time.NewTicker(time.Minute)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-t.C:
+			l.mu.Lock()
+			l.sweepLocked(now)
+			l.lastSwept = now
+			l.mu.Unlock()
+		}
 	}
 }
 

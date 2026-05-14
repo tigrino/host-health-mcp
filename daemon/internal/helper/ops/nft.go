@@ -3,6 +3,7 @@ package ops
 import (
 	"context"
 	"encoding/json"
+	"errors"
 
 	"tigr.net/host-health-mcp/daemon/internal/helper/dispatch"
 	helperexec "tigr.net/host-health-mcp/daemon/internal/helper/exec"
@@ -55,9 +56,17 @@ type nftEntry struct {
 func NftTableCounts(ctx context.Context, _ string) (any, error) {
 	stdout, err := helperexec.Run(ctx, "nft", "-j", "list", "ruleset")
 	if err != nil {
-		// nft may be absent (no nftables on this host); the daemon
-		// surfaces this as an empty result rather than a failure.
-		return NftTableCountsResult{Tables: map[string]NftTable{}}, nil
+		// nft genuinely absent (binary not installed): return empty
+		// rather than failing, so the daemon's network tool can
+		// proceed. Any other error - permission denied, kernel
+		// module missing, malformed output - is surfaced upward so
+		// the operator sees a real diagnostic instead of a
+		// misleading empty-table report.
+		var de *dispatch.Error
+		if errors.As(err, &de) && de.Code == proto.CodeToolMissing {
+			return NftTableCountsResult{Tables: map[string]NftTable{}}, nil
+		}
+		return nil, err
 	}
 
 	var env nftEnvelope

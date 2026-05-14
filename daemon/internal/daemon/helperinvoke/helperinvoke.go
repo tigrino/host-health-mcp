@@ -71,7 +71,7 @@ func (c *Client) Call(ctx context.Context, op string, param string) (json.RawMes
 	}
 
 	var resp proto.Response
-	if err := proto.ReadFrame(conn, &resp); err != nil {
+	if err := proto.ReadFrameWithCap(conn, &resp, proto.MaxResponseFrame); err != nil {
 		return nil, fmt.Errorf("helperinvoke: read: %w", err)
 	}
 
