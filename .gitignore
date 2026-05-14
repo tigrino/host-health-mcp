@@ -16,3 +16,4 @@ coverage.txt
 
 # Local task log
 .claude_task_log.txt
+build/nfpm/nfpm-*.yaml

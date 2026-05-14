@@ -92,7 +92,7 @@ func main() {
 	reg.Register(kernel.New())
 	reg.Register(sockets.New())
 	reg.Register(updates.New(hc))
-	reg.Register(storage.New(hc))
+	reg.Register(storage.New(hc, manifestCfg.BtrfsMountpoints))
 	reg.Register(systemdunits.New(manifestCfg.WhitelistedUnits))
 	reg.Register(dns.New(dns.Probes{
 		ExternalProbe: cfg.DNSProbeTargets["external_probe"],
@@ -102,8 +102,8 @@ func main() {
 	reg.Register(certs.New(manifestCfg.CertPaths, manifestCfg.CertRenewalUnits))
 	reg.Register(backup.New(manifestCfg.BackupLogPath, manifestCfg.BackupBackend))
 	reg.Register(sensors.New())
-	reg.Register(network.New(manifestCfg.IPv6Policy))
-	reg.Register(security.New())
+	reg.Register(network.New(hc, manifestCfg.IPv6Policy))
+	reg.Register(security.New(hc))
 
 	// Build the redactor from operator-configured allowlists. Used by
 	// the logs tool to scrub sample messages (REQ 6.3).

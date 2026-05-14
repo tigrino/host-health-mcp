@@ -71,8 +71,8 @@ else
     for ARCH in amd64 arm64; do
         echo "==> Package $ARCH"
         ARCH=$ARCH VERSION=$VERSION envsubst < "$SCRIPT_DIR/nfpm/nfpm.yaml.tmpl" \
-            > "$DIST/$ARCH/nfpm.yaml"
-        ( cd "$DIST/$ARCH" && nfpm package -f ./nfpm.yaml -p deb -t "$DIST/" )
+            > "$SCRIPT_DIR/nfpm/nfpm-$ARCH.yaml"
+        ( cd "$SCRIPT_DIR/nfpm" && nfpm package -f "nfpm-$ARCH.yaml" -p deb -t "$DIST/" )
     done
 fi
 

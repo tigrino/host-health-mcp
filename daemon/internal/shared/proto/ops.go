@@ -18,6 +18,7 @@ const (
 	OpAptPending       = "apt_pending"
 	OpNeedrestart      = "needrestart"
 	OpJournalQuery     = "journal_query"
+	OpNftTableCounts   = "nft_table_counts"
 )
 
 // AllOps lists every op token in a stable order. Used by the helper to
@@ -37,6 +38,7 @@ var AllOps = []string{
 	OpAptPending,
 	OpNeedrestart,
 	OpJournalQuery,
+	OpNftTableCounts,
 }
 
 // IsKnownOp reports whether op is one of the recognised tokens.

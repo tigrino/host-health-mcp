@@ -23,11 +23,42 @@ import (
 // doc/schema-draft.yaml.
 type Data struct {
 	Mdraid   []MdraidArray  `json:"mdraid"`
-	LvmVgs   []any          `json:"lvm_vgs"`
-	LvmLvs   []any          `json:"lvm_lvs"`
+	LvmVgs   []LvmVg        `json:"lvm_vgs"`
+	LvmLvs   []LvmLv        `json:"lvm_lvs"`
 	Smart    []SmartSummary `json:"smart"`
-	Btrfs    []any          `json:"btrfs"`
-	ZfsPools []any          `json:"zfs_pools"`
+	Btrfs    []BtrfsScrub   `json:"btrfs"`
+	ZfsPools []ZfsPool      `json:"zfs_pools"`
+}
+
+// LvmVg mirrors the helper's typed VG row.
+type LvmVg struct {
+	Name  string `json:"name"`
+	SizeB int64  `json:"size_b"`
+	FreeB int64  `json:"free_b"`
+}
+
+// LvmLv mirrors the helper's typed LV row.
+type LvmLv struct {
+	VG            string  `json:"vg"`
+	Name          string  `json:"name"`
+	SizeB         int64   `json:"size_b"`
+	HealthStatus  *string `json:"health_status"`
+}
+
+// BtrfsScrub mirrors the helper's typed btrfs row.
+type BtrfsScrub struct {
+	Mountpoint       string     `json:"mountpoint"`
+	LastScrubTS      *time.Time `json:"last_scrub_ts"`
+	LastScrubStatus  *string    `json:"last_scrub_status"`
+	ErrorsCount      int        `json:"errors_count"`
+}
+
+// ZfsPool mirrors the helper's typed zpool row.
+type ZfsPool struct {
+	Name        string `json:"name"`
+	State       string `json:"state"`
+	ScanState   string `json:"scan_state"`
+	ErrorsTotal int    `json:"errors_total"`
 }
 
 // MdraidArray mirrors the helper-side result. The daemon copies these
@@ -69,11 +100,18 @@ type Tool struct {
 	// fanout caps the simultaneous helper ops this tool initiates.
 	// design §7.4: per-tool helper-fan-out cap (default 8).
 	fanout int
+
+	// btrfsMountpoints is the manifest-declared set; the helper also
+	// verifies via statfs(2) before invoking btrfs(8). We send the
+	// validated path through the helper for each entry.
+	btrfsMountpoints []string
 }
 
 // New returns a new tool instance.
-func New(hc *helperinvoke.Client) *Tool {
-	return &Tool{hc: hc, fanout: 8}
+func New(hc *helperinvoke.Client, btrfsMountpoints []string) *Tool {
+	bm := make([]string, len(btrfsMountpoints))
+	copy(bm, btrfsMountpoints)
+	return &Tool{hc: hc, fanout: 8, btrfsMountpoints: bm}
 }
 
 // Name returns the tool name.
@@ -94,11 +132,11 @@ func (*Tool) DefaultTimeout() time.Duration { return 10 * time.Second }
 func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 	d := Data{
 		Mdraid:   []MdraidArray{},
-		LvmVgs:   []any{},
-		LvmLvs:   []any{},
+		LvmVgs:   []LvmVg{},
+		LvmLvs:   []LvmLv{},
 		Smart:    []SmartSummary{},
-		Btrfs:    []any{},
-		ZfsPools: []any{},
+		Btrfs:    []BtrfsScrub{},
+		ZfsPools: []ZfsPool{},
 	}
 	var warnings []string
 
@@ -123,14 +161,39 @@ func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 		d.Mdraid = append(d.Mdraid, ma)
 	}
 
-	// LVM, ZFS, btrfs are helper-stubbed today; surface that as
-	// envelope warnings rather than failing the whole call. When the
-	// helper ops land these become real entries in lvm_vgs[] etc.
-	if err := t.hc.CallJSON(ctx, proto.OpLvmReport, "", &struct{}{}); err != nil {
-		warnings = append(warnings, "storage: lvm_report: "+err.Error())
+	// LVM via the helper. The helper does both vgs and lvs and returns
+	// typed entries.
+	var lvm struct {
+		VGs []LvmVg `json:"vgs"`
+		LVs []LvmLv `json:"lvs"`
 	}
-	if err := t.hc.CallJSON(ctx, proto.OpZpoolStatus, "", &struct{}{}); err != nil {
+	if err := t.hc.CallJSON(ctx, proto.OpLvmReport, "", &lvm); err != nil {
+		warnings = append(warnings, "storage: lvm_report: "+err.Error())
+	} else {
+		d.LvmVgs = lvm.VGs
+		d.LvmLvs = lvm.LVs
+	}
+
+	// ZFS via the helper. Absent ZFS surfaces as an empty Pools list.
+	var zfs struct {
+		Pools []ZfsPool `json:"pools"`
+	}
+	if err := t.hc.CallJSON(ctx, proto.OpZpoolStatus, "", &zfs); err != nil {
 		warnings = append(warnings, "storage: zpool_status: "+err.Error())
+	} else {
+		d.ZfsPools = zfs.Pools
+	}
+
+	// btrfs per manifest-declared mountpoint. Each call hits the
+	// helper, which independently verifies via statfs(2) that the
+	// path is btrfs.
+	for _, mp := range t.btrfsMountpoints {
+		var b BtrfsScrub
+		if err := t.hc.CallJSON(ctx, proto.OpBtrfsScrub, mp, &b); err != nil {
+			warnings = append(warnings, "storage: btrfs_scrub "+mp+": "+err.Error())
+			continue
+		}
+		d.Btrfs = append(d.Btrfs, b)
 	}
 
 	return d, warnings, nil

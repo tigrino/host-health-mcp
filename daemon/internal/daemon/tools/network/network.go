@@ -17,6 +17,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"tigr.net/host-health-mcp/daemon/internal/daemon/helperinvoke"
+	"tigr.net/host-health-mcp/daemon/internal/shared/proto"
 )
 
 // Data is the response data for tool network. Mirrors NetworkData in
@@ -70,15 +73,16 @@ type NftCounter struct {
 
 // Tool is the registered tool.
 type Tool struct {
+	hc         *helperinvoke.Client
 	ipv6Policy string // required-on, required-off, not-enforced
 }
 
 // New returns a new tool instance. ipv6Policy comes from manifest.yml.
-func New(ipv6Policy string) *Tool {
+func New(hc *helperinvoke.Client, ipv6Policy string) *Tool {
 	if ipv6Policy == "" {
 		ipv6Policy = "not-enforced"
 	}
-	return &Tool{ipv6Policy: ipv6Policy}
+	return &Tool{hc: hc, ipv6Policy: ipv6Policy}
 }
 
 // Name returns the tool name.
@@ -120,6 +124,26 @@ func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 
 	if ns := firstNameserver(); ns != "" {
 		d.ResolvConfFirstNameserver = &ns
+	}
+
+	// Counters via the helper. Pull a typed result and copy into the
+	// daemon's shape. The helper's keys are "family:table" pairs
+	// matching the schema's "table-name" keying expectation.
+	var nft struct {
+		Tables map[string]struct {
+			RuleCount   int          `json:"rule_count"`
+			HitCounters []NftCounter `json:"hit_counters"`
+		} `json:"tables"`
+	}
+	if err := t.hc.CallJSON(ctx, proto.OpNftTableCounts, "", &nft); err != nil {
+		warnings = append(warnings, "network: nft_table_counts: "+err.Error())
+	} else {
+		for k, v := range nft.Tables {
+			d.NftTableCounts[k] = NftTable{
+				RuleCount:   v.RuleCount,
+				HitCounters: v.HitCounters,
+			}
+		}
 	}
 
 	d.IPv6PolicyCompliant = checkIPv6Policy(t.ipv6Policy, d.Interfaces)

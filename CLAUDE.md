@@ -145,33 +145,33 @@ linked sections before treating any constraint as flexible.
 
 ## Status
 
-Design gate is closed. Implementation skeleton in place and building
-clean across both arches.
+Design gate is closed. Implementation complete at the surface level
+and building clean across both arches; `.deb` packages produced.
 
-All 17 tools per REQ 4.1-4.17 register and respond. Depth varies:
+All 17 tools per REQ 4.1-4.17 register and respond. All 14 helper
+ops implemented (no stubs remain): `read_audit_status`,
+`read_aide_summary`, `read_reboot_marker`, `smart_summary`,
+`mdraid_detail`, `lvm_report`, `zpool_status`, `btrfs_scrub`,
+`postqueue`, `wireguard_show`, `apt_pending`, `needrestart`,
+`journal_query`, `nft_table_counts`.
 
-- Full implementations: `manifest`, `system`, `pressure`, `kernel`,
-  `sockets`, `dns`, `mail` (queue depth via helper), `certs`,
-  `backup` (mtime-based signal), `sensors`, `systemd_units`,
-  `updates` (helper round-trip), `storage` (per-device error
-  reporting via helper), `workload` (compile-time plugin
-  framework; wireguard plugin real, postfix near-real, dovecot +
-  nginx_apache stubs), `logs` (helper journal_query + redactor),
-  `network`, `security` (presence-only MVP - deep fields await
-  helper ops).
-- Helper ops implemented: `read_reboot_marker`, `smart_summary`,
-  `mdraid_detail`, `lvm_report`, `postqueue`, `apt_pending`,
-  `needrestart`, `wireguard_show` (with PSK + private-key strip),
-  `journal_query`.
-- Helper ops still stubbed: `read_audit_status` (netlink dialog),
-  `read_aide_summary` (binary file parser), `zpool_status`,
-  `btrfs_scrub`.
-- Tests: foundational packages covered (proto, cache, ratelimit,
-  redact, lvm parser, wireguard parser). Tool packages await
-  integration tests.
+Two workload plugins (`dovecot`, `nginx_apache`) registered with
+build tags but return "not yet implemented" — their data sources
+need operator-specific config that varies by deployment.
 
-The four documents still to produce per REQ 9.5 are `doc/tools.md`,
-`doc/install.md`, `doc/changelog.md`, and the `doc/examples/` set.
+Tests: foundational packages and parsers covered (proto frame,
+cache + singleflight, two-level rate-limiter, redactor with fuzz
+target, HTTP server negative tests including unknown-tool routing
+and oversize body, helper parsers for wireguard, LVM, zpool, AIDE
+log, apt-get -s upgrade, dpkg held). Integration tests against a
+live host are still to come.
+
+REQ 9.5 docs in place: `doc/install.md`, `doc/tools.md`,
+`doc/changelog.md`. Examples under `build/examples/`.
+
+Packages: `build/build.sh` produces signed-checksum `.deb`
+artefacts for `linux/amd64` and `linux/arm64`. nfpm installed via
+`go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest`.
 
 ## Style and conventions
 

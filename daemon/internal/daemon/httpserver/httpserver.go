@@ -57,20 +57,26 @@ func (s *Server) Start(ctx context.Context) error {
 		return err
 	}
 
-	ln, err := tls.Listen("tcp", s.cfg.BindAddr, tlsCfg)
+	// Wrap order matters: cappedListener must sit BELOW tls.NewListener
+	// so that what comes out of Accept is *tls.Conn (so net/http's
+	// type assertion populates r.TLS) and so that the cap counts
+	// in-flight TLS handshakes (the design intent in §8).
+	tcpLn, err := net.Listen("tcp", s.cfg.BindAddr)
 	if err != nil {
 		return fmt.Errorf("httpserver: listen %s: %w", s.cfg.BindAddr, err)
 	}
+	var underlying net.Listener = tcpLn
 	if s.cfg.MaxConcurrentHandshakes > 0 {
-		ln = newCappedListener(ln, s.cfg.MaxConcurrentHandshakes)
+		underlying = newCappedListener(tcpLn, s.cfg.MaxConcurrentHandshakes)
 	}
+	ln := tls.NewListener(underlying, tlsCfg)
 	s.listener = ln
 
 	mux := http.NewServeMux()
-	for _, name := range s.registry.Names() {
-		nm := name // capture
-		mux.HandleFunc("/v1/"+nm, s.handleTool(nm))
-	}
+	// Single catch-all so the server's own error envelope (not
+	// net/http's plain-text "404 page not found") covers every
+	// /v1/... path.
+	mux.HandleFunc("/v1/", s.handleRequest)
 
 	s.srv = &http.Server{
 		Handler:           mux,
@@ -94,101 +100,117 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 }
 
-func (s *Server) handleTool(toolName string) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
+// handleRequest is the single entry point for every /v1/... request.
+// It validates the URL shape, extracts the tool name, and dispatches
+// through the registry; unknown tools surface as the structured
+// unknown_tool error rather than net/http's plain-text 404.
+func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
 
-		if r.Method != http.MethodPost {
-			s.writeError(w, r, toolName, http.StatusMethodNotAllowed,
-				schema.ErrCodeBadArgument, "POST required", start, "method")
-			return
-		}
+	toolName := strings.TrimPrefix(r.URL.Path, "/v1/")
+	if toolName == "" || strings.Contains(toolName, "/") {
+		s.writeError(w, r, toolName, http.StatusNotFound,
+			schema.ErrCodeUnknownTool, schema.MsgUnknownTool, start, "bad_path")
+		return
+	}
 
-		caller := callerIdentity(r)
-		if caller == "" {
-			s.writeError(w, r, toolName, http.StatusUnauthorized,
-				schema.ErrCodeAuthRequired, schema.MsgAuthRequired, start, "no_client_cert")
-			return
-		}
+	if r.Method != http.MethodPost {
+		s.writeError(w, r, toolName, http.StatusMethodNotAllowed,
+			schema.ErrCodeBadArgument, "POST required", start, "method")
+		return
+	}
 
-		tool, ok := s.registry.Lookup(toolName)
-		if !ok {
-			s.writeError(w, r, toolName, http.StatusNotFound,
-				schema.ErrCodeUnknownTool, schema.MsgUnknownTool, start, "unknown_tool")
-			return
-		}
+	caller := callerIdentity(r)
+	if caller == "" {
+		s.writeError(w, r, toolName, http.StatusUnauthorized,
+			schema.ErrCodeAuthRequired, schema.MsgAuthRequired, start, "no_client_cert")
+		return
+	}
 
-		if allowed, reason := s.limiter.Allow(caller, toolName); !allowed {
-			s.writeError(w, r, toolName, http.StatusTooManyRequests,
-				schema.ErrCodeRateLimited, schema.MsgRateLimited, start, "rate_"+reason)
-			return
-		}
+	tool, ok := s.registry.Lookup(toolName)
+	if !ok {
+		s.writeError(w, r, toolName, http.StatusNotFound,
+			schema.ErrCodeUnknownTool, schema.MsgUnknownTool, start, "unknown_tool")
+		return
+	}
 
-		body, err := io.ReadAll(io.LimitReader(r.Body, MaxRequestBody+1))
-		if err != nil {
-			s.writeError(w, r, toolName, http.StatusBadRequest,
-				schema.ErrCodeBadArgument, schema.MsgBadArgument, start, "read_body")
-			return
-		}
-		if len(body) > MaxRequestBody {
-			s.writeError(w, r, toolName, http.StatusRequestEntityTooLarge,
-				schema.ErrCodeBadArgument, "request body exceeds cap", start, "body_too_large")
-			return
-		}
-		if len(body) == 0 {
-			body = []byte("{}")
-		}
+	s.handleToolBody(w, r, tool, toolName, caller, start)
+}
 
-		ttl := s.cfg.CacheTTL(toolName, tool.DefaultTTL())
-		key := cache.Key(toolName, body)
+// handleToolBody handles the post-routing portion of a request:
+// rate-limit check, body read, cache lookup, tool invocation,
+// envelope write.
+func (s *Server) handleToolBody(w http.ResponseWriter, r *http.Request, tool tools.Tool, toolName, caller string, start time.Time) {
+	if allowed, reason := s.limiter.Allow(caller, toolName); !allowed {
+		s.writeError(w, r, toolName, http.StatusTooManyRequests,
+			schema.ErrCodeRateLimited, schema.MsgRateLimited, start, "rate_"+reason)
+		return
+	}
 
-		if entry, ok := s.cache.Lookup(key); ok {
-			s.writeEnvelope(w, entry.Data, int(entry.Age().Seconds()), nil)
-			s.auditor.Log(audit.Entry{
-				CallerIdentity: caller,
-				Tool:           toolName,
-				ResponseSize:   len(entry.Data),
-				Duration:       time.Since(start),
-				Result:         "ok",
-			})
-			return
-		}
+	body, err := io.ReadAll(io.LimitReader(r.Body, MaxRequestBody+1))
+	if err != nil {
+		s.writeError(w, r, toolName, http.StatusBadRequest,
+			schema.ErrCodeBadArgument, schema.MsgBadArgument, start, "read_body")
+		return
+	}
+	if len(body) > MaxRequestBody {
+		s.writeError(w, r, toolName, http.StatusRequestEntityTooLarge,
+			schema.ErrCodeBadArgument, "request body exceeds cap", start, "body_too_large")
+		return
+	}
+	if len(body) == 0 {
+		body = []byte("{}")
+	}
 
-		timeout := s.cfg.Timeout(toolName, tool.DefaultTimeout())
-		toolCtx, cancel := context.WithTimeout(r.Context(), timeout)
-		defer cancel()
+	ttl := s.cfg.CacheTTL(toolName, tool.DefaultTTL())
+	key := cache.Key(toolName, body)
 
-		data, err := s.cache.Do(toolCtx, key, func() (json.RawMessage, error) {
-			result, warnings, herr := tool.Handle(toolCtx, body)
-			if herr != nil {
-				return nil, herr
-			}
-			env := buildEnvelopeBody(result, warnings)
-			raw, mErr := json.Marshal(env.Data)
-			if mErr != nil {
-				return nil, mErr
-			}
-			s.cache.Store(key, cache.Entry{
-				Data:    raw,
-				Builtat: time.Now(),
-				TTL:     ttl,
-			})
-			return raw, nil
-		})
-		if err != nil {
-			s.handleToolError(w, r, toolName, err, start)
-			return
-		}
-
-		s.writeEnvelope(w, data, 0, nil)
+	if entry, ok := s.cache.Lookup(key); ok {
+		s.writeEnvelope(w, entry.Data, int(entry.Age().Seconds()), nil)
 		s.auditor.Log(audit.Entry{
 			CallerIdentity: caller,
 			Tool:           toolName,
-			ResponseSize:   len(data),
+			ResponseSize:   len(entry.Data),
 			Duration:       time.Since(start),
 			Result:         "ok",
 		})
+		return
 	}
+
+	timeout := s.cfg.Timeout(toolName, tool.DefaultTimeout())
+	toolCtx, cancel := context.WithTimeout(r.Context(), timeout)
+	defer cancel()
+
+	data, err := s.cache.Do(toolCtx, key, func() (json.RawMessage, error) {
+		result, warnings, herr := tool.Handle(toolCtx, body)
+		if herr != nil {
+			return nil, herr
+		}
+		env := buildEnvelopeBody(result, warnings)
+		raw, mErr := json.Marshal(env.Data)
+		if mErr != nil {
+			return nil, mErr
+		}
+		s.cache.Store(key, cache.Entry{
+			Data:    raw,
+			Builtat: time.Now(),
+			TTL:     ttl,
+		})
+		return raw, nil
+	})
+	if err != nil {
+		s.handleToolError(w, r, toolName, err, start)
+		return
+	}
+
+	s.writeEnvelope(w, data, 0, nil)
+	s.auditor.Log(audit.Entry{
+		CallerIdentity: caller,
+		Tool:           toolName,
+		ResponseSize:   len(data),
+		Duration:       time.Since(start),
+		Result:         "ok",
+	})
 }
 
 type envelopeBody struct {
