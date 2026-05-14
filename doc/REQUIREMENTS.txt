@@ -1,0 +1,554 @@
+================================================================================
+LINUX HOST HEALTH MCP - REQUIREMENTS
+================================================================================
+
+Document owner : Albert 'Tigr' Zenkoff <albert@tigr.net>
+Date           : 2026-05-14
+Status         : Requirements - for implementation by the health-check architect
+Repository     : (this repository)
+
+--------------------------------------------------------------------------------
+1. PURPOSE
+--------------------------------------------------------------------------------
+
+Provide a read-only health interrogation surface on any modern Linux host so
+that routine health inspection no longer requires an interactive SSH session.
+
+The deliverable is two cooperating components:
+
+  (a) HOST DAEMON   - a long-running service on the target host. Collects
+                      health facts locally and exposes them on a configurable
+                      socket via a typed, versioned RPC surface.
+
+  (b) MCP PLUGIN    - an MCP server that exposes a curated set of tools to an
+                      MCP-speaking client. The plugin is the client of (a).
+                      It runs on the operator workstation, on the target host,
+                      or on a designated relay - placement is an integrator
+                      choice.
+
+The split exists so that the host daemon's interface can evolve independently
+of the MCP wire protocol, and so that on-host facts can also be consumed by
+non-MCP callers (metric scrapers, ad-hoc operator scripts).
+
+--------------------------------------------------------------------------------
+2. SCOPE
+--------------------------------------------------------------------------------
+
+IN SCOPE
+  - Routine health inspection (system, network, services, security posture,
+    certificates, mail relay, backup status, optional workload plugins, log
+    summaries).
+  - Read-only observation of host state.
+  - Typed, structured output suitable for both machine and human consumption.
+  - Authenticated and authorised access over a configurable listener.
+
+OUT OF SCOPE
+  - Any state-changing operation (no restart, reload, mount, write, fix-up).
+  - Arbitrary command execution or caller-supplied shell.
+  - Replacement of incident-response SSH access. The MCP is intended to
+    replace the routine 80%, not the deep 20%.
+  - Replacement of full-fledged monitoring stacks (Munin, Prometheus, Nagios,
+    Zabbix, etc.). The MCP reports on results produced by such systems where
+    present; it does not displace them.
+  - Aggregation across hosts. Each daemon reports on localhost only. Multi-
+    host aggregation is the caller's responsibility.
+
+--------------------------------------------------------------------------------
+3. TARGET ENVIRONMENT ASSUMPTIONS
+--------------------------------------------------------------------------------
+
+3.1 Operating system
+    Modern systemd-based Linux. Reference targets: Debian 12, Debian 13,
+    Ubuntu 22.04, Ubuntu 24.04. UTC is recommended but not required; the
+    daemon must emit RFC3339 timestamps in UTC regardless of local TZ.
+
+3.2 Privilege model
+    The daemon runs as a dedicated unprivileged system user. Where access
+    to root-only data is unavoidable, a minimal fixed-argv setuid helper or
+    a capability-bounded subprocess is used (architect's choice; see 6.7).
+    The daemon must not require sudo rules or membership in privileged
+    groups beyond what is documented in the install procedure.
+
+3.3 Network
+    The daemon must not assume any particular network topology. It must run
+    on standalone hosts and on hosts that are part of arbitrary VPN/overlay
+    networks. The listener binds to a configurable address; the operator
+    chooses whether that address is loopback, a LAN address, or an overlay
+    address. The daemon must not initiate outbound connections except where
+    explicitly required to answer a tool call (see 6.8).
+
+3.4 systemd-service hardening (must be applied to the shipped unit)
+    NoNewPrivileges=yes
+    ProtectSystem=strict
+    ProtectHome=yes
+    PrivateTmp=yes
+    CapabilityBoundingSet=                  (empty unless explicitly required)
+    SystemCallFilter=@system-service        (further restricted where possible)
+    Dedicated non-root system user; no shell, no home directory other than
+    the daemon state directory.
+
+3.5 Reference services to model on
+    Existing read-only, localhost-or-overlay-scoped daemons in the Linux
+    ecosystem (e.g. munin-node, node_exporter, systemd-resolved's bus API).
+    The architect should treat those as architectural inspiration for the
+    hardening posture and the data-construction discipline, not as code to
+    embed.
+
+--------------------------------------------------------------------------------
+4. FUNCTIONAL REQUIREMENTS - TOOL SURFACE
+--------------------------------------------------------------------------------
+
+Each item below is a separate MCP tool. The host daemon must expose a
+corresponding RPC method per tool. No mega-tool. No caller-supplied free-text
+arguments other than the small enums noted explicitly.
+
+Every tool returns a typed JSON object with the common envelope:
+
+    {
+      "host":            "<hostname>",
+      "as_of":           "<RFC3339 UTC timestamp>",
+      "cache_age_s":     <int>,
+      "schema_version":  "<semver>",
+      "data":            { ...tool-specific... },
+      "warnings":        [ "<string>", ... ]    (optional)
+    }
+
+Tools marked OPTIONAL are only available when the corresponding plugin is
+enabled in the manifest. Core tools must always be available.
+
+4.1  system                                                          (CORE)
+     uptime_s, load_1/5/15, cpu_count, mem_total_b, mem_available_b,
+     swap_total_b, swap_used_b, disk[] (mountpoint, fs, size_b, used_b,
+     inodes_total, inodes_used), kernel_release, distro, distro_version,
+     time_sync_source (chrony/ntpd/systemd-timesyncd/none),
+     time_offset_s (signed seconds; null if no sync source),
+     reboot_required (bool; derived from /var/run/reboot-required or kernel
+     mismatch against installed package).
+
+4.2  systemd_units                                                   (CORE)
+     For each unit in a per-host whitelist (see 8.2): name, load_state,
+     active_state, sub_state, result, exec_main_status, active_enter_ts,
+     active_exit_ts, restart_count. No free-form unit name from the caller.
+
+4.3  network                                                         (CORE)
+     interfaces[] (name, mac, mtu, oper_state, carrier, addrs[]),
+     default_routes[] (family, gateway, dev, metric),
+     nft_table_counts (table -> rule_count, hit counters only - never rule
+     bodies),
+     resolv_conf_first_nameserver,
+     ipv6_policy_compliant (bool; reflects the operator-declared local
+     policy in the manifest - see 8.2).
+
+4.4  dns                                                             (CORE)
+     resolver_in_use (string; the address actually used for resolution),
+     resolves_self_hostname (bool),
+     resolves_external_probe (bool; probe target configured in 8.1),
+     filter_canary_blocked (bool; queries a canary domain configured in 8.1
+     and confirms the upstream does not transparently filter or rewrite).
+
+4.5  security                                                        (CORE)
+     aide_or_equivalent: present (bool), last_run_ts, last_exit_code,
+            change_count (counts only - never paths or contents of changed
+            files).
+     auditd: present (bool), queue_depth, lost_events, last_rotation_ts.
+     rkhunter: present (bool), last_run_ts, warning_count.
+     debsums_or_equivalent: present (bool), last_run_ts, modified_count.
+     intrusion_prevention: backend_in_use (fail2ban/crowdsec/other/none),
+            current_ban_count.
+     ssh_logins: accepted_since_boot, failed_since_boot.
+
+     Any subsystem not present on the host reports present=false; the tool
+     must not fail because optional subsystems are missing.
+
+4.6  certs                                                           (CORE)
+     For each cert path declared in the manifest: subject, issuer,
+     not_after, days_remaining, renewal_unit (the systemd unit that owns
+     renewal, if known; otherwise null).
+
+4.7  mail                                                            (CORE)
+     mta_in_use (msmtp/postfix/exim/sendmail/other/none),
+     queue_depth, last_successful_send_ts, last_failure_ts,
+     last_failure_reason (truncated to 200 chars; passed through the
+     redaction filter - see 6.3).
+
+4.8  backup                                                          (CORE)
+     last_start_ts, last_end_ts, last_exit_code, last_archive_label,
+     backend (e.g. borg/restic/rsnapshot/duplicity/other/none).
+     Repository URLs, passphrases, credentials, and archive contents MUST
+     NOT appear. If no backup is configured, the tool returns data: null
+     with a "not-configured" warning.
+
+4.9  workload                                                    (OPTIONAL)
+     Per-host plugin set, selected by manifest (see 8.2). Each enabled
+     workload plugin contributes its own typed sub-object. The daemon
+     must ship with a documented set of compile-time plugins covering at
+     minimum:
+       - postfix      : queue depth, last delivery, deferred count.
+       - dovecot      : process state, connection count.
+       - nginx/apache : worker count, recent 4xx/5xx counts from access
+                        log summary.
+       - wireguard    : interface name, last_handshake per peer, rx/tx
+                        bytes. Public keys MAY appear (already public);
+                        private and preshared keys MUST NOT.
+     Additional plugin contributions by the architect are welcome; each
+     plugin must respect the same security constraints as the core tools.
+     Loadable shared objects are NOT acceptable; plugins are compile-time
+     and selected at build or runtime by manifest.
+
+4.10 logs                                                            (CORE)
+     Inputs (all enums, no free-form strings):
+       severity in {emerg, alert, crit, err, warning}
+       window   in {15m, 1h, 6h, 24h}
+       source   in {journal, audit}
+     Output: total_count, by_unit (unit -> count), samples[] (truncated
+     message, unit, ts) capped at N=20 by default. Sample messages must
+     pass the redaction filter (see 6.3).
+
+4.11 manifest                                                        (CORE)
+     Returns the daemon's view of itself: schema_version, daemon_version,
+     enabled_tools[], enabled_workload_plugins[], whitelisted_units[],
+     build_id, started_at_ts. Required for callers to learn the daemon's
+     surface before issuing queries.
+
+--------------------------------------------------------------------------------
+5. NON-FUNCTIONAL REQUIREMENTS
+--------------------------------------------------------------------------------
+
+5.1 Performance
+    - Per-tool hard timeout: 3s default, 10s ceiling. A wedged subsystem
+      must not stall the daemon.
+    - Expensive probes (integrity-check summaries, full peer enumerations,
+      log scans) cache server-side. Cache TTL declared per tool, reported
+      in cache_age_s. Minimum default TTL: 15s. Cache must be in-process;
+      no on-disk cache files.
+    - The daemon must respond to the manifest tool within 100ms cold.
+
+5.2 Reliability
+    - Daemon must survive subsystem failures (missing tool, broken pipe,
+      timeout) and return partial data with explicit warnings; never crash
+      out, never return 500-equivalent for missing optional facts.
+    - Daemon must restart cleanly under systemd; Restart=on-failure,
+      RestartSec=5s.
+    - Daemon must not depend on external network reachability to start.
+
+5.3 Resource budget
+    - Idle RSS budget: under 64 MiB.
+    - Idle CPU budget: under 1% on a 1-vCPU host.
+    - Disk: log + cache combined under 50 MiB.
+
+5.4 Portability
+    - Must run on the OS reference targets in 3.1.
+    - No language runtime that is not packaged in the host distribution,
+      unless the deliverable is a single statically-linked binary. Static
+      binary is the preferred shape; it removes the dependency-pinning
+      problem at deploy time. Architect chooses the implementation
+      language under that constraint.
+
+--------------------------------------------------------------------------------
+6. SECURITY REQUIREMENTS - HARD CONSTRAINTS
+--------------------------------------------------------------------------------
+
+These constraints are non-negotiable. The threat model the daemon must
+defend against is a compromise of any caller credential: a compromised
+caller must not be able to use the daemon to read host secrets, to modify
+host state, or to pivot to other systems.
+
+6.1 Read-only by construction
+    - No tool may write to the filesystem (other than the daemon's own
+      log and cache memory), invoke a process that changes state, send
+      a signal to another process, or modify any sysctl, route, rule,
+      mount, or systemd unit.
+    - The daemon binary must contain no code path that performs a state-
+      changing system call from any tool implementation. State-changing
+      syscalls must be excluded by SystemCallFilter where feasible.
+
+6.2 No raw file content passthrough
+    - No tool may return the contents of any file under /etc, /var/lib,
+      /var/spool, /root, /home, or any directory declared sensitive in
+      the manifest.
+    - Acceptable shapes for filesystem facts: stat (path, mode, owner,
+      mtime, size), presence-counts ("KEY= occurs N times"), key-only
+      listings (config key names without values), known-public named
+      fields from structured files.
+    - The daemon must construct each output value; no opaque passthrough
+      of subprocess stdout, journald message bodies, or file contents.
+
+6.3 Redaction
+    - The log-sample path must run every sample through a configurable
+      redaction filter before return. Default filter must scrub: bearer
+      tokens (common regex shapes), email addresses, IPv4/IPv6 addresses
+      outside operator-configured allowlist ranges, file paths under
+      operator-declared sensitive directories, base64 blobs longer than
+      32 characters.
+    - Redaction is positive-list: anything not understood is dropped or
+      replaced with "<redacted>", never returned verbatim.
+
+6.4 Authentication and authorisation
+    - Listener bound to a single configurable address. Public-Internet
+      bind is not forbidden by the daemon but must produce a startup
+      warning unless the operator explicitly acknowledges it in config.
+    - Transport: TLS only. Client authentication: mTLS client cert OR a
+      per-caller bearer token. No shared secret usable by more than one
+      caller. Credentials must be rotatable by reloading the config and
+      restarting the daemon.
+    - Application-layer authorisation in addition to any network-layer
+      ACL the operator may impose. The daemon must never rely solely on
+      network-layer filters for caller identity.
+
+6.5 Audit
+    - Every accepted call is logged with: caller identity, tool name,
+      enum argument values, response size, duration, result status.
+      Logs go to journald with a distinct SyslogIdentifier.
+    - Rejected calls (auth failure, unknown tool, bad enum, rate-limit)
+      are logged with the same envelope and an explicit reject reason.
+
+6.6 Rate limiting
+    - Per-caller token-bucket: 30 req/min sustained, burst 10. Limits
+      apply per-tool independently for expensive tools (logs, integrity
+      summary, full peer enumeration).
+    - Exceeding the bucket returns a structured error; the daemon must
+      never throttle by sleeping.
+
+6.7 Privilege separation
+    - Daemon runs as a dedicated unprivileged system user.
+    - Where root is unavoidable for specific reads (audit log, certain
+      /proc paths under restricted yama settings, kernel-net introspection
+      ioctls), use a single fixed-argv setuid helper, or a capability-
+      bounded subprocess, with no caller-controllable arguments. Sudo
+      rules are forbidden.
+
+6.8 Egress
+    - The daemon must not initiate any outbound network connection
+      beyond what is strictly required to answer a tool call (DNS probes
+      in tool 4.4 are the canonical example). No phone-home, no update
+      check, no telemetry.
+    - The complete set of outbound destinations the daemon may contact
+      must be enumerable from the configuration. Anything not enumerated
+      is forbidden.
+
+--------------------------------------------------------------------------------
+7. INTERFACE REQUIREMENTS
+--------------------------------------------------------------------------------
+
+7.1 Host daemon RPC
+    - Protocol: gRPC over TLS, or HTTP/JSON over TLS. Architect's
+      choice; deciding factor is operator-debuggability under failure
+      (curl-able is a plus). Document the choice and the rationale.
+    - Wire format: one request-response per tool. No streaming, no
+      long-poll, no subscriptions. Simplifies auth, audit, and timeouts.
+    - Schema: published as a single machine-readable schema artefact
+      (OpenAPI 3.1 or .proto). Schema is the contract; any drift
+      between daemon and plugin is a build failure.
+
+7.2 MCP plugin
+    - Conforms to the Model Context Protocol tool-server spec.
+    - One MCP tool per daemon RPC method. Tool names stable and
+      namespaced under a single configurable prefix (default: "host_").
+    - Tool descriptions in the MCP manifest must explicitly state the
+      read-only nature and the hard timeout.
+    - Plugin must accept the target host as a first-class argument
+      ("host": "<address-or-hostname>"). Target resolution is the
+      operator's responsibility (DNS, /etc/hosts, static map - all
+      acceptable). No hard-coded host list inside the plugin.
+    - Plugin must surface daemon-side warnings to the caller without
+      flattening them into the data payload.
+    - Plugin must fail closed: if the daemon's schema_version is
+      incompatible, the tool call must error with a clear message
+      rather than return partial data.
+
+7.3 Versioning
+    - Semantic versioning on the schema. Adding a field is a minor
+      bump and non-breaking. Removing or renaming a field is a major
+      bump. The plugin negotiates schema version via the manifest tool
+      on first contact per session.
+
+--------------------------------------------------------------------------------
+8. CONFIGURATION REQUIREMENTS
+--------------------------------------------------------------------------------
+
+8.1 Daemon configuration file
+    Path: /etc/host-health-mcp/daemon.yml (mode 0640, owner root:daemon-user).
+    Required keys:
+      bind_addr               (address:port the listener binds to)
+      tls_cert_path
+      tls_key_path
+      client_ca_path          (or token_file_path)
+      manifest_path           (default: /etc/host-health-mcp/manifest.yml)
+      log_redaction_rules     (path; default ships in package)
+      cache_ttl_overrides     (map of tool -> seconds)
+      timeout_overrides       (map of tool -> seconds)
+      dns_probe_targets       (map; see tool 4.4)
+      sensitive_dirs[]        (paths; consulted by 6.2 and 6.3)
+      ipv4_allowlist_ranges[] (CIDR; consulted by 6.3)
+      ipv6_allowlist_ranges[] (CIDR; consulted by 6.3)
+      public_bind_acknowledged (bool; required true if bind_addr is on a
+                                public interface - see 6.4)
+    Daemon must reject unknown keys at startup (no silent ignore).
+
+8.2 Per-host manifest
+    Path: /etc/host-health-mcp/manifest.yml (mode 0644).
+    Declares:
+      enabled_tools[]                 (subset of 4.1 - 4.11)
+      whitelisted_units[]             (for tool 4.2)
+      workload_plugins[]              (for tool 4.9; selects compiled-in
+                                       plugins, not loadable modules)
+      cert_paths[]                    (for tool 4.6)
+      cert_renewal_units[]            (for tool 4.6)
+      backup_log_path                 (for tool 4.8; null if N/A)
+      backup_backend                  (for tool 4.8; null if N/A)
+      ipv6_policy                     (one of: required-off, required-on,
+                                       not-enforced; for tool 4.3)
+    The daemon must refuse to start if the manifest references a tool or
+    plugin that is not compiled in. No silent degradation.
+
+8.3 No runtime reconfiguration
+    All configuration is loaded at startup. SIGHUP is not implemented.
+    Operator reconfiguration goes through write-config and
+    `systemctl restart`. This is deliberate: keeps the audit story simple
+    and avoids partial-reload edge cases.
+
+--------------------------------------------------------------------------------
+9. PACKAGING REQUIREMENTS
+--------------------------------------------------------------------------------
+
+9.1 Daemon artefact
+    - Single statically-linked binary, or a .deb that pulls only
+      distribution-packaged dependencies. No language-specific package
+      manager required at deploy time on the target host.
+    - Reproducible build. The build script lives in the repository and
+      produces a versioned, checksummed artefact.
+    - Binary must respond to --version with a build_id matching the one
+      returned by tool 4.11.
+
+9.2 systemd unit
+    - Shipped with the daemon. Hardening directives per section 3.4.
+    - Type=notify if the daemon supports sd_notify; otherwise Type=exec.
+    - WatchdogSec set; daemon pings the watchdog.
+    - No After=network-online.target; use After=network.target only.
+
+9.3 File layout on the host
+    /usr/local/sbin/host-health-mcp-daemon
+    /etc/host-health-mcp/daemon.yml
+    /etc/host-health-mcp/manifest.yml
+    /etc/host-health-mcp/tls/{cert.pem,key.pem,ca.pem}
+    /var/lib/host-health-mcp/                 (state dir, mode 0750; the
+                                               daemon's only write target)
+    /usr/local/libexec/host-health-mcp/setuid-helper  (only if a setuid
+                                                       helper is used)
+
+    Path names above are recommendations; the architect may propose
+    alternative names if justified in install.md. Whatever is chosen, the
+    package must use one consistent prefix throughout.
+
+9.4 MCP plugin artefact
+    - Distributed as a standard MCP server package.
+    - Configurable via environment variables for: TLS material path,
+      bearer token path, default target host (optional), default target
+      port, optional DNS suffix appended to bare hostnames.
+
+9.5 Documentation deliverables (in the repository, doc/)
+    - schema.{yaml,proto} - the wire schema, machine-consumable.
+    - tools.md            - human-readable tool reference; one section
+                            per tool, listing inputs, outputs, cache TTL,
+                            timeout, and any per-tool security notes.
+    - install.md          - bare-metal install procedure.
+    - threat-model.md     - explicit threat model: what the daemon
+                            assumes, what it does not defend against,
+                            why each section-6 constraint exists.
+    - changelog.md        - per-version changes, with schema-version
+                            bump rationale.
+
+--------------------------------------------------------------------------------
+10. TEST AND ACCEPTANCE CRITERIA
+--------------------------------------------------------------------------------
+
+10.1 Unit and integration tests
+     - Each tool has unit tests with fixture data for the subsystem it
+       queries.
+     - Each tool has an integration test that runs against a real
+       subsystem in a container or VM.
+     - Redaction filter has an exhaustive table-driven test set.
+
+10.2 Security tests
+     - Negative tests: caller-supplied free-text in every field that
+       takes a string; oversize inputs; malformed TLS; expired client
+       cert; bad bearer.
+     - Fuzz test the redaction filter for bypasses.
+     - Static analysis: no calls to exec/system/popen/dup2-to-pipe paths
+       from tool implementations (architect chooses linter).
+
+10.3 Acceptance gate (run by the deployment integrator)
+     - Deploy daemon to a single canary host.
+     - Run the full tool surface from the MCP plugin; verify output
+       matches the deliverable schema.
+     - Verify systemd hardening: ProtectSystem, NoNewPrivileges, etc.
+       all in effect (systemd-analyze security score baseline tracked).
+     - Verify the daemon user has no read access to operator-declared
+       sensitive directories.
+     - Verify outbound connection set is empty except for documented
+       DNS probes (observe with ss and nft counters).
+     - 24h burn-in: idle RSS, idle CPU, audit log volume, response
+       latency p50/p95/p99 per tool.
+
+--------------------------------------------------------------------------------
+11. NON-REQUIREMENTS
+--------------------------------------------------------------------------------
+
+To prevent scope creep:
+
+  - No web UI.
+  - No metric scrape endpoint (Prometheus-style). The MCP is for
+    interactive interrogation; ongoing metrics belong elsewhere.
+  - No alerting. The daemon reports state; alerting is downstream.
+  - No historical retention. Each tool returns the current snapshot
+    (plus the cache window). The architect must not introduce a
+    timeseries store.
+  - No clustering. Each daemon is independent.
+
+--------------------------------------------------------------------------------
+12. DECISIONS DELEGATED TO THE ARCHITECT
+--------------------------------------------------------------------------------
+
+The following choices belong to the implementing engineer. The architect
+must document the chosen option and the rationale in doc/threat-model.md or
+doc/tools.md as appropriate.
+
+  - Implementation language (subject to the static-binary preference
+    in 5.4).
+  - Wire protocol: gRPC vs HTTP/JSON (subject to 7.1).
+  - Authentication: mTLS vs bearer token (subject to 6.4 - both are
+    acceptable; pick one and justify).
+  - Caching backend: in-process map vs an embedded data structure of
+    the architect's choice. Must not be on-disk.
+  - Whether to use a setuid helper or a capability-bounded subprocess
+    for the few root-required reads. Either is acceptable; document
+    the call surface.
+  - Workload-plugin registration: compile-time table vs build tags vs
+    a registry pattern. Loadable shared objects are NOT acceptable.
+  - Concrete file-path prefix and binary name within section 9.3
+    constraints.
+
+--------------------------------------------------------------------------------
+13. DELIVERABLES CHECKLIST
+--------------------------------------------------------------------------------
+
+  [ ] Host daemon source under daemon/
+  [ ] MCP plugin source under plugin/
+  [ ] Reproducible build script producing versioned artefacts
+  [ ] schema.{yaml,proto}
+  [ ] systemd unit file (shipped with daemon)
+  [ ] doc/tools.md
+  [ ] doc/install.md
+  [ ] doc/threat-model.md
+  [ ] doc/changelog.md
+  [ ] Unit + integration + security test suites
+  [ ] systemd-analyze security baseline recorded in doc/install.md
+  [ ] Sample daemon.yml and manifest.yml under doc/examples/
+
+The deployment integrator is responsible for environment-specific concerns
+(packaging into local configuration management, network ACLs, credential
+provisioning, target host inventory) and runs the canary rollout per 10.3.
+
+--------------------------------------------------------------------------------
+END OF REQUIREMENTS
+--------------------------------------------------------------------------------
