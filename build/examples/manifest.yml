@@ -1,0 +1,51 @@
+# /etc/host-health-mcp/manifest.yml - example
+# Per-host tool enablement plus tool-specific operator-supplied data.
+
+enabled_tools:
+  - manifest
+  - system
+  - systemd_units
+  - network
+  - dns
+  - security
+  - certs
+  - mail
+  - backup
+  - logs
+  - updates
+  - storage
+  - kernel
+  - pressure
+  - sockets
+  # - sensors    # uncomment on hosts with hwmon-capable hardware
+  # - workload   # uncomment if any workload plugin is configured
+
+# Tool 4.2 - units the daemon reports on. No free-form unit name from
+# the caller; the daemon will only return state for units in this list.
+whitelisted_units:
+  - sshd.service
+  - cron.service
+  - systemd-timesyncd.service
+  - host-health-mcp.service
+  - host-health-mcp-helper.service
+
+# Tool 4.9 - selects compile-time workload plugins. The actual plugin
+# code must be linked into the daemon at build (build tags); listing
+# a plugin here that is not compiled in is a startup error (REQ 8.2).
+workload_plugins: []
+
+# Tool 4.6 - certificate paths and their renewal units.
+cert_paths: []
+cert_renewal_units: []
+
+# Tool 4.8.
+backup_log_path: null
+backup_backend: none
+
+# Tool 4.3 - one of required-off / required-on / not-enforced.
+ipv6_policy: not-enforced
+
+# Tool 4.13 (btrfs_scrub) - the helper validates a caller-supplied
+# mountpoint via statfs(2) f_type == BTRFS_SUPER_MAGIC AND against
+# this list before invoking `btrfs scrub status`.
+btrfs_mountpoints: []

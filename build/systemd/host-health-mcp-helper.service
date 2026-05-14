@@ -1,0 +1,59 @@
+[Unit]
+Description=host-health-mcp privileged helper
+Documentation=file:///usr/share/doc/host-health-mcp/design-overview.md
+After=local-fs.target
+PartOf=host-health-mcp.service
+
+[Service]
+Type=notify
+ExecStart=/usr/local/sbin/host-health-mcp-helper --config /etc/host-health-mcp/helper.yml
+Restart=on-failure
+RestartSec=5s
+WatchdogSec=30s
+TimeoutStopSec=10s
+
+User=root
+Group=root
+NoNewPrivileges=yes
+
+# Capability bounding set is templated at install time from manifest.yml.
+# The shipped default is empty; the post-install scriptlet writes
+# /etc/systemd/system/host-health-mcp-helper.service.d/caps.conf with
+# the union of ops the operator has enabled (design 7 cap-bounding-set
+# templating).
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=no
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectKernelLogs=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictSUIDSGID=yes
+RemoveIPC=yes
+
+RuntimeDirectory=host-health-mcp
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=no
+
+ReadWritePaths=/run/host-health-mcp
+
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=host-health-mcp-helper
+
+[Install]
+WantedBy=multi-user.target

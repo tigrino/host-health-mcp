@@ -1,0 +1,11 @@
+# /etc/host-health-mcp/helper.yml - example
+# Root-only, mode 0600.
+
+daemon_user: host-health-mcp
+socket_path: /run/host-health-mcp/helper.sock
+
+# Per-op deadline overrides (milliseconds). Missing keys keep the
+# daemon-supplied default (per-tool timeout minus the 500 ms grace).
+op_deadline_ms:
+  smart_summary: 8000
+  zpool_status: 5000

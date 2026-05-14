@@ -1,0 +1,54 @@
+[Unit]
+Description=host-health-mcp network-facing daemon
+Documentation=file:///usr/share/doc/host-health-mcp/design-overview.md
+After=network.target host-health-mcp-helper.service
+Requires=host-health-mcp-helper.service
+
+[Service]
+Type=notify
+ExecStart=/usr/local/sbin/host-health-mcp-daemon --config /etc/host-health-mcp/daemon.yml
+Restart=on-failure
+RestartSec=5s
+WatchdogSec=30s
+TimeoutStopSec=10s
+
+User=host-health-mcp
+Group=host-health-mcp
+NoNewPrivileges=yes
+
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectKernelLogs=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictSUIDSGID=yes
+RemoveIPC=yes
+
+StateDirectory=host-health-mcp
+StateDirectoryMode=0750
+
+ReadWritePaths=/var/lib/host-health-mcp
+ReadOnlyPaths=/etc/host-health-mcp
+
+SystemCallFilter=@system-service ~@privileged ~@resources ~@mount ~@swap ~@reboot ~@module
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=host-health-mcp
+
+[Install]
+WantedBy=multi-user.target

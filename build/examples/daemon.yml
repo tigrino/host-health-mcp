@@ -1,0 +1,56 @@
+# /etc/host-health-mcp/daemon.yml - example
+# See doc/design-overview.md and doc/REQUIREMENTS.txt section 8.1.
+
+bind_addr: "127.0.0.1:8443"
+
+tls_cert_path: /etc/host-health-mcp/tls/cert.pem
+tls_key_path:  /etc/host-health-mcp/tls/key.pem
+client_ca_path: /etc/host-health-mcp/tls/ca.pem
+
+manifest_path: /etc/host-health-mcp/manifest.yml
+log_redaction_rules: /etc/host-health-mcp/redaction.yml
+
+helper_socket_path: /run/host-health-mcp/helper.sock
+
+# Per-tool cache TTL overrides (seconds). Tool defaults apply when absent.
+cache_ttl_overrides:
+  logs: 60
+  storage: 60
+
+# Per-tool timeout overrides (seconds). REQ 5.1: ceiling 10s.
+timeout_overrides:
+  storage: 10
+  logs: 5
+
+# DNS probes for tool 4.4. Operator-supplied; caller cannot influence.
+dns_probe_targets:
+  self_hostname: ""               # filled at start from /etc/hostname
+  external_probe: example.com
+  filter_canary: dnscanary.org
+
+# Sensitive directories consulted by REQ 6.2/6.3.
+sensitive_dirs:
+  - /etc/host-health-mcp
+  - /etc/ssh
+  - /root
+
+# CIDRs allowed through the redaction filter for log samples.
+ipv4_allowlist_ranges:
+  - 10.0.0.0/8
+  - 192.168.0.0/16
+ipv6_allowlist_ranges:
+  - fc00::/7
+
+# Set true if bind_addr is on a public interface; the daemon emits a
+# startup warning unless this is explicit (REQ 6.4).
+public_bind_acknowledged: false
+
+# Per-(caller, tool) buckets for expensive tools. The per-caller global
+# bucket (30 req/min sustained, burst 10) applies on top.
+expensive_tool_buckets:
+  logs:     { sustained_per_min: 10, burst: 3 }
+  workload: { sustained_per_min: 10, burst: 3 }
+  storage:  { sustained_per_min: 10, burst: 3 }
+
+# TLS handshake concurrency ceiling (design 8). Default 16.
+max_concurrent_handshakes: 16
