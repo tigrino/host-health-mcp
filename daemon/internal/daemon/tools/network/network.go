@@ -1,8 +1,9 @@
 // Package network implements tool 4.3: interfaces, default routes,
 // nft table+counter view, resolver-as-configured, IPv6-policy
-// compliance. MVP reads /sys/class/net and /proc/net/{route,
-// ipv6_route,dev} in the daemon's own process. nft counts are
-// stubbed today (helper op `nft_table_counts` is a follow-up).
+// compliance. The daemon reads /sys/class/net and /proc/net/{route,
+// ipv6_route,dev} in its own process; nft counts come from helper op
+// `nft_table_counts` and are absent (empty map) when nft itself is
+// not installed.
 package network
 
 import (

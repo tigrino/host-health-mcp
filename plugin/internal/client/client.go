@@ -77,6 +77,13 @@ func New(cfg Config) (*Client, error) {
 	}, nil
 }
 
+// SetTransport replaces the HTTP transport. Test-only helper to
+// inject a transport that trusts a httptest TLS cert; production
+// code constructs the transport in New.
+func (c *Client) SetTransport(rt http.RoundTripper) {
+	c.http.Transport = rt
+}
+
 // ResolveHost expands a caller-supplied host into the host:port form
 // used in URLs. Bare names get DNSSuffix appended; missing port gets
 // cfg.Port (or 8443 if unset). Empty input returns an error.

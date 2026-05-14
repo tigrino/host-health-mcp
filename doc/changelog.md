@@ -3,7 +3,44 @@ title: Host Health MCP - Changelog
 author: Albert 'Tigr' Zenkoff <albert@tigr.net>
 ---
 
-# Unreleased
+# 1.1.0 (2026-05-14)
+
+## Plugin
+
+- MCP server lifecycle implemented: `initialize` (advertises
+  protocolVersion 2024-11-05 and the `tools` capability),
+  `notifications/initialized` (no-op), `ping`. Notifications with
+  no `id` are recognised and never produce a response.
+- `tools/list` emits a JSON-Schema `inputSchema` declaring a per-call
+  `host` string argument on every tool (REQ 7.2). `additionalProperties:
+  false`.
+- `tools/call` returns the MCP content-array shape with `isError` on
+  tool-execution failures; JSON-RPC errors remain for protocol-level
+  faults (bad params, unknown method).
+- `client.Client` is now process-wide: TLS material is loaded once and
+  the `http.Transport` pools connections per host. Target host is
+  supplied per call. A single plugin registration in an MCP client
+  reaches every fleet host without restart.
+- Schema-version handshake (version-matrix C1-C4): on the first
+  non-manifest call per host per session, the plugin probes the
+  daemon's `/v1/manifest`, extracts `schema_version`, and caches the
+  classification. A major-version mismatch returns `schema_incompatible`
+  for every subsequent call to that host without a network round-trip.
+- Plugin module gains `internal/schema` with the compile-time
+  `SchemaVersion` constant, kept in lockstep with the daemon at
+  release time.
+
+## Build
+
+- `build/build.sh` cross-builds the plugin alongside daemon and
+  helper for both amd64 and arm64; vet and test cover the plugin
+  module too. The plugin is not packaged into the `.deb` (it runs on
+  the operator workstation, not the target host).
+- Release version embedded into all three binaries via
+  `-X main.buildID=$VERSION`. `--version` flags print the release
+  tag.
+
+# 1.0.0 (2026-05-14)
 
 ## Schema
 

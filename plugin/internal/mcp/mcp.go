@@ -1,8 +1,8 @@
 // Package mcp implements the MCP server side of the plugin over
 // newline-delimited JSON-RPC 2.0 on stdio. One MCP tool per daemon
-// RPC; tool names are namespaced under a configurable prefix
-// (default "host_"). Tool descriptors carry a JSON-Schema inputSchema
-// declaring the per-call `host` argument (REQ 7.2).
+// RPC; tool names are namespaced under a configurable prefix. Tool
+// descriptors carry a JSON-Schema inputSchema declaring the per-call
+// `host` argument (REQ 7.2).
 //
 // Methods implemented:
 //   - initialize                 lifecycle handshake
@@ -12,7 +12,14 @@
 //   - tools/call                 invoke one tool against one host
 //
 // Notifications (no `id` field) never produce a response, per
-// JSON-RPC 2.0.
+// JSON-RPC 2.0 §4.1.
+//
+// On first contact with a host per session, the plugin compares its
+// compiled SchemaVersion against the daemon's `schema_version` from
+// the manifest envelope (version-matrix C1-C4). A major-version
+// mismatch marks the host incompatible for the lifetime of the
+// process; subsequent tool calls to that host return
+// `schema_incompatible` without a network round-trip.
 package mcp
 
 import (
@@ -22,15 +29,17 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"tigr.net/host-health-mcp/plugin/internal/client"
+	pluginschema "tigr.net/host-health-mcp/plugin/internal/schema"
 )
 
-// protocolVersion is the MCP spec date the server advertises. The
-// client may negotiate a different version; this is just our
-// preferred. "2024-11-05" is the first stable published revision.
+// protocolVersion is the MCP spec date the server advertises.
+// "2024-11-05" is the first stable published revision.
 const protocolVersion = "2024-11-05"
 
 // Tool is one MCP-exposed tool, backed by one daemon RPC.
@@ -45,11 +54,22 @@ type Tool struct {
 type Server struct {
 	cli         *client.Client
 	tools       []Tool
-	defaultHost string // HOSTHEALTH_TARGET_HOST; "" means none
+	defaultHost string
 	serverName  string
 	version     string
 
 	writeMu sync.Mutex
+
+	// Per-host compatibility cache. Populated lazily on the first
+	// tool call per host per process lifetime (version-matrix §2).
+	compatMu sync.Mutex
+	compat   map[string]hostCompat
+}
+
+// hostCompat is the cached compatibility classification for one host.
+type hostCompat struct {
+	ok     bool   // true for C1/C2/C3, false for C4
+	reason string // populated when !ok; surfaced in the error message
 }
 
 // New constructs a Server. defaultHost is used when a tools/call
@@ -61,6 +81,7 @@ func New(cli *client.Client, tools []Tool, defaultHost, serverName, version stri
 		defaultHost: defaultHost,
 		serverName:  serverName,
 		version:     version,
+		compat:      make(map[string]hostCompat),
 	}
 }
 
@@ -82,7 +103,6 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 			s.write(w, jsonRPCError(nil, -32700, "parse error"))
 			continue
 		}
-		// Notification: no id, no response (JSON-RPC 2.0 §4.1).
 		isNotification := len(req.ID) == 0 || string(req.ID) == "null"
 		resp, suppress := s.dispatch(ctx, &req)
 		if isNotification || suppress {
@@ -93,8 +113,9 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 	return scanner.Err()
 }
 
-// dispatch returns the response plus a suppress flag (true if the
-// method has no response by design, like notifications/initialized).
+// dispatch returns the response plus a suppress flag (true for
+// methods that have no response by design, like
+// notifications/initialized).
 func (s *Server) dispatch(ctx context.Context, req *jsonRPCRequest) (jsonRPCResponse, bool) {
 	switch req.Method {
 	case "initialize":
@@ -112,7 +133,6 @@ func (s *Server) dispatch(ctx context.Context, req *jsonRPCRequest) (jsonRPCResp
 	}
 }
 
-// initialize response shape per MCP spec.
 type initializeResult struct {
 	ProtocolVersion string         `json:"protocolVersion"`
 	ServerInfo      serverInfo     `json:"serverInfo"`
@@ -134,7 +154,6 @@ func (s *Server) initialize() initializeResult {
 	}
 }
 
-// toolDescriptor is the MCP-spec shape returned by tools/list.
 type toolDescriptor struct {
 	Name        string         `json:"name"`
 	Description string         `json:"description"`
@@ -153,9 +172,6 @@ func (s *Server) list() any {
 	return map[string]any{"tools": out}
 }
 
-// inputSchema returns the JSON-Schema for every tool. The schema is
-// the same across tools because the daemon's wire surface takes an
-// empty body; the only argument the plugin layer needs is `host`.
 func (s *Server) inputSchema() map[string]any {
 	hostDesc := "Target host. Optional if the plugin has HOSTHEALTH_TARGET_HOST set."
 	if s.defaultHost != "" {
@@ -173,13 +189,11 @@ func (s *Server) inputSchema() map[string]any {
 	}
 }
 
-// callContent is one entry in the MCP tools/call content array.
 type callContent struct {
 	Type string `json:"type"`
 	Text string `json:"text"`
 }
 
-// callResult is the MCP shape returned by tools/call.
 type callResult struct {
 	Content []callContent `json:"content"`
 	IsError bool          `json:"isError,omitempty"`
@@ -216,6 +230,23 @@ func (s *Server) call(ctx context.Context, req *jsonRPCRequest) jsonRPCResponse 
 		return s.toolError(req.ID, err.Error())
 	}
 
+	// Schema-version gate. The manifest tool itself is the probe and
+	// must always be reachable (version-matrix C4); every other tool
+	// is short-circuited when the host is known-incompatible.
+	if found.DaemonRPC != "manifest" {
+		if hc, ok := s.cachedCompat(resolved); ok && !hc.ok {
+			return s.toolError(req.ID, "schema_incompatible: "+hc.reason)
+		}
+		if !s.hasCompat(resolved) {
+			if err := s.probeCompat(ctx, resolved); err != nil {
+				return s.toolError(req.ID, "schema probe: "+err.Error())
+			}
+			if hc, _ := s.cachedCompat(resolved); !hc.ok {
+				return s.toolError(req.ID, "schema_incompatible: "+hc.reason)
+			}
+		}
+	}
+
 	timeout := time.Duration(found.TimeoutS) * time.Second
 	if timeout == 0 {
 		timeout = 10 * time.Second
@@ -231,22 +262,105 @@ func (s *Server) call(ctx context.Context, req *jsonRPCRequest) jsonRPCResponse 
 		return s.toolError(req.ID, errResp.String())
 	}
 
-	// Surface the daemon's envelope as a single text content item.
-	// The model can parse the JSON itself if it needs to discriminate
-	// data vs. warnings.
+	// On a successful manifest call, opportunistically populate the
+	// compat cache so a later non-manifest call doesn't have to
+	// probe.
+	if found.DaemonRPC == "manifest" && !s.hasCompat(resolved) {
+		s.recordCompatFromEnvelope(resolved, raw)
+	}
+
 	return jsonRPCResult(req.ID, callResult{
 		Content: []callContent{{Type: "text", Text: string(raw)}},
 	})
 }
 
 func (s *Server) toolError(id json.RawMessage, msg string) jsonRPCResponse {
-	// Per MCP spec, tool execution errors are surfaced via a normal
-	// result with isError=true, not a JSON-RPC error. Protocol errors
-	// (bad params, unknown method, etc.) still use jsonRPCError.
 	return jsonRPCResult(id, callResult{
 		Content: []callContent{{Type: "text", Text: msg}},
 		IsError: true,
 	})
+}
+
+// hasCompat reports whether a compat decision has been cached for
+// the host already.
+func (s *Server) hasCompat(host string) bool {
+	s.compatMu.Lock()
+	defer s.compatMu.Unlock()
+	_, ok := s.compat[host]
+	return ok
+}
+
+func (s *Server) cachedCompat(host string) (hostCompat, bool) {
+	s.compatMu.Lock()
+	defer s.compatMu.Unlock()
+	hc, ok := s.compat[host]
+	return hc, ok
+}
+
+func (s *Server) storeCompat(host string, hc hostCompat) {
+	s.compatMu.Lock()
+	defer s.compatMu.Unlock()
+	s.compat[host] = hc
+}
+
+// probeCompat calls /v1/manifest against host and classifies the
+// daemon's schema_version against the plugin's compiled view.
+func (s *Server) probeCompat(ctx context.Context, host string) error {
+	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	raw, errResp, err := s.cli.Call(probeCtx, host, "manifest", []byte("{}"))
+	if err != nil {
+		return err
+	}
+	if errResp != nil {
+		return fmt.Errorf("%s", errResp.String())
+	}
+	s.recordCompatFromEnvelope(host, raw)
+	return nil
+}
+
+// recordCompatFromEnvelope extracts schema_version from a manifest
+// envelope and writes the classification into the cache.
+func (s *Server) recordCompatFromEnvelope(host string, raw []byte) {
+	var env struct {
+		SchemaVersion string `json:"schema_version"`
+	}
+	if err := json.Unmarshal(raw, &env); err != nil || env.SchemaVersion == "" {
+		s.storeCompat(host, hostCompat{ok: false, reason: "daemon manifest missing schema_version"})
+		return
+	}
+	pluginMajor, _ := parseMajor(pluginschema.SchemaVersion)
+	daemonMajor, ok := parseMajor(env.SchemaVersion)
+	if !ok {
+		s.storeCompat(host, hostCompat{
+			ok:     false,
+			reason: "unparseable daemon schema_version " + env.SchemaVersion,
+		})
+		return
+	}
+	if pluginMajor != daemonMajor {
+		s.storeCompat(host, hostCompat{
+			ok: false,
+			reason: fmt.Sprintf("plugin schema %s incompatible with daemon schema %s (major mismatch)",
+				pluginschema.SchemaVersion, env.SchemaVersion),
+		})
+		return
+	}
+	s.storeCompat(host, hostCompat{ok: true})
+}
+
+// parseMajor returns the major-version integer of a "M.m.p" semver.
+// Returns ok=false on any parse failure.
+func parseMajor(semver string) (int, bool) {
+	dot := strings.IndexByte(semver, '.')
+	if dot <= 0 {
+		return 0, false
+	}
+	n, err := strconv.Atoi(semver[:dot])
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }
 
 func (s *Server) write(w io.Writer, resp jsonRPCResponse) {
@@ -261,7 +375,6 @@ func (s *Server) write(w io.Writer, resp jsonRPCResponse) {
 	_, _ = w.Write([]byte("\n"))
 }
 
-// jsonRPCRequest is the minimal subset of JSON-RPC 2.0 used here.
 type jsonRPCRequest struct {
 	JSONRPC string          `json:"jsonrpc"`
 	ID      json.RawMessage `json:"id"`

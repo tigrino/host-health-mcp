@@ -7,30 +7,36 @@ host, or on a designated relay.
 
 Configurable via environment variables (REQ 9.4):
 
-- TLS material path (client cert + key for mTLS to the daemon).
-- Bearer token path (unused in the current design; mTLS is the chosen
-  authentication mechanism per design §5).
-- Default target host (optional).
-- Default target port.
-- Optional DNS suffix appended to bare hostnames.
+- `HOSTHEALTH_TLS_CERT`, `HOSTHEALTH_TLS_KEY` — operator client cert + key
+  for mTLS to the daemon.
+- `HOSTHEALTH_TLS_CA` — optional CA bundle for daemon verification
+  (otherwise system roots).
+- `HOSTHEALTH_TARGET_HOST` — optional default target. The `host` argument
+  on each tool call overrides it.
+- `HOSTHEALTH_TARGET_PORT` — default port appended to bare hosts.
+- `HOSTHEALTH_DNS_SUFFIX` — appended to host arguments with no dot.
+- `HOSTHEALTH_TOOL_PREFIX` — prefix on MCP tool names (default `host_`).
 
-The plugin negotiates schema-version compatibility with the daemon via
-the `manifest` tool on first contact per session and fails closed on
-major mismatch (REQ 7.2). The full compatibility matrix is in
-`../doc/version-matrix.md`.
+The plugin negotiates schema-version compatibility with the daemon
+through the `manifest` envelope on first contact per host per session
+and fails closed on a major-version mismatch (REQ 7.2; version-matrix
+C4). The compatibility matrix is in `../doc/version-matrix.md`.
 
-## Planned package layout
+## Package layout
 
 ```
 plugin/
 ├── cmd/plugin/main.go             MCP server entrypoint
 └── internal/
-    ├── mcp/                       MCP protocol handling
-    │                              one tool per daemon RPC; tool names
-    │                              namespaced under a configurable
-    │                              prefix (default "host_")
-    └── client/                    HTTP/JSON client to the daemon's
-                                   listener; mTLS configuration
+    ├── mcp/                       MCP protocol handling over stdio;
+    │                              lifecycle (initialize, ping,
+    │                              tools/list, tools/call); schema-
+    │                              version gate per host
+    ├── client/                    HTTP/JSON client to the daemon's
+    │                              listener; mTLS configuration;
+    │                              per-call host
+    └── schema/                    compile-time SchemaVersion the
+                                   plugin was built against
 ```
 
 ## Hard rules specific to this tree
