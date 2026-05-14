@@ -5,6 +5,15 @@ LINUX HOST HEALTH MCP - REQUIREMENTS
 Document owner : Albert 'Tigr' Zenkoff <albert@tigr.net>
 Date           : 2026-05-14
 Status         : Requirements - for implementation by the health-check architect
+                 Rev 1 (2026-05-14): added tools 4.12-4.17 per design-review
+                 outcome. Section 8.1 gained expensive_tool_buckets and
+                 max_concurrent_handshakes keys (REQ 6.6 elaboration).
+                 Section 8.2 cross-reference updated accordingly.
+                 Rev 2 (2026-05-14): privilege separation now uses two
+                 cooperating systemd units (daemon + helper service) per
+                 design-review pass 3 outcome. Section 3.4 split across
+                 units; section 9.2 lists both units; section 9.3 places
+                 the helper at /usr/local/sbin (no setuid bit).
 Repository     : (this repository)
 
 --------------------------------------------------------------------------------
@@ -77,15 +86,42 @@ OUT OF SCOPE
     address. The daemon must not initiate outbound connections except where
     explicitly required to answer a tool call (see 6.8).
 
-3.4 systemd-service hardening (must be applied to the shipped unit)
-    NoNewPrivileges=yes
-    ProtectSystem=strict
-    ProtectHome=yes
-    PrivateTmp=yes
-    CapabilityBoundingSet=                  (empty unless explicitly required)
-    SystemCallFilter=@system-service        (further restricted where possible)
-    Dedicated non-root system user; no shell, no home directory other than
-    the daemon state directory.
+3.4 systemd-service hardening
+    Two units are shipped (see 9.2). Hardening applies to both with the
+    deviations noted.
+
+    Daemon unit (host-health-mcp.service):
+      User                       = host-health-mcp (non-root)
+      NoNewPrivileges            = yes
+      ProtectSystem              = strict
+      ProtectHome                = yes
+      PrivateTmp                 = yes
+      CapabilityBoundingSet      = (empty)
+      AmbientCapabilities        = (empty)
+      SystemCallFilter           = @system-service (further restricted)
+      Dedicated non-root system user; no shell; no home other than the
+      daemon's state directory.
+
+    Helper unit (host-health-mcp-helper.service):
+      User                       = root (required to perform privileged
+                                          reads and invoke smartctl,
+                                          mdadm, lvs, zpool, etc.)
+      NoNewPrivileges            = yes
+      ProtectSystem              = strict
+      ProtectHome                = yes
+      PrivateTmp                 = yes
+      CapabilityBoundingSet      = explicit list of caps required by the
+                                   compile-time enum of helper sub-
+                                   commands (architect documents in
+                                   design-overview.md §7)
+      SystemCallFilter           = @system-service plus the exec families
+                                   required for invoked tools
+      No network namespace required; the helper does not initiate
+      outbound connections.
+
+    The helper listens on a unix socket; it is not directly exposed to
+    the network. The daemon connects to it; the helper verifies the
+    peer's uid via SO_PEERCRED is the daemon's user id.
 
 3.5 Reference services to model on
     Existing read-only, localhost-or-overlay-scoped daemons in the Linux
@@ -209,6 +245,92 @@ enabled in the manifest. Core tools must always be available.
      enabled_tools[], enabled_workload_plugins[], whitelisted_units[],
      build_id, started_at_ts. Required for callers to learn the daemon's
      surface before issuing queries.
+
+4.12 updates                                                         (CORE)
+     apt_lock_state (enum: acquired/contended/unknown),
+     security_updates_pending (int|null - null when apt_lock_state !=
+            acquired),
+     regular_updates_pending (int|null - same condition),
+     held_packages[] (string), last_apt_update_ts (RFC3339|null),
+     unattended_upgrades_enabled (bool),
+     unattended_upgrades_last_run_ts (RFC3339|null),
+     unattended_upgrades_last_exit_code (int|null),
+     needrestart_pending_services[] (string).
+     Sources: APT indices and /var/lib/apt/periodic; needrestart -b -p.
+     The tool reports counts and names of services that need restart; it
+     does not return package version strings or upgrade transcripts.
+     When the dpkg frontend lock cannot be acquired (an unattended-
+     upgrades run or any other apt operation in flight),
+     apt_lock_state is reported as "contended" and the upgrade counts
+     are null; other fields are unaffected and the call still
+     succeeds. This is a per-source error, not a tool-level failure.
+
+4.13 storage                                                         (CORE)
+     mdraid[] (array_name, level, state, devices[], degraded (bool),
+            sync_progress_pct (0-100|null)),
+     lvm_vgs[] (name, size_b, free_b),
+     lvm_lvs[] (vg, name, size_b, health_status (string|null)),
+     smart[] (device, model (string|null),
+            smart_overall (passed/failed/unknown|null),
+            temperature_c (int|null), reallocated_sectors (int|null),
+            power_on_hours (int|null),
+            error ({code, message}|null)),
+     btrfs[] (mountpoint, last_scrub_ts (RFC3339|null),
+            last_scrub_status (string|null), errors_count (int)),
+     zfs_pools[] (name, state, scan_state, errors_total (int)).
+     Subsystems absent on the host report as empty arrays; the tool must
+     not fail because LVM, mdraid, btrfs, or zfs is not installed. Block-
+     device model strings are passed through to the caller verbatim
+     (manufacturer + model is public information).
+     Per-device error reporting: when SMART collection fails for one
+     device (wedged smartctl, controller hang, exit non-zero, or
+     unparseable output), that device's smart[] entry sets
+     smart_overall and the optional detail fields to null, and
+     populates the error block with a structured code and message.
+     Other devices' entries are unaffected. The error.code is one of:
+     tool_missing, tool_failed, deadline, output_truncated,
+     parse_failed. error.message is bounded to 200 chars. This is a
+     per-device error, not a tool-level failure.
+
+4.14 kernel                                                          (CORE)
+     tainted_mask (int), tainted_flags[] (decoded flag names),
+     mce_count (int|null - null if /sys/devices/system/machinecheck
+            absent),
+     edac_correctable_errors_total (int|null),
+     edac_uncorrectable_errors_total (int|null),
+     oom_kills_since_boot (int),
+     last_panic_ts (RFC3339|null - from kdump if present),
+     cmdline_keys_present[] (key names only, never values).
+     The cmdline_keys_present field reports the names of keys in
+     /proc/cmdline that the daemon recognises against a fixed allowlist;
+     values are never returned because the kernel command line may carry
+     operator secrets (resume= device names, root= UUID values).
+
+4.15 pressure                                                        (CORE)
+     cpu       : { avg10, avg60, avg300, total_us } | null,
+     io_some   : { avg10, avg60, avg300, total_us } | null,
+     io_full   : { avg10, avg60, avg300, total_us } | null,
+     memory_some: { avg10, avg60, avg300, total_us } | null,
+     memory_full: { avg10, avg60, avg300, total_us } | null.
+     Source: /proc/pressure/{cpu,io,memory}. Hosts without PSI support
+     (very old kernels, or PSI disabled) return null for each block.
+
+4.16 sockets                                                         (CORE)
+     listening[] (proto in {tcp,udp}, family in {inet,inet6}, addr,
+            port).
+     No PIDs, no process names, no command lines. Source: kernel netlink
+     diag socket (sock_diag(7)). The output is the set of (addr, port,
+     proto) tuples the kernel is accepting connections on; the daemon
+     does not correlate sockets to processes.
+
+4.17 sensors                                                     (OPTIONAL)
+     chips[] (name, sensors[] (label, kind in {temp_c, fan_rpm,
+            voltage_v}, value (float), critical (float|null))).
+     Source: hwmon entries under /sys/class/hwmon, parsed locally. Empty
+     chips[] on hosts with no exposed sensors (typical for VMs and most
+     cloud workloads). The tool is OPTIONAL because the absence of any
+     hwmon sensor would otherwise be reported as a uniform empty result;
+     leaving sensors disabled by default on those hosts is clearer.
 
 --------------------------------------------------------------------------------
 5. NON-FUNCTIONAL REQUIREMENTS
@@ -383,12 +505,18 @@ host state, or to pivot to other systems.
       ipv6_allowlist_ranges[] (CIDR; consulted by 6.3)
       public_bind_acknowledged (bool; required true if bind_addr is on a
                                 public interface - see 6.4)
+      expensive_tool_buckets  (map; tool -> { sustained_per_min, burst };
+                                per-tool overlay on top of the per-caller
+                                global bucket from 6.6. Defaults cover at
+                                least logs, workload, storage.)
+      max_concurrent_handshakes (int; TLS accept ceiling, default 16; see
+                                 design §8)
     Daemon must reject unknown keys at startup (no silent ignore).
 
 8.2 Per-host manifest
     Path: /etc/host-health-mcp/manifest.yml (mode 0644).
     Declares:
-      enabled_tools[]                 (subset of 4.1 - 4.11)
+      enabled_tools[]                 (subset of 4.1 - 4.17)
       whitelisted_units[]             (for tool 4.2)
       workload_plugins[]              (for tool 4.9; selects compiled-in
                                        plugins, not loadable modules)
@@ -420,21 +548,40 @@ host state, or to pivot to other systems.
     - Binary must respond to --version with a build_id matching the one
       returned by tool 4.11.
 
-9.2 systemd unit
-    - Shipped with the daemon. Hardening directives per section 3.4.
-    - Type=notify if the daemon supports sd_notify; otherwise Type=exec.
-    - WatchdogSec set; daemon pings the watchdog.
-    - No After=network-online.target; use After=network.target only.
+9.2 systemd units (two)
+    Shipped with the package. Hardening directives per section 3.4.
+
+    host-health-mcp-helper.service (privileged, no network exposure):
+      - Type=notify; the helper pings the watchdog.
+      - WatchdogSec set.
+      - No After=network-online.target; use After=local-fs.target only.
+      - Restart=on-failure, RestartSec=5s.
+
+    host-health-mcp.service (network-facing, unprivileged):
+      - Type=notify; the daemon pings the watchdog.
+      - WatchdogSec set.
+      - After=host-health-mcp-helper.service network.target.
+      - Requires=host-health-mcp-helper.service so the helper is up
+        before the daemon opens its listener.
+      - Restart=on-failure, RestartSec=5s.
 
 9.3 File layout on the host
-    /usr/local/sbin/host-health-mcp-daemon
+    /usr/local/sbin/host-health-mcp-daemon    (Go ELF, mode 0755,
+                                               owner root:root)
+    /usr/local/sbin/host-health-mcp-helper    (Go ELF, mode 0755,
+                                               owner root:root; runs as
+                                               root via its systemd unit,
+                                               NOT setuid)
     /etc/host-health-mcp/daemon.yml
+    /etc/host-health-mcp/helper.yml           (helper's own config; root-
+                                               only, mode 0600)
     /etc/host-health-mcp/manifest.yml
     /etc/host-health-mcp/tls/{cert.pem,key.pem,ca.pem}
-    /var/lib/host-health-mcp/                 (state dir, mode 0750; the
-                                               daemon's only write target)
-    /usr/local/libexec/host-health-mcp/setuid-helper  (only if a setuid
-                                                       helper is used)
+    /var/lib/host-health-mcp/                 (daemon state dir, mode 0750)
+    /run/host-health-mcp/helper.sock          (created by the helper unit
+                                               on start, owner
+                                               root:host-health-mcp,
+                                               mode 0660)
 
     Path names above are recommendations; the architect may propose
     alternative names if justified in install.md. Whatever is chosen, the

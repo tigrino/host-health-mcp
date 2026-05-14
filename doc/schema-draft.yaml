@@ -1,0 +1,1325 @@
+openapi: 3.1.0
+
+info:
+  title: Host Health MCP - Daemon RPC
+  version: 0.1.0
+  summary: First-draft wire schema for the host-health-mcp daemon.
+  description: |
+    Read-only RPC surface served by the host-health-mcp daemon on a target
+    Linux host. Each operation corresponds to one MCP tool exposed by the
+    companion plugin. The schema is the contract between daemon and plugin
+    per REQUIREMENTS.txt section 7.1.
+
+    All operations use POST so that a uniform body shape applies to tools
+    with and without arguments. Tools that take no arguments accept an
+    empty object body. Every response shares the common envelope defined
+    in the Envelope schema and tool-specific payload under data.
+  contact:
+    name: Albert 'Tigr' Zenkoff
+    email: albert@tigr.net
+  license:
+    name: Proprietary - internal use
+
+servers:
+  - url: https://{host}:{port}/v1
+    description: Daemon listener; client must present a valid client certificate.
+    variables:
+      host:
+        default: localhost
+        description: Operator-resolved target host.
+      port:
+        default: "8443"
+        description: Daemon listener port.
+
+security:
+  - mTLS: []
+
+paths:
+
+  /system:
+    post:
+      operationId: system
+      summary: Core system facts
+      description: |
+        Uptime, load, memory, swap, per-mount disk stats, kernel and
+        distribution identity, time-sync source and offset, reboot-required
+        flag. Corresponds to REQUIREMENTS section 4.1.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmptyRequest'
+      responses:
+        "200":
+          description: System snapshot.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/SystemData'
+        default: { $ref: '#/components/responses/Error' }
+
+  /systemd_units:
+    post:
+      operationId: systemd_units
+      summary: State of whitelisted systemd units
+      description: |
+        For each unit in the per-host manifest whitelist, returns load
+        state, active state, sub-state, last exec status, and timestamps.
+        Caller cannot supply unit names. Corresponds to section 4.2.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmptyRequest'
+      responses:
+        "200":
+          description: Per-unit state list.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        required: [units]
+                        properties:
+                          units:
+                            type: array
+                            items: { $ref: '#/components/schemas/SystemdUnit' }
+        default: { $ref: '#/components/responses/Error' }
+
+  /network:
+    post:
+      operationId: network
+      summary: Network interfaces, routes, and firewall counters
+      description: |
+        Interfaces with addresses and link state, default routes,
+        nft table rule and hit counts (counts only, no rule bodies),
+        resolver-as-configured, and IPv6 policy compliance against the
+        operator-declared manifest setting. Section 4.3.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmptyRequest'
+      responses:
+        "200":
+          description: Network snapshot.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/NetworkData'
+        default: { $ref: '#/components/responses/Error' }
+
+  /dns:
+    post:
+      operationId: dns
+      summary: DNS resolver and probe results
+      description: |
+        Resolver in use, self-hostname resolution, external probe target
+        resolution, canary check for transparent filtering. Probe targets
+        come from daemon configuration; caller cannot supply them.
+        Section 4.4.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmptyRequest'
+      responses:
+        "200":
+          description: DNS snapshot.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/DnsData'
+        default: { $ref: '#/components/responses/Error' }
+
+  /security:
+    post:
+      operationId: security
+      summary: Security-subsystem posture
+      description: |
+        Presence and last-run state of AIDE-or-equivalent, auditd,
+        rkhunter, debsums-or-equivalent; intrusion-prevention backend and
+        current ban count; SSH login counters since boot. Counts only,
+        no paths or contents. Section 4.5.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmptyRequest'
+      responses:
+        "200":
+          description: Security posture snapshot.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/SecurityData'
+        default: { $ref: '#/components/responses/Error' }
+
+  /certs:
+    post:
+      operationId: certs
+      summary: Certificate inventory
+      description: |
+        For each cert path declared in the manifest: subject, issuer,
+        not-after, days remaining, owning renewal unit if known.
+        Section 4.6.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmptyRequest'
+      responses:
+        "200":
+          description: Certificate inventory snapshot.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        required: [certs]
+                        properties:
+                          certs:
+                            type: array
+                            items: { $ref: '#/components/schemas/CertEntry' }
+        default: { $ref: '#/components/responses/Error' }
+
+  /mail:
+    post:
+      operationId: mail
+      summary: Mail-relay status
+      description: |
+        MTA in use, queue depth, last-success and last-failure timestamps,
+        last-failure reason redacted and truncated to 200 chars.
+        Section 4.7.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmptyRequest'
+      responses:
+        "200":
+          description: Mail snapshot.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/MailData'
+        default: { $ref: '#/components/responses/Error' }
+
+  /backup:
+    post:
+      operationId: backup
+      summary: Backup-job status
+      description: |
+        Most recent backup-run timestamps, exit code, archive label,
+        backend. Repository URLs, passphrases, credentials, and archive
+        contents are never returned. If no backup is configured the
+        data field is null and warnings includes 'not-configured'.
+        Section 4.8.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmptyRequest'
+      responses:
+        "200":
+          description: Backup snapshot.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        oneOf:
+                          - $ref: '#/components/schemas/BackupData'
+                          - type: "null"
+        default: { $ref: '#/components/responses/Error' }
+
+  /workload:
+    post:
+      operationId: workload
+      summary: Per-host workload-plugin output (optional)
+      description: |
+        Returns an object keyed by enabled workload-plugin name. Each
+        value is a plugin-defined typed object. Only plugins listed in
+        the per-host manifest are populated. Section 4.9.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmptyRequest'
+      responses:
+        "200":
+          description: Workload snapshot.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        description: |
+                          Map keyed by enabled workload-plugin name. Every
+                          value must validate against one of the named
+                          workload schemas below. Architect-added plugins
+                          must extend this oneOf with a new closed schema
+                          before being merged; an unreferenced shape is a
+                          build failure (REQ 7.1).
+                        additionalProperties:
+                          oneOf:
+                            - $ref: '#/components/schemas/WorkloadPostfix'
+                            - $ref: '#/components/schemas/WorkloadDovecot'
+                            - $ref: '#/components/schemas/WorkloadNginxApache'
+                            - $ref: '#/components/schemas/WorkloadWireguard'
+        default: { $ref: '#/components/responses/Error' }
+
+  /logs:
+    post:
+      operationId: logs
+      summary: Recent log summary
+      description: |
+        Counts and a capped sample list from journald or audit for a
+        chosen severity floor and time window. Sample messages pass
+        through the redaction filter before return. Section 4.10.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LogsRequest'
+      responses:
+        "200":
+          description: Log summary.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/LogsData'
+        default: { $ref: '#/components/responses/Error' }
+
+  /manifest:
+    post:
+      operationId: manifest
+      summary: Daemon self-description
+      description: |
+        Schema version, daemon version, build id, started-at timestamp,
+        enabled tools, enabled workload plugins, whitelisted units.
+        Plugins call this on first contact to negotiate compatibility.
+        Section 4.11.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmptyRequest'
+      responses:
+        "200":
+          description: Manifest snapshot.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ManifestData'
+        default: { $ref: '#/components/responses/Error' }
+
+  /updates:
+    post:
+      operationId: updates
+      summary: Pending updates and restart-required services
+      description: |
+        Counts of pending security and regular package updates, held
+        packages, last apt-update timestamp, unattended-upgrades state,
+        and services that need restart according to needrestart.
+        Section 4.12.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmptyRequest'
+      responses:
+        "200":
+          description: Updates snapshot.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/UpdatesData'
+        default: { $ref: '#/components/responses/Error' }
+
+  /storage:
+    post:
+      operationId: storage
+      summary: Storage-layer health
+      description: |
+        mdraid array state, LVM volume groups and logical volumes, per
+        block-device SMART summary, btrfs scrub state, zfs pool state.
+        Subsystems absent on the host report empty arrays.
+        Section 4.13.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmptyRequest'
+      responses:
+        "200":
+          description: Storage snapshot.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/StorageData'
+        default: { $ref: '#/components/responses/Error' }
+
+  /kernel:
+    post:
+      operationId: kernel
+      summary: Kernel health signals
+      description: |
+        Decoded taint flags, MCE and EDAC hardware error counters,
+        OOM-killer invocations since boot, last-panic indicator if
+        kdump is configured, recognised cmdline key names.
+        Section 4.14.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmptyRequest'
+      responses:
+        "200":
+          description: Kernel snapshot.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/KernelData'
+        default: { $ref: '#/components/responses/Error' }
+
+  /pressure:
+    post:
+      operationId: pressure
+      summary: PSI saturation averages
+      description: |
+        Pressure stall information for cpu, io (some and full), and
+        memory (some and full). Each block null on hosts without PSI
+        support. Section 4.15.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmptyRequest'
+      responses:
+        "200":
+          description: Pressure snapshot.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/PressureData'
+        default: { $ref: '#/components/responses/Error' }
+
+  /sockets:
+    post:
+      operationId: sockets
+      summary: Listening-socket inventory
+      description: |
+        Set of (proto, family, addr, port) tuples the kernel is
+        accepting connections on. No PIDs or process information.
+        Section 4.16.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmptyRequest'
+      responses:
+        "200":
+          description: Sockets snapshot.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/SocketsData'
+        default: { $ref: '#/components/responses/Error' }
+
+  /sensors:
+    post:
+      operationId: sensors
+      summary: Hardware-sensor readings (optional)
+      description: |
+        Per-chip temperatures, fan RPMs, and voltages read from
+        /sys/class/hwmon. Empty chips array on hosts with no exposed
+        sensors. Optional; only available when the manifest enables it.
+        Section 4.17.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmptyRequest'
+      responses:
+        "200":
+          description: Sensors snapshot.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/SensorsData'
+        default: { $ref: '#/components/responses/Error' }
+
+components:
+
+  securitySchemes:
+    mTLS:
+      type: mutualTLS
+      description: |
+        Client must present an X.509 certificate signed by a CA listed
+        in client_ca_path. The Subject CN or first DNS SAN is recorded
+        as caller_identity in the daemon audit log.
+
+  responses:
+    Error:
+      description: |
+        Any non-2xx response. The body is a structured error object so
+        the plugin can surface failures without scraping the HTTP
+        reason phrase.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+
+  schemas:
+
+    EmptyRequest:
+      type: object
+      additionalProperties: false
+      description: An empty object. Tools that take no arguments still post {}.
+
+    Envelope:
+      type: object
+      required: [host, as_of, cache_age_s, schema_version, data]
+      properties:
+        host:
+          type: string
+          description: Daemon's view of its own hostname.
+        as_of:
+          type: string
+          format: date-time
+          description: RFC3339 UTC timestamp at which the snapshot was built.
+        cache_age_s:
+          type: integer
+          minimum: 0
+          description: Seconds since the cached payload was constructed; 0 if uncached.
+        schema_version:
+          type: string
+          pattern: '^[0-9]+\.[0-9]+\.[0-9]+$'
+          description: Semver of the schema baked into this daemon build.
+        warnings:
+          type: array
+          items: { type: string }
+          description: |
+            Non-fatal conditions discovered while assembling the payload.
+            Plugin surfaces these to the caller without flattening them
+            into data.
+
+    ErrorEnvelope:
+      type: object
+      required: [host, as_of, schema_version, error]
+      properties:
+        host:        { type: string }
+        as_of:       { type: string, format: date-time }
+        schema_version:
+          type: string
+          pattern: '^[0-9]+\.[0-9]+\.[0-9]+$'
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum:
+                - auth_required
+                - auth_failed
+                - unknown_tool
+                - tool_disabled
+                - bad_argument
+                - rate_limited
+                - tool_timeout
+                - tool_failed
+                - schema_incompatible
+                - internal_error
+            message:
+              type: string
+              maxLength: 200
+              description: |
+                Human-readable summary drawn from a fixed catalogue of
+                message templates compiled into the daemon. Free-form
+                interpolation of subsystem strings into messages is
+                forbidden. Templates are enumerated in tools.md.
+
+    SystemData:
+      type: object
+      required:
+        - uptime_s
+        - load_1
+        - load_5
+        - load_15
+        - cpu_count
+        - mem_total_b
+        - mem_available_b
+        - swap_total_b
+        - swap_used_b
+        - disk
+        - kernel_release
+        - distro
+        - distro_version
+        - time_sync_source
+        - reboot_required
+      properties:
+        uptime_s:        { type: integer, minimum: 0 }
+        load_1:          { type: number }
+        load_5:          { type: number }
+        load_15:         { type: number }
+        cpu_count:       { type: integer, minimum: 1 }
+        mem_total_b:     { type: integer, minimum: 0 }
+        mem_available_b: { type: integer, minimum: 0 }
+        swap_total_b:    { type: integer, minimum: 0 }
+        swap_used_b:     { type: integer, minimum: 0 }
+        disk:
+          type: array
+          items: { $ref: '#/components/schemas/DiskEntry' }
+        kernel_release:  { type: string }
+        distro:          { type: string }
+        distro_version:  { type: string }
+        time_sync_source:
+          type: string
+          enum: [chrony, ntpd, systemd-timesyncd, none]
+        time_offset_s:
+          oneOf:
+            - type: number
+            - type: "null"
+          description: Signed seconds offset; null if no sync source.
+        reboot_required: { type: boolean }
+
+    DiskEntry:
+      type: object
+      required: [mountpoint, fs, size_b, used_b, inodes_total, inodes_used]
+      properties:
+        mountpoint:   { type: string }
+        fs:           { type: string }
+        size_b:       { type: integer, minimum: 0 }
+        used_b:       { type: integer, minimum: 0 }
+        inodes_total: { type: integer, minimum: 0 }
+        inodes_used:  { type: integer, minimum: 0 }
+
+    SystemdUnit:
+      type: object
+      required:
+        - name
+        - load_state
+        - active_state
+        - sub_state
+        - result
+        - exec_main_status
+        - restart_count
+      properties:
+        name:             { type: string, maxLength: 256 }
+        load_state:       { type: string, maxLength: 32 }
+        active_state:     { type: string, maxLength: 32 }
+        sub_state:        { type: string, maxLength: 32 }
+        result:           { type: string, maxLength: 32 }
+        exec_main_status: { type: integer }
+        active_enter_ts:
+          oneOf:
+            - type: string
+              format: date-time
+            - type: "null"
+        active_exit_ts:
+          oneOf:
+            - type: string
+              format: date-time
+            - type: "null"
+        restart_count:    { type: integer, minimum: 0 }
+
+    NetworkData:
+      type: object
+      required:
+        - interfaces
+        - default_routes
+        - nft_table_counts
+        - ipv6_policy_compliant
+      properties:
+        interfaces:
+          type: array
+          items: { $ref: '#/components/schemas/NetworkInterface' }
+        default_routes:
+          type: array
+          items: { $ref: '#/components/schemas/DefaultRoute' }
+        nft_table_counts:
+          type: object
+          description: Map of nft table name to per-table rule and hit counts.
+          additionalProperties:
+            type: object
+            required: [rule_count]
+            properties:
+              rule_count:    { type: integer, minimum: 0 }
+              hit_counters:
+                type: array
+                maxItems: 256
+                description: Per-counter hit values. Counter names are nft labels, not rule bodies.
+                items:
+                  type: object
+                  required: [name, packets, bytes]
+                  properties:
+                    name:    { type: string, maxLength: 128 }
+                    packets: { type: integer, minimum: 0 }
+                    bytes:   { type: integer, minimum: 0 }
+        resolv_conf_first_nameserver:
+          oneOf:
+            - type: string
+            - type: "null"
+        ipv6_policy_compliant: { type: boolean }
+
+    NetworkInterface:
+      type: object
+      required: [name, mac, mtu, oper_state, carrier, addrs]
+      properties:
+        name:       { type: string }
+        mac:        { type: string }
+        mtu:        { type: integer, minimum: 0 }
+        oper_state: { type: string }
+        carrier:    { type: boolean }
+        addrs:
+          type: array
+          items:
+            type: object
+            required: [family, addr, prefixlen]
+            properties:
+              family:    { type: string, enum: [inet, inet6] }
+              addr:      { type: string }
+              prefixlen: { type: integer, minimum: 0, maximum: 128 }
+
+    DefaultRoute:
+      type: object
+      required: [family, gateway, dev, metric]
+      properties:
+        family:  { type: string, enum: [inet, inet6] }
+        gateway: { type: string }
+        dev:     { type: string }
+        metric:  { type: integer }
+
+    DnsData:
+      type: object
+      required:
+        - resolver_in_use
+        - resolves_self_hostname
+        - resolves_external_probe
+        - filter_canary_blocked
+      properties:
+        resolver_in_use:         { type: string }
+        resolves_self_hostname:  { type: boolean }
+        resolves_external_probe: { type: boolean }
+        filter_canary_blocked:   { type: boolean }
+
+    SecurityData:
+      type: object
+      required:
+        - aide_or_equivalent
+        - auditd
+        - rkhunter
+        - debsums_or_equivalent
+        - intrusion_prevention
+        - ssh_logins
+      properties:
+        aide_or_equivalent:
+          type: object
+          required: [present]
+          properties:
+            present:       { type: boolean }
+            last_run_ts:
+              oneOf: [{ type: string, format: date-time }, { type: "null" }]
+            last_exit_code:
+              oneOf: [{ type: integer }, { type: "null" }]
+            change_count:
+              oneOf: [{ type: integer, minimum: 0 }, { type: "null" }]
+        auditd:
+          type: object
+          required: [present]
+          properties:
+            present:           { type: boolean }
+            queue_depth:
+              oneOf: [{ type: integer, minimum: 0 }, { type: "null" }]
+            lost_events:
+              oneOf: [{ type: integer, minimum: 0 }, { type: "null" }]
+            last_rotation_ts:
+              oneOf: [{ type: string, format: date-time }, { type: "null" }]
+        rkhunter:
+          type: object
+          required: [present]
+          properties:
+            present: { type: boolean }
+            last_run_ts:
+              oneOf: [{ type: string, format: date-time }, { type: "null" }]
+            warning_count:
+              oneOf: [{ type: integer, minimum: 0 }, { type: "null" }]
+        debsums_or_equivalent:
+          type: object
+          required: [present]
+          properties:
+            present: { type: boolean }
+            last_run_ts:
+              oneOf: [{ type: string, format: date-time }, { type: "null" }]
+            modified_count:
+              oneOf: [{ type: integer, minimum: 0 }, { type: "null" }]
+        intrusion_prevention:
+          type: object
+          required: [backend_in_use, current_ban_count]
+          properties:
+            backend_in_use:
+              type: string
+              enum: [fail2ban, crowdsec, other, none]
+            current_ban_count:
+              type: integer
+              minimum: 0
+        ssh_logins:
+          type: object
+          required: [accepted_since_boot, failed_since_boot]
+          properties:
+            accepted_since_boot: { type: integer, minimum: 0 }
+            failed_since_boot:   { type: integer, minimum: 0 }
+
+    CertEntry:
+      type: object
+      required: [path, subject, issuer, not_after, days_remaining]
+      properties:
+        path:           { type: string }
+        subject:        { type: string }
+        issuer:         { type: string }
+        not_after:      { type: string, format: date-time }
+        days_remaining: { type: integer }
+        renewal_unit:
+          oneOf: [{ type: string }, { type: "null" }]
+
+    MailData:
+      type: object
+      required:
+        - mta_in_use
+        - queue_depth
+      properties:
+        mta_in_use:
+          type: string
+          enum: [msmtp, postfix, exim, sendmail, other, none]
+        queue_depth: { type: integer, minimum: 0 }
+        last_successful_send_ts:
+          oneOf: [{ type: string, format: date-time }, { type: "null" }]
+        last_failure_ts:
+          oneOf: [{ type: string, format: date-time }, { type: "null" }]
+        last_failure_reason:
+          oneOf:
+            - type: string
+              maxLength: 200
+              description: Redacted per section 6.3, truncated to 200 chars.
+            - type: "null"
+
+    BackupData:
+      type: object
+      required: [backend]
+      properties:
+        backend:
+          type: string
+          enum: [borg, restic, rsnapshot, duplicity, other, none]
+        last_start_ts:
+          oneOf: [{ type: string, format: date-time }, { type: "null" }]
+        last_end_ts:
+          oneOf: [{ type: string, format: date-time }, { type: "null" }]
+        last_exit_code:
+          oneOf: [{ type: integer }, { type: "null" }]
+        last_archive_label:
+          oneOf:
+            - type: string
+              description: Operator-named label only. Never a repository URL.
+            - type: "null"
+
+    WorkloadPostfix:
+      type: object
+      required: [queue_depth, deferred_count]
+      additionalProperties: false
+      properties:
+        queue_depth:        { type: integer, minimum: 0 }
+        deferred_count:     { type: integer, minimum: 0 }
+        last_delivery_ts:
+          oneOf: [{ type: string, format: date-time }, { type: "null" }]
+
+    WorkloadDovecot:
+      type: object
+      required: [process_state, connection_count]
+      additionalProperties: false
+      properties:
+        process_state:    { type: string }
+        connection_count: { type: integer, minimum: 0 }
+
+    WorkloadNginxApache:
+      type: object
+      required: [server, worker_count, recent_4xx, recent_5xx]
+      additionalProperties: false
+      properties:
+        server:        { type: string, enum: [nginx, apache] }
+        worker_count:  { type: integer, minimum: 0 }
+        recent_4xx:    { type: integer, minimum: 0 }
+        recent_5xx:    { type: integer, minimum: 0 }
+
+    WorkloadWireguard:
+      type: object
+      required: [interface, peers]
+      additionalProperties: false
+      properties:
+        interface:
+          type: string
+          description: WireGuard interface name from the operator's config.
+        peers:
+          type: array
+          items:
+            type: object
+            required: [public_key, rx_bytes, tx_bytes]
+            additionalProperties: false
+            properties:
+              public_key:
+                type: string
+                maxLength: 44
+                pattern: '^[A-Za-z0-9+/]{42,43}=?$'
+                description: Peer public key (base64 of 32 bytes; already-public material).
+              last_handshake_ts:
+                oneOf: [{ type: string, format: date-time }, { type: "null" }]
+              rx_bytes: { type: integer, minimum: 0 }
+              tx_bytes: { type: integer, minimum: 0 }
+
+    LogsRequest:
+      type: object
+      required: [severity, window, source]
+      additionalProperties: false
+      properties:
+        severity:
+          type: string
+          enum: [emerg, alert, crit, err, warning]
+        window:
+          type: string
+          enum: [15m, 1h, 6h, 24h]
+        source:
+          type: string
+          enum: [journal, audit]
+
+    LogsData:
+      type: object
+      required: [total_count, by_unit, samples]
+      properties:
+        total_count: { type: integer, minimum: 0 }
+        by_unit:
+          type: object
+          additionalProperties:
+            type: integer
+            minimum: 0
+        samples:
+          type: array
+          maxItems: 20
+          items:
+            type: object
+            required: [ts, unit, message]
+            properties:
+              ts:   { type: string, format: date-time }
+              unit: { type: string, maxLength: 256 }
+              message:
+                type: string
+                maxLength: 1024
+                description: |
+                  Sample message after passing the redaction filter
+                  (section 6.3). Anything not on the positive list is
+                  replaced with <redacted>. Truncated by configuration.
+
+    ManifestData:
+      type: object
+      required:
+        - schema_version
+        - daemon_version
+        - build_id
+        - started_at_ts
+        - enabled_tools
+        - enabled_workload_plugins
+        - whitelisted_units
+      properties:
+        schema_version:
+          type: string
+          pattern: '^[0-9]+\.[0-9]+\.[0-9]+$'
+        daemon_version:
+          type: string
+          description: Human semver of the daemon binary.
+        build_id:
+          type: string
+          description: |
+            Build identifier matching the value embedded by the build
+            script and returned by --version.
+        started_at_ts: { type: string, format: date-time }
+        enabled_tools:
+          type: array
+          items:
+            type: string
+            enum:
+              - system
+              - systemd_units
+              - network
+              - dns
+              - security
+              - certs
+              - mail
+              - backup
+              - workload
+              - logs
+              - manifest
+              - updates
+              - storage
+              - kernel
+              - pressure
+              - sockets
+              - sensors
+        enabled_workload_plugins:
+          type: array
+          items: { type: string }
+        whitelisted_units:
+          type: array
+          items: { type: string }
+
+    UpdatesData:
+      type: object
+      required:
+        - apt_lock_state
+        - held_packages
+        - unattended_upgrades_enabled
+        - needrestart_pending_services
+      properties:
+        apt_lock_state:
+          type: string
+          enum: [acquired, contended, unknown]
+          description: |
+            Whether the helper could acquire the dpkg frontend lock
+            for this call. When `contended`, `security_updates_pending`
+            and `regular_updates_pending` are null and the operator
+            should retry; the call is not an error.
+        security_updates_pending:
+          oneOf: [{ type: integer, minimum: 0 }, { type: "null" }]
+        regular_updates_pending:
+          oneOf: [{ type: integer, minimum: 0 }, { type: "null" }]
+        held_packages:
+          type: array
+          maxItems: 256
+          items: { type: string, maxLength: 128 }
+        last_apt_update_ts:
+          oneOf: [{ type: string, format: date-time }, { type: "null" }]
+        unattended_upgrades_enabled: { type: boolean }
+        unattended_upgrades_last_run_ts:
+          oneOf: [{ type: string, format: date-time }, { type: "null" }]
+        unattended_upgrades_last_exit_code:
+          oneOf: [{ type: integer }, { type: "null" }]
+        needrestart_pending_services:
+          type: array
+          maxItems: 64
+          items: { type: string, maxLength: 128 }
+
+    StorageData:
+      type: object
+      required: [mdraid, lvm_vgs, lvm_lvs, smart, btrfs, zfs_pools]
+      properties:
+        mdraid:
+          type: array
+          items: { $ref: '#/components/schemas/MdraidArray' }
+        lvm_vgs:
+          type: array
+          items: { $ref: '#/components/schemas/LvmVg' }
+        lvm_lvs:
+          type: array
+          items: { $ref: '#/components/schemas/LvmLv' }
+        smart:
+          type: array
+          items: { $ref: '#/components/schemas/SmartSummary' }
+        btrfs:
+          type: array
+          items: { $ref: '#/components/schemas/BtrfsScrub' }
+        zfs_pools:
+          type: array
+          items: { $ref: '#/components/schemas/ZfsPool' }
+
+    MdraidArray:
+      type: object
+      required: [array_name, level, state, devices, degraded]
+      properties:
+        array_name: { type: string, maxLength: 64 }
+        level:      { type: string, maxLength: 32 }
+        state:      { type: string, maxLength: 64 }
+        devices:
+          type: array
+          maxItems: 64
+          items: { type: string, maxLength: 64 }
+        degraded:   { type: boolean }
+        sync_progress_pct:
+          oneOf:
+            - { type: number, minimum: 0, maximum: 100 }
+            - { type: "null" }
+
+    LvmVg:
+      type: object
+      required: [name, size_b, free_b]
+      properties:
+        name:   { type: string, maxLength: 128 }
+        size_b: { type: integer, minimum: 0 }
+        free_b: { type: integer, minimum: 0 }
+
+    LvmLv:
+      type: object
+      required: [vg, name, size_b]
+      properties:
+        vg:     { type: string, maxLength: 128 }
+        name:   { type: string, maxLength: 128 }
+        size_b: { type: integer, minimum: 0 }
+        health_status:
+          oneOf: [{ type: string, maxLength: 64 }, { type: "null" }]
+
+    SmartSummary:
+      type: object
+      required: [device, smart_overall]
+      description: |
+        Per-device SMART summary. If the helper could not collect data
+        for this device (smartctl wedged, command exit non-zero, output
+        unparseable), `error` is populated with a structured code and
+        message; `smart_overall` is `null` and the other detail fields
+        may also be `null`. The tool-level call still succeeds and
+        other devices in the `smart[]` array are populated normally.
+      properties:
+        device: { type: string, maxLength: 64 }
+        model:
+          oneOf: [{ type: string, maxLength: 128 }, { type: "null" }]
+        smart_overall:
+          oneOf:
+            - { type: string, enum: [passed, failed, unknown] }
+            - { type: "null" }
+        temperature_c:
+          oneOf: [{ type: integer }, { type: "null" }]
+        reallocated_sectors:
+          oneOf: [{ type: integer, minimum: 0 }, { type: "null" }]
+        power_on_hours:
+          oneOf: [{ type: integer, minimum: 0 }, { type: "null" }]
+        error:
+          oneOf:
+            - type: object
+              required: [code, message]
+              properties:
+                code:
+                  type: string
+                  enum: [tool_missing, tool_failed, deadline, output_truncated, parse_failed]
+                message: { type: string, maxLength: 200 }
+            - type: "null"
+
+    BtrfsScrub:
+      type: object
+      required: [mountpoint, errors_count]
+      properties:
+        mountpoint: { type: string, maxLength: 256 }
+        last_scrub_ts:
+          oneOf: [{ type: string, format: date-time }, { type: "null" }]
+        last_scrub_status:
+          oneOf: [{ type: string, maxLength: 64 }, { type: "null" }]
+        errors_count: { type: integer, minimum: 0 }
+
+    ZfsPool:
+      type: object
+      required: [name, state, scan_state, errors_total]
+      properties:
+        name:         { type: string, maxLength: 128 }
+        state:        { type: string, maxLength: 64 }
+        scan_state:   { type: string, maxLength: 64 }
+        errors_total: { type: integer, minimum: 0 }
+
+    KernelData:
+      type: object
+      required:
+        - tainted_mask
+        - tainted_flags
+        - oom_kills_since_boot
+        - cmdline_keys_present
+      properties:
+        tainted_mask: { type: integer, minimum: 0 }
+        tainted_flags:
+          type: array
+          maxItems: 32
+          items: { type: string, maxLength: 64 }
+        mce_count:
+          oneOf: [{ type: integer, minimum: 0 }, { type: "null" }]
+        edac_correctable_errors_total:
+          oneOf: [{ type: integer, minimum: 0 }, { type: "null" }]
+        edac_uncorrectable_errors_total:
+          oneOf: [{ type: integer, minimum: 0 }, { type: "null" }]
+        oom_kills_since_boot: { type: integer, minimum: 0 }
+        last_panic_ts:
+          oneOf: [{ type: string, format: date-time }, { type: "null" }]
+        cmdline_keys_present:
+          type: array
+          maxItems: 64
+          items: { type: string, maxLength: 64 }
+
+    PressureData:
+      type: object
+      required: [cpu, io_some, io_full, memory_some, memory_full]
+      properties:
+        cpu:
+          oneOf:
+            - $ref: '#/components/schemas/PressureMetric'
+            - type: "null"
+        io_some:
+          oneOf:
+            - $ref: '#/components/schemas/PressureMetric'
+            - type: "null"
+        io_full:
+          oneOf:
+            - $ref: '#/components/schemas/PressureMetric'
+            - type: "null"
+        memory_some:
+          oneOf:
+            - $ref: '#/components/schemas/PressureMetric'
+            - type: "null"
+        memory_full:
+          oneOf:
+            - $ref: '#/components/schemas/PressureMetric'
+            - type: "null"
+
+    PressureMetric:
+      type: object
+      required: [avg10, avg60, avg300, total_us]
+      properties:
+        avg10:    { type: number, minimum: 0, maximum: 100 }
+        avg60:    { type: number, minimum: 0, maximum: 100 }
+        avg300:   { type: number, minimum: 0, maximum: 100 }
+        total_us: { type: integer, minimum: 0 }
+
+    SocketsData:
+      type: object
+      required: [listening]
+      properties:
+        listening:
+          type: array
+          maxItems: 4096
+          items: { $ref: '#/components/schemas/ListeningSocket' }
+
+    ListeningSocket:
+      type: object
+      required: [proto, family, addr, port]
+      properties:
+        proto:  { type: string, enum: [tcp, udp] }
+        family: { type: string, enum: [inet, inet6] }
+        addr:   { type: string, maxLength: 64 }
+        port:   { type: integer, minimum: 0, maximum: 65535 }
+
+    SensorsData:
+      type: object
+      required: [chips]
+      properties:
+        chips:
+          type: array
+          maxItems: 64
+          items: { $ref: '#/components/schemas/SensorsChip' }
+
+    SensorsChip:
+      type: object
+      required: [name, sensors]
+      properties:
+        name: { type: string, maxLength: 64 }
+        sensors:
+          type: array
+          maxItems: 128
+          items: { $ref: '#/components/schemas/SensorReading' }
+
+    SensorReading:
+      type: object
+      required: [label, kind, value]
+      properties:
+        label: { type: string, maxLength: 64 }
+        kind:  { type: string, enum: [temp_c, fan_rpm, voltage_v] }
+        value: { type: number }
+        critical:
+          oneOf: [{ type: number }, { type: "null" }]
