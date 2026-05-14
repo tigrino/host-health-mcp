@@ -25,13 +25,18 @@ import (
 	"tigr.net/host-health-mcp/daemon/internal/daemon/httpserver"
 	"tigr.net/host-health-mcp/daemon/internal/daemon/ratelimit"
 	"tigr.net/host-health-mcp/daemon/internal/daemon/tools"
+	"tigr.net/host-health-mcp/daemon/internal/daemon/tools/backup"
+	"tigr.net/host-health-mcp/daemon/internal/daemon/tools/certs"
+	"tigr.net/host-health-mcp/daemon/internal/daemon/tools/dns"
 	"tigr.net/host-health-mcp/daemon/internal/daemon/tools/kernel"
+	"tigr.net/host-health-mcp/daemon/internal/daemon/tools/mail"
 	"tigr.net/host-health-mcp/daemon/internal/daemon/tools/manifest"
 	"tigr.net/host-health-mcp/daemon/internal/daemon/tools/pressure"
+	"tigr.net/host-health-mcp/daemon/internal/daemon/tools/sensors"
 	"tigr.net/host-health-mcp/daemon/internal/daemon/tools/sockets"
-	systemdunits "tigr.net/host-health-mcp/daemon/internal/daemon/tools/systemd_units"
 	"tigr.net/host-health-mcp/daemon/internal/daemon/tools/storage"
 	"tigr.net/host-health-mcp/daemon/internal/daemon/tools/system"
+	systemdunits "tigr.net/host-health-mcp/daemon/internal/daemon/tools/systemd_units"
 	"tigr.net/host-health-mcp/daemon/internal/daemon/tools/updates"
 )
 
@@ -82,6 +87,14 @@ func main() {
 	reg.Register(updates.New(hc))
 	reg.Register(storage.New(hc))
 	reg.Register(systemdunits.New(manifestCfg.WhitelistedUnits))
+	reg.Register(dns.New(dns.Probes{
+		ExternalProbe: cfg.DNSProbeTargets["external_probe"],
+		FilterCanary:  cfg.DNSProbeTargets["filter_canary"],
+	}))
+	reg.Register(mail.New(hc))
+	reg.Register(certs.New(manifestCfg.CertPaths, manifestCfg.CertRenewalUnits))
+	reg.Register(backup.New(manifestCfg.BackupLogPath, manifestCfg.BackupBackend))
+	reg.Register(sensors.New())
 	reg.Register(manifest.New(manifest.Snapshot{
 		DaemonVersion:    buildID,
 		BuildID:          buildID,

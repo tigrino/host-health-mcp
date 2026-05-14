@@ -17,16 +17,6 @@ func ReadAideSummary(ctx context.Context, _ string) (any, error) {
 	}
 }
 
-// LvmReport invokes `lvs --reportformat=json` plus `vgs --reportformat=json`.
-// Stub: implementation should be straightforward but is deferred so the
-// review-gate skeleton can compile without a host having LVM installed.
-func LvmReport(ctx context.Context, _ string) (any, error) {
-	return nil, &dispatch.Error{
-		Code:    proto.CodeInternal,
-		Message: "lvm_report not yet implemented",
-	}
-}
-
 // ZpoolStatus invokes `zpool status -j`. Stub: deferred to a follow-up
 // since ZFS may not be present in the canary environment.
 func ZpoolStatus(ctx context.Context, _ string) (any, error) {
