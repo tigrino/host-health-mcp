@@ -18,26 +18,33 @@ import (
 
 	"github.com/coreos/go-systemd/v22/daemon"
 
+	"net/netip"
+
 	"tigr.net/host-health-mcp/daemon/internal/daemon/audit"
 	"tigr.net/host-health-mcp/daemon/internal/daemon/cache"
 	"tigr.net/host-health-mcp/daemon/internal/daemon/config"
 	"tigr.net/host-health-mcp/daemon/internal/daemon/helperinvoke"
 	"tigr.net/host-health-mcp/daemon/internal/daemon/httpserver"
 	"tigr.net/host-health-mcp/daemon/internal/daemon/ratelimit"
+	"tigr.net/host-health-mcp/daemon/internal/daemon/redact"
 	"tigr.net/host-health-mcp/daemon/internal/daemon/tools"
 	"tigr.net/host-health-mcp/daemon/internal/daemon/tools/backup"
 	"tigr.net/host-health-mcp/daemon/internal/daemon/tools/certs"
 	"tigr.net/host-health-mcp/daemon/internal/daemon/tools/dns"
 	"tigr.net/host-health-mcp/daemon/internal/daemon/tools/kernel"
+	"tigr.net/host-health-mcp/daemon/internal/daemon/tools/logs"
 	"tigr.net/host-health-mcp/daemon/internal/daemon/tools/mail"
 	"tigr.net/host-health-mcp/daemon/internal/daemon/tools/manifest"
+	"tigr.net/host-health-mcp/daemon/internal/daemon/tools/network"
 	"tigr.net/host-health-mcp/daemon/internal/daemon/tools/pressure"
+	"tigr.net/host-health-mcp/daemon/internal/daemon/tools/security"
 	"tigr.net/host-health-mcp/daemon/internal/daemon/tools/sensors"
 	"tigr.net/host-health-mcp/daemon/internal/daemon/tools/sockets"
 	"tigr.net/host-health-mcp/daemon/internal/daemon/tools/storage"
 	"tigr.net/host-health-mcp/daemon/internal/daemon/tools/system"
 	systemdunits "tigr.net/host-health-mcp/daemon/internal/daemon/tools/systemd_units"
 	"tigr.net/host-health-mcp/daemon/internal/daemon/tools/updates"
+	"tigr.net/host-health-mcp/daemon/internal/daemon/tools/workload"
 )
 
 var buildID = "dev"
@@ -95,12 +102,44 @@ func main() {
 	reg.Register(certs.New(manifestCfg.CertPaths, manifestCfg.CertRenewalUnits))
 	reg.Register(backup.New(manifestCfg.BackupLogPath, manifestCfg.BackupBackend))
 	reg.Register(sensors.New())
+	reg.Register(network.New(manifestCfg.IPv6Policy))
+	reg.Register(security.New())
+
+	// Build the redactor from operator-configured allowlists. Used by
+	// the logs tool to scrub sample messages (REQ 6.3).
+	rules := redact.Rules{}
+	for _, c := range cfg.IPv4AllowlistRanges {
+		if p, err := netip.ParsePrefix(c); err == nil {
+			rules.IPv4Allow = append(rules.IPv4Allow, p)
+		}
+	}
+	for _, c := range cfg.IPv6AllowlistRanges {
+		if p, err := netip.ParsePrefix(c); err == nil {
+			rules.IPv6Allow = append(rules.IPv6Allow, p)
+		}
+	}
+	reg.Register(logs.New(hc, redact.New(rules)))
+
+	// Refuse to start if the manifest references a workload plugin
+	// that was not compiled into this binary (REQ 8.2).
+	compiled := map[string]bool{}
+	for _, n := range workload.CompiledIn() {
+		compiled[n] = true
+	}
+	for _, n := range manifestCfg.WorkloadPlugins {
+		if !compiled[n] {
+			log.Fatalf("daemon: manifest references workload plugin %q not compiled in (REQ 8.2). compiled-in set: %v", n, workload.CompiledIn())
+		}
+	}
+	reg.Register(workload.New(hc, manifestCfg.WorkloadPlugins))
+
 	reg.Register(manifest.New(manifest.Snapshot{
-		DaemonVersion:    buildID,
-		BuildID:          buildID,
-		StartedAt:        time.Now().UTC(),
-		EnabledTools:     reg.Names(),
-		WhitelistedUnits: manifestCfg.WhitelistedUnits,
+		DaemonVersion:          buildID,
+		BuildID:                buildID,
+		StartedAt:              time.Now().UTC(),
+		EnabledTools:           reg.Names(),
+		EnabledWorkloadPlugins: manifestCfg.WorkloadPlugins,
+		WhitelistedUnits:       manifestCfg.WhitelistedUnits,
 	}))
 
 	cch := cache.New()

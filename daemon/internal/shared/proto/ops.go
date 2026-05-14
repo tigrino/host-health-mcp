@@ -17,6 +17,7 @@ const (
 	OpWireguardShow    = "wireguard_show"
 	OpAptPending       = "apt_pending"
 	OpNeedrestart      = "needrestart"
+	OpJournalQuery     = "journal_query"
 )
 
 // AllOps lists every op token in a stable order. Used by the helper to
@@ -35,6 +36,7 @@ var AllOps = []string{
 	OpWireguardShow,
 	OpAptPending,
 	OpNeedrestart,
+	OpJournalQuery,
 }
 
 // IsKnownOp reports whether op is one of the recognised tokens.

@@ -25,4 +25,5 @@ func RegisterAll(r *dispatch.Registry) {
 	r.Register(proto.OpWireguardShow, WireguardShow)
 	r.Register(proto.OpAptPending, AptPending)
 	r.Register(proto.OpNeedrestart, Needrestart)
+	r.Register(proto.OpJournalQuery, JournalQuery)
 }

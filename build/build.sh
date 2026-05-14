@@ -45,13 +45,17 @@ if command -v govulncheck >/dev/null 2>&1; then
 fi
 
 # Step 4: build both binaries for each arch.
+# WORKLOAD_TAGS: workload plugins enabled at build time per REQ 4.9 and
+# design §8. Default includes all four named plugins; operators who
+# want a minimal binary may override.
+WORKLOAD_TAGS=${WORKLOAD_TAGS:-wl_wireguard,wl_postfix,wl_dovecot,wl_nginx_apache}
 LDFLAGS="-buildid= -X main.buildID=$GIT_SHA"
 for ARCH in amd64 arm64; do
-    echo "==> Build $ARCH"
+    echo "==> Build $ARCH (workload tags: $WORKLOAD_TAGS)"
     mkdir -p "$DIST/$ARCH"
     ( cd "$REPO/daemon" && \
         CGO_ENABLED=0 GOOS=linux GOARCH=$ARCH \
-        go build -trimpath -ldflags="$LDFLAGS" \
+        go build -trimpath -tags="$WORKLOAD_TAGS" -ldflags="$LDFLAGS" \
         -o "$DIST/$ARCH/host-health-mcp-daemon" ./cmd/daemon )
     ( cd "$REPO/daemon" && \
         CGO_ENABLED=0 GOOS=linux GOARCH=$ARCH \
