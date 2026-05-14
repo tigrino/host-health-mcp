@@ -1,8 +1,8 @@
 // Command plugin is the MCP server side of host-health-mcp. It
 // exposes the daemon's tool surface to MCP-speaking clients over
-// stdio. Configured via environment variables (REQ 9.4); the
-// operator points it at a single daemon per process and provides
-// mTLS material.
+// stdio. Configured via environment variables (REQ 9.4); the target
+// host is supplied per call (REQ 7.2), with HOSTHEALTH_TARGET_HOST
+// providing an optional default.
 package main
 
 import (
@@ -36,7 +36,7 @@ func main() {
 		return
 	}
 
-	host := envOr("HOSTHEALTH_TARGET_HOST", "localhost")
+	defaultHost := os.Getenv("HOSTHEALTH_TARGET_HOST")
 	portStr := envOr("HOSTHEALTH_TARGET_PORT", "8443")
 	cert := envOr("HOSTHEALTH_TLS_CERT", "/etc/host-health-mcp/plugin/cert.pem")
 	key := envOr("HOSTHEALTH_TLS_KEY", "/etc/host-health-mcp/plugin/key.pem")
@@ -50,7 +50,6 @@ func main() {
 	}
 
 	cli, err := client.New(client.Config{
-		Host:      host,
 		Port:      port,
 		CertPath:  cert,
 		KeyPath:   key,
@@ -81,7 +80,7 @@ func main() {
 		{Name: prefix + "sensors", DaemonRPC: "sensors", Description: "hwmon temperatures, fans, voltages (read-only)", TimeoutS: 3},
 	}
 
-	srv := mcp.New(cli, tools)
+	srv := mcp.New(cli, tools, defaultHost, "host-health-mcp", buildID)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()

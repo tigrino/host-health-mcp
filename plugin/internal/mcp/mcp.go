@@ -1,13 +1,18 @@
-// Package mcp implements the MCP server side of the plugin. One MCP
-// tool per daemon RPC; tool names are namespaced under a configurable
-// prefix (default "host_"). Tool descriptions in the MCP manifest
-// declare read-only nature and the timeout (REQ 7.2).
+// Package mcp implements the MCP server side of the plugin over
+// newline-delimited JSON-RPC 2.0 on stdio. One MCP tool per daemon
+// RPC; tool names are namespaced under a configurable prefix
+// (default "host_"). Tool descriptors carry a JSON-Schema inputSchema
+// declaring the per-call `host` argument (REQ 7.2).
 //
-// This is the skeleton: it implements enough of the MCP wire protocol
-// over stdio to register tools, handle list/call requests, and emit
-// envelope-aware responses. A production deployment would lean on a
-// proper MCP SDK; keeping it stdlib-only here avoids pinning a
-// pre-1.0 dependency in the review-gate skeleton.
+// Methods implemented:
+//   - initialize                 lifecycle handshake
+//   - notifications/initialized  client-side completion notify
+//   - ping                       keepalive
+//   - tools/list                 declare tools and their schemas
+//   - tools/call                 invoke one tool against one host
+//
+// Notifications (no `id` field) never produce a response, per
+// JSON-RPC 2.0.
 package mcp
 
 import (
@@ -23,6 +28,11 @@ import (
 	"tigr.net/host-health-mcp/plugin/internal/client"
 )
 
+// protocolVersion is the MCP spec date the server advertises. The
+// client may negotiate a different version; this is just our
+// preferred. "2024-11-05" is the first stable published revision.
+const protocolVersion = "2024-11-05"
+
 // Tool is one MCP-exposed tool, backed by one daemon RPC.
 type Tool struct {
 	Name        string // user-visible MCP tool name (prefix+rpc)
@@ -31,20 +41,27 @@ type Tool struct {
 	TimeoutS    int
 }
 
-// Server runs over stdio. It reads newline-delimited JSON requests on
-// stdin and writes responses on stdout. This is the loosest viable
-// MCP framing and is sufficient for the skeleton; a real deployment
-// substitutes the framing the MCP SDK requires.
+// Server runs over stdio.
 type Server struct {
-	cli   *client.Client
-	tools []Tool
+	cli         *client.Client
+	tools       []Tool
+	defaultHost string // HOSTHEALTH_TARGET_HOST; "" means none
+	serverName  string
+	version     string
 
-	mu sync.Mutex
+	writeMu sync.Mutex
 }
 
-// New constructs a Server.
-func New(cli *client.Client, tools []Tool) *Server {
-	return &Server{cli: cli, tools: tools}
+// New constructs a Server. defaultHost is used when a tools/call
+// omits the `host` argument; empty disables the default.
+func New(cli *client.Client, tools []Tool, defaultHost, serverName, version string) *Server {
+	return &Server{
+		cli:         cli,
+		tools:       tools,
+		defaultHost: defaultHost,
+		serverName:  serverName,
+		version:     version,
+	}
 }
 
 // Serve runs the read-dispatch loop until ctx is cancelled or stdin
@@ -65,28 +82,63 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 			s.write(w, jsonRPCError(nil, -32700, "parse error"))
 			continue
 		}
-		resp := s.dispatch(ctx, &req)
+		// Notification: no id, no response (JSON-RPC 2.0 §4.1).
+		isNotification := len(req.ID) == 0 || string(req.ID) == "null"
+		resp, suppress := s.dispatch(ctx, &req)
+		if isNotification || suppress {
+			continue
+		}
 		s.write(w, resp)
 	}
 	return scanner.Err()
 }
 
-func (s *Server) dispatch(ctx context.Context, req *jsonRPCRequest) jsonRPCResponse {
+// dispatch returns the response plus a suppress flag (true if the
+// method has no response by design, like notifications/initialized).
+func (s *Server) dispatch(ctx context.Context, req *jsonRPCRequest) (jsonRPCResponse, bool) {
 	switch req.Method {
+	case "initialize":
+		return jsonRPCResult(req.ID, s.initialize()), false
+	case "notifications/initialized":
+		return jsonRPCResponse{}, true
+	case "ping":
+		return jsonRPCResult(req.ID, map[string]any{}), false
 	case "tools/list":
-		return jsonRPCResult(req.ID, s.list())
+		return jsonRPCResult(req.ID, s.list()), false
 	case "tools/call":
-		return s.call(ctx, req)
+		return s.call(ctx, req), false
 	default:
-		return jsonRPCError(req.ID, -32601, "method not found: "+req.Method)
+		return jsonRPCError(req.ID, -32601, "method not found: "+req.Method), false
 	}
 }
 
+// initialize response shape per MCP spec.
+type initializeResult struct {
+	ProtocolVersion string         `json:"protocolVersion"`
+	ServerInfo      serverInfo     `json:"serverInfo"`
+	Capabilities    map[string]any `json:"capabilities"`
+}
+
+type serverInfo struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+}
+
+func (s *Server) initialize() initializeResult {
+	return initializeResult{
+		ProtocolVersion: protocolVersion,
+		ServerInfo:      serverInfo{Name: s.serverName, Version: s.version},
+		Capabilities: map[string]any{
+			"tools": map[string]any{},
+		},
+	}
+}
+
+// toolDescriptor is the MCP-spec shape returned by tools/list.
 type toolDescriptor struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	TimeoutS    int    `json:"timeout_s"`
-	ReadOnly    bool   `json:"read_only"`
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	InputSchema map[string]any `json:"inputSchema"`
 }
 
 func (s *Server) list() any {
@@ -95,20 +147,51 @@ func (s *Server) list() any {
 		out = append(out, toolDescriptor{
 			Name:        t.Name,
 			Description: t.Description,
-			TimeoutS:    t.TimeoutS,
-			ReadOnly:    true,
+			InputSchema: s.inputSchema(),
 		})
 	}
 	return map[string]any{"tools": out}
 }
 
+// inputSchema returns the JSON-Schema for every tool. The schema is
+// the same across tools because the daemon's wire surface takes an
+// empty body; the only argument the plugin layer needs is `host`.
+func (s *Server) inputSchema() map[string]any {
+	hostDesc := "Target host. Optional if the plugin has HOSTHEALTH_TARGET_HOST set."
+	if s.defaultHost != "" {
+		hostDesc += fmt.Sprintf(" Default: %q.", s.defaultHost)
+	}
+	return map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"host": map[string]any{
+				"type":        "string",
+				"description": hostDesc,
+			},
+		},
+		"additionalProperties": false,
+	}
+}
+
+// callContent is one entry in the MCP tools/call content array.
+type callContent struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+// callResult is the MCP shape returned by tools/call.
+type callResult struct {
+	Content []callContent `json:"content"`
+	IsError bool          `json:"isError,omitempty"`
+}
+
 func (s *Server) call(ctx context.Context, req *jsonRPCRequest) jsonRPCResponse {
 	var params struct {
-		Name      string          `json:"name"`
-		Arguments json.RawMessage `json:"arguments"`
+		Name      string         `json:"name"`
+		Arguments map[string]any `json:"arguments"`
 	}
 	if err := json.Unmarshal(req.Params, &params); err != nil {
-		return jsonRPCError(req.ID, -32602, "bad params")
+		return jsonRPCError(req.ID, -32602, "bad params: "+err.Error())
 	}
 	var found *Tool
 	for i := range s.tools {
@@ -118,7 +201,19 @@ func (s *Server) call(ctx context.Context, req *jsonRPCRequest) jsonRPCResponse 
 		}
 	}
 	if found == nil {
-		return jsonRPCError(req.ID, -32601, "unknown tool: "+params.Name)
+		return jsonRPCError(req.ID, -32602, "unknown tool: "+params.Name)
+	}
+
+	host, _ := params.Arguments["host"].(string)
+	if host == "" {
+		host = s.defaultHost
+	}
+	if host == "" {
+		return s.toolError(req.ID, "host argument is required (no HOSTHEALTH_TARGET_HOST default configured)")
+	}
+	resolved, err := s.cli.ResolveHost(host)
+	if err != nil {
+		return s.toolError(req.ID, err.Error())
 	}
 
 	timeout := time.Duration(found.TimeoutS) * time.Second
@@ -128,31 +223,35 @@ func (s *Server) call(ctx context.Context, req *jsonRPCRequest) jsonRPCResponse 
 	callCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	body := params.Arguments
-	if len(body) == 0 {
-		body = []byte("{}")
-	}
-
-	raw, errResp, err := s.cli.Call(callCtx, found.DaemonRPC, body)
+	raw, errResp, err := s.cli.Call(callCtx, resolved, found.DaemonRPC, []byte("{}"))
 	if err != nil {
-		return jsonRPCError(req.ID, -32000, "daemon call failed: "+err.Error())
+		return s.toolError(req.ID, "transport: "+err.Error())
 	}
 	if errResp != nil {
-		return jsonRPCError(req.ID, -32000, errResp.String())
+		return s.toolError(req.ID, errResp.String())
 	}
-	// The daemon returns a schema.Envelope; pass through to the caller
-	// as the tool's result. The plugin surfaces warnings[] without
-	// flattening them into data (REQ 7.2).
-	var env map[string]any
-	if jerr := json.Unmarshal(raw, &env); jerr != nil {
-		return jsonRPCError(req.ID, -32603, "envelope parse: "+jerr.Error())
-	}
-	return jsonRPCResult(req.ID, env)
+
+	// Surface the daemon's envelope as a single text content item.
+	// The model can parse the JSON itself if it needs to discriminate
+	// data vs. warnings.
+	return jsonRPCResult(req.ID, callResult{
+		Content: []callContent{{Type: "text", Text: string(raw)}},
+	})
+}
+
+func (s *Server) toolError(id json.RawMessage, msg string) jsonRPCResponse {
+	// Per MCP spec, tool execution errors are surfaced via a normal
+	// result with isError=true, not a JSON-RPC error. Protocol errors
+	// (bad params, unknown method, etc.) still use jsonRPCError.
+	return jsonRPCResult(id, callResult{
+		Content: []callContent{{Type: "text", Text: msg}},
+		IsError: true,
+	})
 }
 
 func (s *Server) write(w io.Writer, resp jsonRPCResponse) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	b, err := json.Marshal(resp)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "mcp: marshal response: %v\n", err)

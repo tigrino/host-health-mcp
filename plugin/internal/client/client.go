@@ -1,6 +1,8 @@
-// Package client is the plugin's HTTP/JSON client to the daemon's
-// listener. Speaks mTLS only; the caller provides cert and key paths
-// at construction.
+// Package client is the plugin's HTTP/JSON client to a daemon's
+// listener. Speaks mTLS only. One Client instance per process serves
+// every target host: the TLS material is shared (one operator cert,
+// one internal CA) and the http.Transport pools connections per host
+// automatically. The target host is supplied per call (REQ 7.2).
 package client
 
 import (
@@ -13,29 +15,29 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 )
 
 // Config configures a Client.
 type Config struct {
-	Host        string // host or host:port
-	Port        int    // used if Host has no :port
+	Port        int    // default port when a host arg has no :port
 	CertPath    string
 	KeyPath     string
 	CAPath      string // server CA bundle; empty uses system roots
-	DNSSuffix   string // appended to bare hostnames
+	DNSSuffix   string // appended to bare hostnames (no dot, no port)
 	HTTPTimeout time.Duration
 }
 
-// Client speaks to one daemon.
+// Client speaks to any daemon reachable with the configured TLS
+// material. The target host is provided per call.
 type Client struct {
 	cfg  Config
 	http *http.Client
-	base string
 }
 
-// New constructs a Client. The TLS config is built once and shared
-// across calls.
+// New constructs a Client. The TLS config is built once and reused
+// across calls; the http.Transport pools connections by host.
 func New(cfg Config) (*Client, error) {
 	cert, err := tls.LoadX509KeyPair(cfg.CertPath, cfg.KeyPath)
 	if err != nil {
@@ -58,18 +60,6 @@ func New(cfg Config) (*Client, error) {
 		tlsCfg.RootCAs = pool
 	}
 
-	host := cfg.Host
-	if cfg.DNSSuffix != "" && !hasDot(host) {
-		host = host + "." + cfg.DNSSuffix
-	}
-	if !hasPort(host) {
-		port := cfg.Port
-		if port == 0 {
-			port = 8443
-		}
-		host = fmt.Sprintf("%s:%d", host, port)
-	}
-
 	timeout := cfg.HTTPTimeout
 	if timeout == 0 {
 		timeout = 15 * time.Second
@@ -79,23 +69,43 @@ func New(cfg Config) (*Client, error) {
 		cfg: cfg,
 		http: &http.Client{
 			Transport: &http.Transport{
-				TLSClientConfig: tlsCfg,
+				TLSClientConfig:   tlsCfg,
 				DisableKeepAlives: false,
 			},
 			Timeout: timeout,
 		},
-		base: "https://" + host,
 	}, nil
 }
 
-// Call posts an empty (or supplied) body to /v1/<tool> and returns the
-// response body. Caller is responsible for unmarshalling.
-func (c *Client) Call(ctx context.Context, tool string, body []byte) ([]byte, *Error, error) {
+// ResolveHost expands a caller-supplied host into the host:port form
+// used in URLs. Bare names get DNSSuffix appended; missing port gets
+// cfg.Port (or 8443 if unset). Empty input returns an error.
+func (c *Client) ResolveHost(host string) (string, error) {
+	if host == "" {
+		return "", fmt.Errorf("client: host argument is empty and no default is configured")
+	}
+	if c.cfg.DNSSuffix != "" && !strings.Contains(host, ".") && !hasPort(host) {
+		host = host + "." + c.cfg.DNSSuffix
+	}
+	if !hasPort(host) {
+		port := c.cfg.Port
+		if port == 0 {
+			port = 8443
+		}
+		host = fmt.Sprintf("%s:%d", host, port)
+	}
+	return host, nil
+}
+
+// Call posts the supplied body to https://<host>/v1/<tool> and returns
+// the response body. host is taken verbatim (already resolved via
+// ResolveHost).
+func (c *Client) Call(ctx context.Context, host, tool string, body []byte) ([]byte, *Error, error) {
 	if body == nil {
 		body = []byte("{}")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		c.base+"/v1/"+tool, bytes.NewReader(body))
+	url := "https://" + host + "/v1/" + tool
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, nil, fmt.Errorf("client: build request: %w", err)
 	}
@@ -145,29 +155,14 @@ type errorBody struct {
 	} `json:"error"`
 }
 
-func hasDot(s string) bool {
-	for _, c := range s {
-		if c == '.' {
-			return true
-		}
-	}
-	return false
-}
-
+// hasPort returns true if s has an explicit port. Handles [ipv6]:port,
+// host:port, and plain host.
 func hasPort(s string) bool {
-	// host:port for IPv4/hostname; [::1]:port for IPv6 - the plugin
-	// expects the operator-supplied host to use one of these
-	// conventional forms.
 	if len(s) == 0 {
 		return false
 	}
 	if s[0] == '[' {
-		return true
+		return strings.Contains(s, "]:")
 	}
-	for _, c := range s {
-		if c == ':' {
-			return true
-		}
-	}
-	return false
+	return strings.Count(s, ":") == 1
 }
