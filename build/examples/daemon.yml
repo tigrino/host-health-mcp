@@ -18,9 +18,17 @@ cache_ttl_overrides:
   storage: 60
 
 # Per-tool timeout overrides (seconds). REQ 5.1: ceiling 10s.
+#
+# Note (1.12.0 helper deadline budget): the daemon now sets the
+# helper-socket deadline 500ms earlier than the per-tool timeout so
+# the helper has room to SIGTERM->SIGKILL its subprocess and still
+# drain a reply before the daemon's ctx fires. This shaves 500ms off
+# the effective tool execution budget; bump these by 500ms relative
+# to pre-1.12.0 values if you were tuned at the margin.
 timeout_overrides:
-  storage: 10
-  logs: 5
+  storage: 11   # was 10; +500ms budget after 1.12.0
+  logs:     6   # was 5;  +500ms budget after 1.12.0
+  updates:  9   # was 8;  +500ms budget after 1.12.0
 
 # DNS probes for tool 4.4. Operator-supplied; caller cannot influence.
 dns_probe_targets:

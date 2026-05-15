@@ -56,6 +56,46 @@ rotated by the operator's PKI tooling are the recommended posture.
 Each rotation requires a `systemctl restart host-health-mcp.service`;
 the daemon does not support runtime TLS material reload.
 
+## 2.2 Client-certificate template requirements (1.12.0+)
+
+Daemon 1.12.0 verifies, in addition to chain-to-CA:
+
+  - The presented leaf certificate is NOT a CA (`basicConstraints
+    CA:FALSE`).
+  - The leaf carries `extendedKeyUsage = clientAuth` explicitly.
+    RFC 5280 §4.2.1.12 says "absent EKU = any purpose allowed";
+    the daemon does not rely on that — operator CSRs must declare
+    the EKU.
+  - The leaf has a non-empty Subject CN or at least one DNS SAN
+    (so the daemon can derive a caller identity for rate-limiting
+    and audit).
+
+Existing operator-side CSR templates that produced bare-CN certs
+without an EKU stanza WILL be rejected after upgrading. Pre-flight
+verification on the operator workstation:
+
+```
+openssl x509 -in client.pem -noout -ext extendedKeyUsage
+```
+
+A passing cert prints `TLS Web Client Authentication`. If the
+output is empty or shows different EKUs, regenerate the CSR with
+(openssl example):
+
+```
+openssl req -new -key client.key -addext "extendedKeyUsage = clientAuth" \
+    -subj "/CN=ops-client" -out client.csr
+```
+
+…or the equivalent ansible / cfssl / step-ca / smallstep
+configuration. The CA must preserve the EKU (e.g. `openssl x509
+-copy_extensions copy` if signing through `openssl x509`, or
+`-extfile` with `extendedKeyUsage = clientAuth`).
+
+Rotate every operator and host client cert through one renewal
+cycle before deploying daemon 1.12.0; otherwise the first request
+after the daemon restart returns TLS `bad_certificate`.
+
 ## 2.1 ACME-style deploy hooks
 
 For ACME / cert-manager-driven PKI, point the deploy hook at:

@@ -3,6 +3,49 @@ title: Host Health MCP - Changelog
 author: Albert 'Tigr' Zenkoff <albert@tigr.net>
 ---
 
+# 1.12.0 (2026-05-15)
+
+Two audit findings that needed coordinated rollout: TLS client-cert
+template enforcement and the helper deadline budget design promised
+since 1.0.0 but never enforced.
+
+## **Operator pre-flight required before deploying 1.12.0**
+
+Every operator and host client certificate MUST carry
+`extendedKeyUsage = clientAuth`. See `doc/install.md §2.2`. Existing
+fleet certs minted without an EKU stanza will be rejected with TLS
+`bad_certificate` after the upgrade. Rotate through one renewal
+cycle first.
+
+## Daemon
+
+- **A1.5 — TLS template enforcement**. `tls.Config.VerifyConnection`
+  runs after chain verification and rejects:
+  - leaves marked as CAs (basicConstraints CA:TRUE);
+  - leaves missing `ExtKeyUsageClientAuth`;
+  - leaves with empty Subject CN AND no DNS SAN.
+  Chain-to-CA verification alone was the previous bar; that left
+  the daemon implicitly trusting whatever the operator's CA
+  template happened to emit. The contract is now explicit.
+- **C1 — helper deadline budget**. `helperinvoke.Call` now sets the
+  helper-socket deadline `HelperDeadlineBudget` (500ms) earlier
+  than the daemon's `ctx.Deadline()`. The design (§7.2) called for
+  this since 1.0.0 — both timers previously fired at the same
+  instant and the helper's reply could lose the race. The 500ms
+  matches `helper/exec.KillGrace` so the helper has room to
+  SIGTERM->SIGKILL its subprocess and still drain a reply.
+  - **Operator-visible**: per-tool budgets shorten by 500ms. The
+    example `daemon.yml` bumps `storage`, `logs`, and `updates`
+    timeouts by 500ms; fleet operators tuned at the margin should
+    do the same.
+
+## Docs
+
+- `doc/install.md` §2.2 documents the EKU requirement, the
+  pre-flight openssl check, and the CSR generation pattern.
+- `build/examples/daemon.yml` bumps the documented per-tool
+  timeouts by 500ms.
+
 # 1.11.0 (2026-05-15)
 
 A1.2 from the audit: extend the structured per-source error pattern

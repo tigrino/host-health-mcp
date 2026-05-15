@@ -305,5 +305,42 @@ func buildTLSConfig(c config.Daemon) (*tls.Config, error) {
 		ClientAuth:   tls.RequireAndVerifyClientCert,
 		ClientCAs:    pool,
 		MinVersion:   tls.VersionTLS13,
+		// REQ 6: tighten beyond chain-to-CA. Reject leaf certs that
+		// are CAs themselves, lack the clientAuth EKU, or carry an
+		// empty Subject. RFC 5280 §4.2.1.12 says "no EKU = any
+		// purpose allowed" — relying on that is implicit trust in
+		// the operator CA's template hygiene; the daemon enforces
+		// the contract explicitly instead. Operator PKI must issue
+		// client certs with `extendedKeyUsage = clientAuth` for the
+		// connection to be accepted.
+		VerifyConnection: verifyClientCert,
 	}, nil
+}
+
+// verifyClientCert runs after chain verification. The peer cert is
+// guaranteed valid up to the configured CA; this function adds the
+// template-level checks. Returning a non-nil error aborts the TLS
+// handshake with bad_certificate.
+func verifyClientCert(cs tls.ConnectionState) error {
+	if len(cs.VerifiedChains) == 0 || len(cs.VerifiedChains[0]) == 0 {
+		return fmt.Errorf("httpserver: tls: no verified chain")
+	}
+	leaf := cs.VerifiedChains[0][0]
+	if leaf.IsCA {
+		return fmt.Errorf("httpserver: tls: leaf cert is a CA; client certs must be end-entities")
+	}
+	hasClientAuth := false
+	for _, eku := range leaf.ExtKeyUsage {
+		if eku == x509.ExtKeyUsageClientAuth {
+			hasClientAuth = true
+			break
+		}
+	}
+	if !hasClientAuth {
+		return fmt.Errorf("httpserver: tls: leaf cert is missing extendedKeyUsage=clientAuth")
+	}
+	if strings.TrimSpace(leaf.Subject.CommonName) == "" && len(leaf.DNSNames) == 0 {
+		return fmt.Errorf("httpserver: tls: leaf cert has no Subject CN and no DNS SAN; cannot derive caller identity")
+	}
+	return nil
 }

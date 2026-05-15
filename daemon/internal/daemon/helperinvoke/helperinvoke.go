@@ -19,6 +19,14 @@ import (
 	"host-health-mcp/daemon/internal/shared/schema"
 )
 
+// HelperDeadlineBudget is the slack the daemon leaves between its
+// own per-tool timeout (ctx.Deadline) and the deadline applied to
+// the helper socket. The helper's subprocess kill chain is
+// SIGTERM->KillGrace->SIGKILL (KillGrace = 500ms in helper/exec);
+// the budget here matches so the helper reply can be drained
+// before the outer ctx fires.
+const HelperDeadlineBudget = 500 * time.Millisecond
+
 // Client dials the helper's unix socket per call. Calls do not share a
 // connection: the helper is allowed to be slow on one op without
 // blocking another. The Client itself is safe for concurrent use.
@@ -65,8 +73,22 @@ func (c *Client) Call(ctx context.Context, op string, param string) (json.RawMes
 	}
 	defer conn.Close()
 
+	// Apply a helper-side deadline that's HelperDeadlineBudget
+	// earlier than the daemon's outer per-tool timeout. The design
+	// (§7.2) calls for the helper to have room to escalate from
+	// SIGTERM to SIGKILL on its subprocess (KillGrace = 500ms)
+	// without the daemon's own timeout firing first and racing the
+	// helper's reply. Without this subtraction both timers fired
+	// simultaneously and the helper's tail responses could lose
+	// the race.
 	if deadline, ok := ctx.Deadline(); ok {
-		_ = conn.SetDeadline(deadline)
+		helperDL := deadline.Add(-HelperDeadlineBudget)
+		if !helperDL.After(time.Now()) {
+			// Budget already consumed by the time we got here; let
+			// the daemon's ctx-done watcher (below) handle it.
+			helperDL = deadline
+		}
+		_ = conn.SetDeadline(helperDL)
 	}
 
 	// Watch ctx.Done(): closing the conn from a watcher unblocks
