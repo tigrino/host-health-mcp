@@ -89,11 +89,20 @@ func queryAuditStatus(ctx context.Context) (auditStatus, error) {
 		_ = unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_SNDTIMEO, &tv)
 	}
 
-	// nlmsghdr (16 bytes), no payload. Request + Acknowledge.
+	// nlmsghdr (16 bytes), no payload. NLM_F_REQUEST only — no ACK.
+	//
+	// When NLM_F_ACK is set, the kernel emits TWO messages for
+	// AUDIT_GET: a leading NLMSG_ERROR with errno=0 (the ack), then
+	// the actual AUDIT_GET payload. Reading only the first message
+	// (1.9.0-1.9.1 behaviour) sees the ack and returns "no payload".
+	// Without NLM_F_ACK the kernel sends a single AUDIT_GET reply,
+	// which is exactly what we want here — one recv, no state
+	// machine. libaudit takes the loop-on-ack approach; we take the
+	// no-ack approach because we own both sides.
 	var req [16]byte
 	binary.LittleEndian.PutUint32(req[0:4], 16)
 	binary.LittleEndian.PutUint16(req[4:6], auditGet)
-	binary.LittleEndian.PutUint16(req[6:8], uint16(unix.NLM_F_REQUEST|unix.NLM_F_ACK))
+	binary.LittleEndian.PutUint16(req[6:8], uint16(unix.NLM_F_REQUEST))
 	binary.LittleEndian.PutUint32(req[8:12], 1)
 	// nlmsg_pid stays 0 — kernel will fill in our socket's port.
 
@@ -102,43 +111,40 @@ func queryAuditStatus(ctx context.Context) (auditStatus, error) {
 	}
 
 	buf := make([]byte, 8192)
-	for {
-		n, _, err := unix.Recvfrom(fd, buf, 0)
-		if err != nil {
-			if errors.Is(err, syscall.EAGAIN) || errors.Is(err, syscall.EWOULDBLOCK) {
-				return auditStatus{}, context.DeadlineExceeded
-			}
-			return auditStatus{}, fmt.Errorf("netlink recv: %w", err)
+	n, _, err := unix.Recvfrom(fd, buf, 0)
+	if err != nil {
+		if errors.Is(err, syscall.EAGAIN) || errors.Is(err, syscall.EWOULDBLOCK) {
+			return auditStatus{}, context.DeadlineExceeded
 		}
-		if n < 16 {
-			return auditStatus{}, errors.New("netlink: truncated header")
+		return auditStatus{}, fmt.Errorf("netlink recv: %w", err)
+	}
+	if n < 16 {
+		return auditStatus{}, errors.New("netlink: truncated header")
+	}
+	msgLen := binary.LittleEndian.Uint32(buf[0:4])
+	typ := binary.LittleEndian.Uint16(buf[4:6])
+	if int(msgLen) > n {
+		return auditStatus{}, errors.New("netlink: short message body")
+	}
+	switch typ {
+	case nlmsgError:
+		// Without NLM_F_ACK the kernel only sends NLMSG_ERROR on a
+		// real failure; the payload is the negative errno.
+		if n < 20 {
+			return auditStatus{}, errors.New("netlink: truncated error")
 		}
-		msgLen := binary.LittleEndian.Uint32(buf[0:4])
-		typ := binary.LittleEndian.Uint16(buf[4:6])
-		if int(msgLen) > n {
-			return auditStatus{}, errors.New("netlink: short message body")
+		errno := int32(binary.LittleEndian.Uint32(buf[16:20]))
+		if errno == 0 {
+			return auditStatus{}, errors.New("netlink: NLMSG_ERROR with errno=0 (unexpected without NLM_F_ACK)")
 		}
-		switch typ {
-		case nlmsgError:
-			if n < 20 {
-				return auditStatus{}, errors.New("netlink: truncated error")
-			}
-			errno := int32(binary.LittleEndian.Uint32(buf[16:20]))
-			if errno == 0 {
-				// Pure ack with no payload — should not happen for
-				// AUDIT_GET; the kernel emits an AUDIT_GET reply
-				// with the status struct. Treat as protocol error.
-				return auditStatus{}, errors.New("netlink: bare ack, no AUDIT_GET reply")
-			}
-			return auditStatus{}, fmt.Errorf("netlink: kernel returned errno %d (%s)", -errno, syscall.Errno(-errno).Error())
-		case auditGet:
-			if n < 16+auditStatusMinSize {
-				return auditStatus{}, errors.New("netlink: short audit_status payload")
-			}
-			return parseAuditStatusBytes(buf[16 : 16+auditStatusMinSize]), nil
-		default:
-			// Unexpected message type. Keep reading.
+		return auditStatus{}, fmt.Errorf("netlink: kernel returned errno %d (%s)", -errno, syscall.Errno(-errno).Error())
+	case auditGet:
+		if n < 16+auditStatusMinSize {
+			return auditStatus{}, errors.New("netlink: short audit_status payload")
 		}
+		return parseAuditStatusBytes(buf[16 : 16+auditStatusMinSize]), nil
+	default:
+		return auditStatus{}, fmt.Errorf("netlink: unexpected message type %d", typ)
 	}
 }
 

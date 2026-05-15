@@ -3,6 +3,20 @@ title: Host Health MCP - Changelog
 author: Albert 'Tigr' Zenkoff <albert@tigr.net>
 ---
 
+# 1.9.2 (2026-05-15)
+
+## Helper
+
+- `read_audit_status`: drop `NLM_F_ACK` from the `AUDIT_GET` request.
+  When `NLM_F_ACK` is set the kernel emits two messages — a leading
+  `NLMSG_ERROR` with errno=0 (the ack), then the actual
+  `AUDIT_GET` payload. The recv loop in 1.9.0-1.9.1 read only the
+  first message, saw `NLMSG_ERROR`, and returned "bare ack, no
+  AUDIT_GET reply". Without `NLM_F_ACK` the kernel sends a single
+  `AUDIT_GET` reply; one recv, no state machine.
+- `queue_depth` and `lost_events` now populate alongside the
+  filesystem-derived `last_rotation_ts`.
+
 # 1.9.1 (2026-05-15)
 
 ## Correction to 1.9.0
