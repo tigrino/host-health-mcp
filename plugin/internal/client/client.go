@@ -87,17 +87,31 @@ func (c *Client) SetTransport(rt http.RoundTripper) {
 // ResolveHost expands a caller-supplied host into the host:port form
 // used in URLs. Bare names get DNSSuffix appended; missing port gets
 // cfg.Port (or 8443 if unset). Empty input returns an error.
+//
+// IPv6 literals must be supplied bracketed (`[fe80::1]` or
+// `[fe80::1]:8443`); a bare `fe80::1` is ambiguous (last colon-group
+// could be a port) and is rejected. Hostnames use net.SplitHostPort
+// for port detection so we handle `host`, `host:port`, `[ipv6]`, and
+// `[ipv6]:port` consistently.
 func (c *Client) ResolveHost(host string) (string, error) {
 	if host == "" {
 		return "", fmt.Errorf("client: host argument is empty and no default is configured")
 	}
-	if c.cfg.DNSSuffix != "" && !strings.Contains(host, ".") && !hasPort(host) {
+	hasExplicitPort, err := hostHasPort(host)
+	if err != nil {
+		return "", fmt.Errorf("client: %w", err)
+	}
+	if c.cfg.DNSSuffix != "" && !strings.Contains(host, ".") && !hasExplicitPort && host[0] != '[' {
 		host = host + "." + c.cfg.DNSSuffix
 	}
-	if !hasPort(host) {
+	if !hasExplicitPort {
 		port := c.cfg.Port
 		if port == 0 {
 			port = 8443
+		}
+		// Bracket bare IPv6 literals before appending the port.
+		if isBareIPv6(host) {
+			host = "[" + host + "]"
 		}
 		host = fmt.Sprintf("%s:%d", host, port)
 	}
@@ -162,14 +176,52 @@ type errorBody struct {
 	} `json:"error"`
 }
 
-// hasPort returns true if s has an explicit port. Handles [ipv6]:port,
-// host:port, and plain host.
-func hasPort(s string) bool {
-	if len(s) == 0 {
-		return false
+// hostHasPort reports whether s already carries an explicit port.
+// Handles three input shapes:
+//   - bracketed IPv6 with port:    "[fe80::1]:8443"  -> true
+//   - bracketed IPv6 without port: "[fe80::1]"       -> false
+//   - hostname or IPv4 with port:  "host:8443"       -> true
+//   - hostname or IPv4 plain:      "host"            -> false
+//
+// Bare unbracketed IPv6 ("fe80::1") is ambiguous and rejected.
+func hostHasPort(s string) (bool, error) {
+	if s == "" {
+		return false, fmt.Errorf("empty host")
 	}
 	if s[0] == '[' {
-		return strings.Contains(s, "]:")
+		// Bracketed form. With port: [...]:N. Without port: [...].
+		close := strings.IndexByte(s, ']')
+		if close < 0 {
+			return false, fmt.Errorf("unterminated [ in host %q", s)
+		}
+		rest := s[close+1:]
+		if rest == "" {
+			return false, nil
+		}
+		if rest[0] == ':' {
+			return true, nil
+		}
+		return false, fmt.Errorf("garbage after ] in host %q", s)
 	}
-	return strings.Count(s, ":") == 1
+	// Unbracketed. Two or more colons = bare IPv6 literal (ambiguous,
+	// rejected). One colon = hostname:port. Zero colons = plain
+	// hostname.
+	colons := strings.Count(s, ":")
+	switch {
+	case colons == 0:
+		return false, nil
+	case colons == 1:
+		return true, nil
+	default:
+		return false, fmt.Errorf("bare IPv6 literal %q must be bracketed ([%s])", s, s)
+	}
+}
+
+// isBareIPv6 reports whether s is an unbracketed IPv6 literal. Used
+// by ResolveHost to bracket it before appending a port.
+func isBareIPv6(s string) bool {
+	if s == "" || s[0] == '[' {
+		return false
+	}
+	return strings.Count(s, ":") >= 2
 }
