@@ -98,7 +98,14 @@ func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 	if aptErr != nil {
 		warnings = append(warnings, "updates: apt_pending: "+aptErr.Error())
 	} else {
-		d.AptLockState = apt.LockState
+		if apt.LockState == "" {
+			// Helper returned an empty envelope. Treat as a non-fatal
+			// parse anomaly and surface it rather than silently leaving
+			// the default "unknown" with no explanation.
+			warnings = append(warnings, "updates: apt_pending returned empty lock_state")
+		} else {
+			d.AptLockState = apt.LockState
+		}
 		d.SecurityUpdatesPending = apt.SecurityUpdatesPending
 		d.RegularUpdatesPending = apt.RegularUpdatesPending
 		if apt.HeldPackages != nil {

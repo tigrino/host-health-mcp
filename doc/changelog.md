@@ -3,6 +3,40 @@ title: Host Health MCP - Changelog
 author: Albert 'Tigr' Zenkoff <albert@tigr.net>
 ---
 
+# 1.3.0 (2026-05-15)
+
+## Daemon
+
+- `security` tool: fail2ban current-ban count wired through the
+  helper. `intrusion_prevention.current_ban_count` returns the sum of
+  `Currently banned:` across every fail2ban jail; `-1` signals that
+  the backend is present but the helper couldn't query
+  `fail2ban-server` (look in `warnings[]` for the reason).
+- `security` tool: rkhunter warning_count parser added (counts
+  `Warning:` lines in `/var/log/rkhunter.log`).
+- `security` tool: SSH login counters now fall back to
+  `/var/log/secure` when `/var/log/auth.log` is absent.
+- `backup` tool: auto-probes well-known log paths by backend
+  (`borg`, `borgmatic`, `restic`, `rsnapshot`, `duplicity`) when the
+  manifest's `backup_log_path` is null. The response always carries a
+  warning naming the probed paths so the operator can pin the right
+  one in the manifest.
+- `updates` tool: when the helper succeeds but returns an empty
+  `lock_state`, a warning is surfaced instead of silently leaving the
+  default `"unknown"` with no explanation.
+
+## Helper
+
+- New op `fail2ban_status`: invokes `fail2ban-client status` and the
+  per-jail status to sum `Currently banned:` counts. Returns
+  `present=false` when the binary is absent; surfaces a hard error
+  when the binary is present but the server isn't reachable.
+
+## Docs
+
+- `build/examples/manifest.yml`: `backup_log_path` documents the
+  auto-probe behaviour.
+
 # 1.2.2 (2026-05-15)
 
 ## Daemon, Helper

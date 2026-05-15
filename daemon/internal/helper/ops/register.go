@@ -27,4 +27,5 @@ func RegisterAll(r *dispatch.Registry) {
 	r.Register(proto.OpNeedrestart, Needrestart)
 	r.Register(proto.OpJournalQuery, JournalQuery)
 	r.Register(proto.OpNftTableCounts, NftTableCounts)
+	r.Register(proto.OpFail2banStatus, Fail2banStatus)
 }

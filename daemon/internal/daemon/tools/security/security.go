@@ -57,7 +57,11 @@ type Debsums struct {
 	ModifiedCount *int       `json:"modified_count"`
 }
 
-// IPS mirrors the intrusion_prevention block.
+// IPS mirrors the intrusion_prevention block. CurrentBanCount is
+// populated when the backend is fail2ban and the helper's
+// fail2ban_status op succeeds; -1 means the backend exists but the
+// ban count could not be retrieved (the operator should check the
+// matching warning in warnings[]).
 type IPS struct {
 	BackendInUse    string `json:"backend_in_use"`
 	CurrentBanCount int    `json:"current_ban_count"`
@@ -102,6 +106,13 @@ type helperAudit struct {
 	LastRotationTS  *time.Time `json:"last_rotation_ts"`
 }
 
+// helperFail2ban mirrors the helper's Fail2banStatusResult.
+type helperFail2ban struct {
+	Present     bool `json:"present"`
+	JailCount   int  `json:"jail_count"`
+	TotalBanned int  `json:"total_banned"`
+}
+
 // Handle composes the security envelope. Presence is detected daemon-
 // side by binary or socket presence; deep fields come from the helper
 // ops where available.
@@ -118,9 +129,11 @@ func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 	}
 
 	var (
-		aide  helperAide
-		audit helperAudit
+		aide     helperAide
+		audit    helperAudit
+		fail2ban helperFail2ban
 	)
+	fail2banAttempted := false
 
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -137,6 +150,15 @@ func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 		}
 	}()
 	wg.Wait()
+
+	// fail2ban probe runs only when the backend is detected to avoid
+	// invoking the helper for an absent binary.
+	if detectIPS() == "fail2ban" {
+		fail2banAttempted = true
+		if err := t.hc.CallJSON(ctx, proto.OpFail2banStatus, "", &fail2ban); err != nil {
+			addWarning("security: fail2ban_status: " + err.Error())
+		}
+	}
 
 	d.AideOrEquivalent = Aide{
 		Present:      aide.Present || anyExists("/usr/bin/aide", "/usr/sbin/aide"),
@@ -156,13 +178,26 @@ func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 		if info, err := os.Stat("/var/log/rkhunter.log"); err == nil {
 			ts := info.ModTime().UTC()
 			d.Rkhunter.LastRunTS = &ts
+			if w := readRkhunterWarningCount("/var/log/rkhunter.log"); w != nil {
+				d.Rkhunter.WarningCount = w
+			}
 		}
 	}
 
 	d.DebsumsOrEquivalent.Present = anyExists("/usr/bin/debsums")
 
 	d.IntrusionPrevention.BackendInUse = detectIPS()
-	d.IntrusionPrevention.CurrentBanCount = readFail2banJailCount()
+	switch {
+	case !fail2banAttempted:
+		d.IntrusionPrevention.CurrentBanCount = 0
+	case fail2ban.Present:
+		d.IntrusionPrevention.CurrentBanCount = fail2ban.TotalBanned
+	default:
+		// Backend detected but helper couldn't reach fail2ban-server.
+		// -1 signals "indeterminate"; the warnings[] entry carries the
+		// reason.
+		d.IntrusionPrevention.CurrentBanCount = -1
+	}
 
 	// SSH login counters from /var/log/auth.log mtime is too coarse;
 	// the journal_query helper op gives us severity-filtered samples
@@ -197,23 +232,52 @@ func detectIPS() string {
 	}
 }
 
-// readFail2banJailCount counts currently-banned hosts across all
-// configured jails. fail2ban exposes this via fail2ban-client's
-// socket which requires root, so we don't invoke it here. The
-// fall-back is a stat over /var/lib/fail2ban/fail2ban.sqlite3 and
-// counting the bantime DB rows; given the schema's looseness and the
-// presence of operator-specific jail names, we keep this at zero for
-// the MVP and revisit when a helper op covers it.
-func readFail2banJailCount() int {
-	return 0
+// readRkhunterWarningCount scans rkhunter's log for "Warning:" lines.
+// Returns nil when the file is empty or unreadable.
+func readRkhunterWarningCount(path string) *int {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	count := 0
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 64*1024), 1<<20)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.Contains(line, "Warning:") {
+			count++
+		}
+	}
+	return &count
 }
 
-// readAuthLogCounters returns (accepted, failed) counts from
-// /var/log/auth.log. Best-effort: rotation truncates the file at
-// midnight, so this is "since the last rotation" rather than "since
-// boot". The schema's "since boot" semantics are approximated.
+// authLogPaths lists candidate SSH login log files in preference
+// order. Debian uses /var/log/auth.log; some distros (RHEL family,
+// containers) use /var/log/secure; journal-only systems have neither.
+var authLogPaths = []string{
+	"/var/log/auth.log",
+	"/var/log/secure",
+}
+
+// readAuthLogCounters returns (accepted, failed) counts from the
+// first existing path in authLogPaths. Best-effort: rotation
+// truncates the file at midnight, so this is "since the last
+// rotation" rather than "since boot". The schema's "since boot"
+// semantics are approximated; a future helper op can do a precise
+// journalctl --boot count when the journal is the only source.
 func readAuthLogCounters() (int, int) {
-	f, err := os.Open("/var/log/auth.log")
+	var path string
+	for _, p := range authLogPaths {
+		if _, err := os.Stat(p); err == nil {
+			path = p
+			break
+		}
+	}
+	if path == "" {
+		return 0, 0
+	}
+	f, err := os.Open(path)
 	if err != nil {
 		return 0, 0
 	}

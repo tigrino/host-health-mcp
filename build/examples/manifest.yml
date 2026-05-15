@@ -38,7 +38,12 @@ workload_plugins: []
 cert_paths: []
 cert_renewal_units: []
 
-# Tool 4.8.
+# Tool 4.8. backup_backend is one of borg, borgmatic, restic,
+# rsnapshot, duplicity, or none. backup_log_path may be left null:
+# when null and backup_backend is set, the tool auto-probes
+# /var/log/<backend>/<backend>.log and a couple of common variants;
+# the response carries a warning naming the probed paths so the
+# operator can pin the right one back here.
 backup_log_path: null
 backup_backend: none
 

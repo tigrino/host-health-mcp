@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -48,21 +49,73 @@ func (*Tool) DefaultTTL() time.Duration { return 5 * time.Minute }
 // DefaultTimeout caps the per-call duration.
 func (*Tool) DefaultTimeout() time.Duration { return 2 * time.Second }
 
-// Handle stats the manifest-declared log path. Last_archive_label is
+// backendLogProbes lists well-known log paths by backend so an
+// operator who sets backup_backend but leaves backup_log_path null
+// still gets a useful answer. There is no system-wide convention for
+// backup log locations, so the probe is best-effort.
+var backendLogProbes = map[string][]string{
+	"borg": {
+		"/var/log/borg/borg.log",
+		"/var/log/borgbackup.log",
+		"/var/log/borgmatic/borgmatic.log",
+		"/var/log/borgmatic.log",
+	},
+	"borgmatic": {
+		"/var/log/borgmatic/borgmatic.log",
+		"/var/log/borgmatic.log",
+	},
+	"restic": {
+		"/var/log/restic.log",
+		"/var/log/restic/restic.log",
+	},
+	"rsnapshot": {
+		"/var/log/rsnapshot.log",
+		"/var/log/rsnapshot/rsnapshot.log",
+	},
+	"duplicity": {
+		"/var/log/duplicity.log",
+	},
+}
+
+// Handle stats the manifest-declared log path. When the manifest's
+// backup_log_path is empty, the tool attempts well-known paths for
+// the configured backend (borg, restic, rsnapshot, duplicity);
+// finding nothing is reported as a warning rather than an error so
+// the rest of the response remains useful. Last_archive_label is
 // only filled when the operator's runner records one in a fixed
-// location; today we leave it null - a follow-up reads it from a
-// configurable status file.
+// location; today it stays null.
 func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
-	if t.logPath == "" || t.backend == "none" {
-		return Data{Backend: "none"}, []string{"backup: not configured"}, nil
+	if t.backend == "none" {
+		return Data{Backend: "none"}, []string{"backup: not configured (backup_backend=none)"}, nil
 	}
 	var warnings []string
 	d := Data{Backend: t.backend}
 
-	info, err := os.Stat(t.logPath)
+	path := t.logPath
+	if path == "" {
+		probed, candidates := probeBackendLog(t.backend)
+		if probed != "" {
+			path = probed
+			warnings = append(warnings,
+				"backup: auto-probed log path "+probed+
+					" (set backup_log_path in manifest.yml to pin)")
+		} else if len(candidates) > 0 {
+			warnings = append(warnings,
+				"backup: log path not configured; tried "+
+					strings.Join(candidates, ", ")+
+					"; set backup_log_path in manifest.yml")
+			return d, warnings, nil
+		} else {
+			warnings = append(warnings,
+				"backup: log path not configured and no auto-probe paths defined for backend "+t.backend)
+			return d, warnings, nil
+		}
+	}
+
+	info, err := os.Stat(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			warnings = append(warnings, "backup: log path absent: "+t.logPath)
+			warnings = append(warnings, "backup: log path absent: "+path)
 			return d, warnings, nil
 		}
 		return nil, nil, err
@@ -70,4 +123,17 @@ func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 	ts := info.ModTime().UTC()
 	d.LastEndTS = &ts
 	return d, warnings, nil
+}
+
+// probeBackendLog returns the first path under backendLogProbes[backend]
+// that exists, plus the full candidate list (for the operator-facing
+// warning when nothing matches).
+func probeBackendLog(backend string) (path string, candidates []string) {
+	candidates = backendLogProbes[backend]
+	for _, p := range candidates {
+		if _, err := os.Stat(p); err == nil {
+			return p, candidates
+		}
+	}
+	return "", candidates
 }

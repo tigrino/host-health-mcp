@@ -19,6 +19,7 @@ const (
 	OpNeedrestart      = "needrestart"
 	OpJournalQuery     = "journal_query"
 	OpNftTableCounts   = "nft_table_counts"
+	OpFail2banStatus   = "fail2ban_status"
 )
 
 // AllOps lists every op token in a stable order. Used by the helper to
@@ -39,6 +40,7 @@ var AllOps = []string{
 	OpNeedrestart,
 	OpJournalQuery,
 	OpNftTableCounts,
+	OpFail2banStatus,
 }
 
 // IsKnownOp reports whether op is one of the recognised tokens.
