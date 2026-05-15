@@ -1,11 +1,18 @@
 // Command forbidden is the project's custom forbidden-call linter
 // (REQ 10.2). It rejects:
 //
-//   - import "os/exec"
-//   - import "syscall" usage of ForkExec
-//   - os.Create(...) calls
-//   - os.OpenFile(...) calls (which may be write-mode; flagged for
-//     reviewer attention even when used as a read-only opener)
+//   - import "os/exec"             (any alias including dot / underscore;
+//                                   the import-line check fires before
+//                                   any usage could matter)
+//   - os.Create(...)               (always write-mode)
+//   - os.OpenFile(...)             (may be write-mode; reviewer must
+//                                   confirm read-only and add a
+//                                   // forbidden:allow comment)
+//   - os.StartProcess(...)         (fork+exec)
+//   - syscall.ForkExec(...)
+//   - syscall.Exec(...)            (replace-current-process exec)
+//   - syscall.StartProcess(...)    (low-level fork+exec)
+//   - golang.org/x/sys/unix.Exec(...)  (same as syscall.Exec)
 //
 // from every package under daemon/internal/ EXCEPT the two
 // chokepoints that the design (§7.4) names as the sole permitted
@@ -149,12 +156,40 @@ func scanFile(fset *token.FileSet, file *ast.File, path string) []finding {
 				Symbol: "os.OpenFile",
 				Reason: "may be write-mode; reviewer must confirm read-only and add a // forbidden:allow comment with justification",
 			})
+		case pkgPath == "os" && sel.Sel.Name == "StartProcess":
+			out = append(out, finding{
+				Path:   path,
+				Pos:    fset.Position(sel.Pos()),
+				Symbol: "os.StartProcess",
+				Reason: "fork+exec; only the helper exec chokepoint may spawn processes",
+			})
 		case pkgPath == "syscall" && sel.Sel.Name == "ForkExec":
 			out = append(out, finding{
 				Path:   path,
 				Pos:    fset.Position(sel.Pos()),
 				Symbol: "syscall.ForkExec",
 				Reason: "only the helper exec chokepoint may fork",
+			})
+		case pkgPath == "syscall" && sel.Sel.Name == "Exec":
+			out = append(out, finding{
+				Path:   path,
+				Pos:    fset.Position(sel.Pos()),
+				Symbol: "syscall.Exec",
+				Reason: "replaces the current process; never permitted",
+			})
+		case pkgPath == "syscall" && sel.Sel.Name == "StartProcess":
+			out = append(out, finding{
+				Path:   path,
+				Pos:    fset.Position(sel.Pos()),
+				Symbol: "syscall.StartProcess",
+				Reason: "low-level fork+exec; only the helper exec chokepoint may spawn processes",
+			})
+		case pkgPath == "golang.org/x/sys/unix" && sel.Sel.Name == "Exec":
+			out = append(out, finding{
+				Path:   path,
+				Pos:    fset.Position(sel.Pos()),
+				Symbol: "unix.Exec",
+				Reason: "x/sys/unix variant of syscall.Exec; never permitted",
 			})
 		}
 		return true
