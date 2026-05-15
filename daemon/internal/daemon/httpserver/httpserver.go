@@ -161,6 +161,16 @@ func (s *Server) handleToolBody(w http.ResponseWriter, r *http.Request, tool too
 	if len(body) == 0 {
 		body = []byte("{}")
 	}
+	// Reject non-JSON bodies before they reach the cache. The cache
+	// key derivation canonicalises JSON; an invalid body would
+	// otherwise fall back to raw-byte hashing, letting a caller fill
+	// the cache with byte-distinct invalid-JSON variants of the same
+	// semantic call.
+	if !json.Valid(body) {
+		s.writeError(w, r, toolName, http.StatusBadRequest,
+			schema.ErrCodeBadArgument, "request body is not valid JSON", start, "invalid_json")
+		return
+	}
 
 	ttl := s.cfg.CacheTTL(toolName, tool.DefaultTTL())
 	key := cache.Key(toolName, body)

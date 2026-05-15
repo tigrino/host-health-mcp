@@ -47,16 +47,22 @@ func New() *Cache {
 
 // Key constructs a stable cache key for a (tool, args) pair. args is
 // the raw JSON request body; identical *semantic* bodies hash to the
-// same key after canonicalisation (whitespace, key ordering). On
-// invalid JSON Key falls back to raw-byte hashing so a caller can't
-// poison the cache by sending mangled JSON to bypass cache hits.
+// same key after canonicalisation (whitespace, key ordering). The
+// request layer is responsible for rejecting non-JSON bodies before
+// this function is called; canonicaliseJSON's invalid-input fallback
+// is kept defensively but should be unreachable in production.
+//
+// The full SHA-256 (not a 16-byte truncation) is used: cache keys are
+// short-lived strings in memory, the cost of 64 hex chars instead of
+// 32 is trivial, and a 128-bit truncation gave a 2^64 birthday
+// collision surface for a global cache shared across all callers.
 func Key(tool string, args []byte) string {
 	canon := canonicaliseJSON(args)
 	h := sha256.New()
 	h.Write([]byte(tool))
 	h.Write([]byte{0})
 	h.Write(canon)
-	return tool + ":" + hex.EncodeToString(h.Sum(nil)[:16])
+	return tool + ":" + hex.EncodeToString(h.Sum(nil))
 }
 
 // canonicaliseJSON re-encodes the input through encoding/json so
