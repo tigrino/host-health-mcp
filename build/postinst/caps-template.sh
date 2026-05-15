@@ -18,7 +18,13 @@ fi
 # enabled_tools[] and workload_plugins[] in manifest.yml drive the cap
 # union. The rules below mirror design 7.3 (Caps required column):
 #
-#   read_audit_status  -> CAP_AUDIT_READ
+#   read_audit_status  -> CAP_AUDIT_CONTROL
+#                          (AUDIT_GET shares audit_netlink_ok()'s
+#                          CAP_AUDIT_CONTROL gate with the rule-
+#                          modification opcodes; CAP_AUDIT_READ only
+#                          gates audit_bind() for multicast event
+#                          consumption — confirmed empirically on
+#                          Debian 13 kernel 6.12.x.)
 #   read_aide_summary  -> CAP_DAC_READ_SEARCH
 #   read_reboot_marker -> (none)
 #   smart_summary      -> CAP_SYS_RAWIO, CAP_DAC_READ_SEARCH
@@ -62,7 +68,7 @@ enabled=$(awk '
     }
 ' "$MANIFEST")
 
-have security  && { add CAP_AUDIT_READ; add CAP_DAC_READ_SEARCH; }
+have security  && { add CAP_AUDIT_CONTROL; add CAP_DAC_READ_SEARCH; }
 have storage   && { add CAP_SYS_RAWIO; add CAP_DAC_READ_SEARCH; add CAP_SYS_ADMIN; }
 have mail      && true
 have updates   && true

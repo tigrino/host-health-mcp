@@ -12,21 +12,25 @@ import (
 )
 
 // Netlink-direct query of the kernel audit subsystem. Replaces the
-// previous `auditctl -s` subprocess. The reason:
+// previous `auditctl -s` subprocess so the helper doesn't depend on
+// the auditctl 4.0.x userspace policy (which refuses every subcommand,
+// including read-only `-s`, without CAP_AUDIT_CONTROL in the process's
+// effective set; the audit_can_control() check at the top of main()
+// has no euid==0 fallback).
 //
-//   - auditctl 4.0.x (Debian 13, Ubuntu 24.04) refuses to run any
-//     subcommand without CAP_AUDIT_CONTROL in the process's effective
-//     set, even read-only ones like -s. The check
-//     (audit_can_control()) is applied uniformly at the top of main()
-//     and does not fall back on geteuid()==0.
-//   - Granting CAP_AUDIT_CONTROL to the helper just to read status is
-//     a needless privilege expansion.
+// Empirically the kernel routes AUDIT_GET through
+// audit_netlink_ok()'s CAP_AUDIT_CONTROL gate — same case block as
+// AUDIT_SET, AUDIT_ADD_RULE, AUDIT_DEL_RULES on Debian 13's 6.12.x
+// kernels. CAP_AUDIT_READ only gates audit_bind() for the multicast
+// audit-event stream (used by rsyslog/auditd-plugins/laurel), not
+// for AUDIT_GET. Talking to NETLINK_AUDIT directly therefore needs
+// the same CAP_AUDIT_CONTROL the userspace tool would have needed;
+// the win is avoiding a subprocess and honouring the kernel's actual
+// access control (no userspace overlay).
 //
-// The kernel check for AUDIT_GET is netlink_capable(skb, CAP_AUDIT_READ)
-// per kernel/audit.c — i.e., the proper read cap. Talking to
-// NETLINK_AUDIT directly bypasses the auditctl userspace policy and
-// honours the kernel's actual access control. The helper keeps only
-// CAP_AUDIT_READ in its ambient set.
+// 1.9.0 release note had this wrong; 1.9.1 corrects both the cap
+// requirement (caps-template now adds CAP_AUDIT_CONTROL for the
+// security tool) and the inline narrative.
 
 const (
 	auditGet           = 1000 // AUDIT_GET nlmsg_type
@@ -56,8 +60,8 @@ var errKernelAuditAbsent = errors.New("kernel audit subsystem not present")
 // Returns the parsed audit_status on success. Returns
 // errKernelAuditAbsent when the kernel does not implement
 // NETLINK_AUDIT (CONFIG_AUDIT=n). Every other failure mode (EPERM
-// from missing CAP_AUDIT_READ, timeout, malformed reply) is returned
-// verbatim so the daemon's warnings[] carries the cause.
+// from missing CAP_AUDIT_CONTROL, timeout, malformed reply) is
+// returned verbatim so the caller can surface the cause.
 func queryAuditStatus(ctx context.Context) (auditStatus, error) {
 	fd, err := unix.Socket(unix.AF_NETLINK, unix.SOCK_RAW|unix.SOCK_CLOEXEC, unix.NETLINK_AUDIT)
 	if err != nil {

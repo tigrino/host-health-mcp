@@ -23,11 +23,15 @@ NoNewPrivileges=yes
 # /etc/systemd/system/host-health-mcp-helper.service.d/caps.conf with
 # the per-op cap union; that drop-in sets BOTH CapabilityBoundingSet=
 # (CAP_CHOWN + per-op caps) and AmbientCapabilities= (per-op caps
-# only, no CAP_CHOWN). The ambient half matters because modern tools
-# (auditctl, etc.) introspect their effective set rather than fall
-# back on euid==0; under NoNewPrivileges=yes the kernel needs the
-# per-op cap in ambient to surface it as effective after execve.
-# Design 7 cap-templating.
+# only, no CAP_CHOWN). The ambient half matters for two reasons.
+# (1) Subprocesses (smartctl, lvs, etc.) need their per-op cap
+# inherited across execve under NoNewPrivileges=yes; an empty
+# ambient set leaves them with zero effective caps. (2) In-process
+# netlink syscalls (AUDIT_GET) are gated against the helper's own
+# effective set, which under NoNewPrivileges=yes is computed from
+# ambient ∪ (file_caps & bounding); ambient must carry
+# CAP_AUDIT_CONTROL for AUDIT_GET to succeed on Debian 13's 6.12.x
+# kernels. Design 7 cap-templating.
 CapabilityBoundingSet=CAP_CHOWN
 AmbientCapabilities=
 

@@ -3,6 +3,45 @@ title: Host Health MCP - Changelog
 author: Albert 'Tigr' Zenkoff <albert@tigr.net>
 ---
 
+# 1.9.1 (2026-05-15)
+
+## Correction to 1.9.0
+
+The 1.9.0 release note claimed: *"The kernel's actual check for
+AUDIT_GET is netlink_capable(skb, CAP_AUDIT_READ) per
+kernel/audit.c."* That was wrong. Empirical testing on Debian 13's
+6.12.x kernels: `AUDIT_GET` issued via raw netlink with only
+`CAP_AUDIT_READ` returns `EPERM`; the same call with
+`CAP_AUDIT_CONTROL` succeeds. `audit_netlink_ok()` routes
+`AUDIT_GET` through the same case block as `AUDIT_SET`,
+`AUDIT_ADD_RULE`, `AUDIT_DEL_RULES` — all governed by
+`CAP_AUDIT_CONTROL`. `CAP_AUDIT_READ` only gates `audit_bind()`
+for the multicast audit-event stream (rsyslog, auditd-plugins,
+laurel).
+
+## Install
+
+- `caps-template.sh`: the `security` row now adds
+  `CAP_AUDIT_CONTROL` (instead of `CAP_AUDIT_READ`) when the manifest
+  enables the security tool. The cap is picked up into both
+  `CapabilityBoundingSet` and `AmbientCapabilities` of the drop-in
+  by the existing emit logic; ambient is required because the
+  netlink call is in-process (`netlink_capable` checks the helper's
+  own effective set, not a subprocess's).
+- Helper unit doc-comment updated.
+
+## Helper
+
+- `read_audit_status` is now best-effort: an `AUDIT_GET` failure no
+  longer suppresses the filesystem-derived `last_rotation_ts`. The
+  op returns a partial result with `queue_depth`/`lost_events` null,
+  `last_rotation_ts` populated from `/var/log/audit/` if available,
+  and `netlink_error` carrying the failure string. The daemon
+  surfaces `netlink_error` as a warning. Previously a netlink EPERM
+  caused the entire op to return an error and the rotation
+  timestamp was dropped along with the netlink fields.
+- New `netlink_error` field on the `AuditStatus` helper response.
+
 # 1.9.0 (2026-05-15)
 
 ## Helper

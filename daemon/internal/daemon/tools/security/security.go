@@ -110,12 +110,15 @@ type helperAide struct {
 	ChangeCount   *int       `json:"change_count"`
 }
 
-// helperAudit mirrors the helper's AuditStatus.
+// helperAudit mirrors the helper's AuditStatus. NetlinkError is the
+// soft-error channel for AUDIT_GET failures that should not suppress
+// the filesystem-derived LastRotationTS.
 type helperAudit struct {
 	Present         bool       `json:"present"`
 	QueueDepth      *int       `json:"queue_depth"`
 	LostEvents      *int       `json:"lost_events"`
 	LastRotationTS  *time.Time `json:"last_rotation_ts"`
+	NetlinkError    string     `json:"netlink_error,omitempty"`
 }
 
 // helperFail2ban mirrors the helper's Fail2banStatusResult.
@@ -211,14 +214,14 @@ func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 		LostEvents:     audit.LostEvents,
 		LastRotationTS: audit.LastRotationTS,
 	}
-	// auditctl may be absent (Present:false from helper, no error) on
-	// hosts that have auditd installed but never invoke auditctl.
-	// When daemon binary detection says yes but helper says no, that
-	// is a contradiction worth surfacing: queue_depth and friends
-	// will be null and the operator should know why.
-	if !audit.Present && anyExists("/sbin/auditd", "/usr/sbin/auditd") {
-		addWarning("security: auditd binary present but auditctl not installed or unreachable; " +
-			"queue_depth/lost_events/last_rotation_ts null")
+	if audit.NetlinkError != "" {
+		addWarning("security: AUDIT_GET netlink failed: " + audit.NetlinkError +
+			" (queue_depth/lost_events null; last_rotation_ts still derived from /var/log/audit/)")
+	} else if !audit.Present && anyExists("/sbin/auditd", "/usr/sbin/auditd") {
+		// kernel reported CONFIG_AUDIT=n while userspace has the
+		// auditd binary — a real contradiction worth surfacing.
+		addWarning("security: auditd binary present but kernel has no audit subsystem " +
+			"(CONFIG_AUDIT=n); queue_depth/lost_events null")
 	}
 
 	// rkhunter scan moved to the helper: /var/log/rkhunter.log is
