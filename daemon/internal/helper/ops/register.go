@@ -31,4 +31,5 @@ func RegisterAll(r *dispatch.Registry) {
 	r.Register(proto.OpSshJournalCounts, SshJournalCounts)
 	r.Register(proto.OpSystemdTimerLastTrigger, SystemdTimerLastTrigger)
 	r.Register(proto.OpRkhunterSummary, RkhunterSummary)
+	r.Register(proto.OpUnattendedUpgradesStatus, UnattendedUpgradesStatus)
 }

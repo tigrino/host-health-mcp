@@ -23,6 +23,7 @@ const (
 	OpSshJournalCounts          = "ssh_journal_counts"
 	OpSystemdTimerLastTrigger   = "systemd_timer_last_trigger"
 	OpRkhunterSummary           = "rkhunter_summary"
+	OpUnattendedUpgradesStatus  = "unattended_upgrades_status"
 )
 
 // AllOps lists every op token in a stable order. Used by the helper to
@@ -47,6 +48,7 @@ var AllOps = []string{
 	OpSshJournalCounts,
 	OpSystemdTimerLastTrigger,
 	OpRkhunterSummary,
+	OpUnattendedUpgradesStatus,
 }
 
 // IsKnownOp reports whether op is one of the recognised tokens.

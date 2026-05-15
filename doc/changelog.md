@@ -3,6 +3,35 @@ title: Host Health MCP - Changelog
 author: Albert 'Tigr' Zenkoff <albert@tigr.net>
 ---
 
+# 1.5.0 (2026-05-15)
+
+## Daemon
+
+- `updates.unattended_upgrades_enabled`: detection moved from a
+  filename glob (`/etc/apt/apt.conf.d/*unattended-upgrades*`) plus
+  ReadDir of `/var/log/unattended-upgrades` to `apt-config dump`,
+  which is what apt itself consults. The glob missed the canonical
+  `20auto-upgrades` file shipped with the unattended-upgrades
+  package; the log directory is `root:root 0750` and the daemon
+  user couldn't traverse it. Both combined to a hard false negative
+  on otherwise correctly-configured hosts.
+- `updates.unattended_upgrades_last_run_ts`: now read from the
+  mtime of `/var/log/unattended-upgrades/unattended-upgrades.log`
+  via the helper.
+- `updates.unattended_upgrades_last_exit_code`: populated from the
+  trailing status line in the log per the script's conventions
+  (`All upgrades installed` → 0, `No packages found that can be
+  upgraded unattended` → 0, `Upgrade failed` → 1).
+
+## Helper
+
+- New op `unattended_upgrades_status`: runs `apt-config dump` for
+  enable-state and parses
+  `/var/log/unattended-upgrades/unattended-upgrades.log` for
+  last-run and exit code. Treats `apt-config` absent as
+  not-a-Debian-host (enabled=false, no error). Parser is covered
+  by table-driven tests.
+
 # 1.4.1 (2026-05-15)
 
 ## Daemon

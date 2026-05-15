@@ -7,9 +7,7 @@ package updates
 
 import (
 	"context"
-	"errors"
 	"os"
-	"path/filepath"
 	"sort"
 	"sync"
 	"time"
@@ -66,17 +64,25 @@ type needrestartResult struct {
 	PendingServices []string `json:"pending_services"`
 }
 
+// unattendedResult mirrors the helper's UnattendedUpgradesStatusResult.
+type unattendedResult struct {
+	Enabled      bool       `json:"enabled"`
+	LastRunTS    *time.Time `json:"last_run_ts"`
+	LastExitCode *int       `json:"last_exit_code"`
+}
+
 // Handle invokes both helper ops in parallel, then composes the
 // envelope around their results plus locally-read state.
 func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 	var (
-		apt   aptPendingResult
-		need  needrestartResult
-		aptErr, needErr error
+		apt    aptPendingResult
+		need   needrestartResult
+		uu     unattendedResult
+		aptErr, needErr, uuErr error
 	)
 
 	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(3)
 	go func() {
 		defer wg.Done()
 		aptErr = t.hc.CallJSON(ctx, proto.OpAptPending, "", &apt)
@@ -84,6 +90,10 @@ func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 	go func() {
 		defer wg.Done()
 		needErr = t.hc.CallJSON(ctx, proto.OpNeedrestart, "", &need)
+	}()
+	go func() {
+		defer wg.Done()
+		uuErr = t.hc.CallJSON(ctx, proto.OpUnattendedUpgradesStatus, "", &uu)
 	}()
 	wg.Wait()
 
@@ -129,41 +139,19 @@ func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 		d.LastAptUpdateTS = &ts
 	}
 
-	// unattended-upgrades presence is detected by the /var/log/unattended-
-	// upgrades directory; last-run via the newest log file in the dir.
-	if entries, err := os.ReadDir("/var/log/unattended-upgrades"); err == nil {
-		d.UnattendedUpgradesEnabled = true
-		var newest time.Time
-		for _, e := range entries {
-			if e.IsDir() {
-				continue
-			}
-			info, err := e.Info()
-			if err != nil {
-				continue
-			}
-			if info.ModTime().After(newest) {
-				newest = info.ModTime()
-			}
-		}
-		if !newest.IsZero() {
-			ts := newest.UTC()
-			d.UnattendedUpgradesLastRunTS = &ts
-		}
-	} else if errors.Is(err, os.ErrNotExist) {
-		d.UnattendedUpgradesEnabled = isUnattendedUpgradesAptConfig()
+	// Unattended-upgrades source-of-truth is `apt-config dump` (read
+	// via the helper, since /var/log/unattended-upgrades is
+	// root:root 0750 and the daemon user can't traverse it).
+	// Falling back to /etc/apt/apt.conf.d/*unattended-upgrades* glob
+	// missed the canonical "20auto-upgrades" file shipped by the
+	// unattended-upgrades package.
+	if uuErr != nil {
+		warnings = append(warnings, "updates: unattended_upgrades_status: "+uuErr.Error())
+	} else {
+		d.UnattendedUpgradesEnabled = uu.Enabled
+		d.UnattendedUpgradesLastRunTS = uu.LastRunTS
+		d.UnattendedUpgradesLastExitCode = uu.LastExitCode
 	}
 
 	return d, warnings, nil
-}
-
-// isUnattendedUpgradesAptConfig checks whether
-// /etc/apt/apt.conf.d/*unattended-upgrades* is present without
-// reading its contents. The presence itself indicates the operator
-// has chosen to ship the config; the value cannot be inferred from a
-// stat-only read but the package being installed is the operationally
-// useful signal.
-func isUnattendedUpgradesAptConfig() bool {
-	matches, _ := filepath.Glob("/etc/apt/apt.conf.d/*unattended-upgrades*")
-	return len(matches) > 0
 }
