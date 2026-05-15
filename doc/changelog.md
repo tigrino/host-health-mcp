@@ -3,6 +3,90 @@ title: Host Health MCP - Changelog
 author: Albert 'Tigr' Zenkoff <albert@tigr.net>
 ---
 
+# 1.10.0 (2026-05-15)
+
+Safe wave from the 1.9.5 security/quality audit. Each finding is
+operator-side approved as non-breaking and applied independently;
+see the changelog detail per commit.
+
+## Daemon
+
+- **A1.1 — cache + httpserver**: cache key uses the full SHA-256
+  (no longer truncated to 16 bytes; the 128-bit truncation gave a
+  2^64 birthday-collision surface for a global cache). httpserver
+  rejects bodies that fail `json.Valid` with a structured 400
+  `bad_argument` before they reach the cache; previously
+  `canonicaliseJSON` fell back to raw-byte hashing on parse error,
+  letting a caller pollute the cache with one entry per
+  byte-distinct invalid variant.
+- **A1.3 — audit**: `caller`, `tool`, `result`, `reject_reason`,
+  and individual `args` map values are `%q`-quoted; args keys are
+  sorted before render. Prevents future log parsers from being
+  mangled by control characters or `=`/`]` in cert CommonNames.
+- **A1.7 — `systemd_timer_last_trigger`**: positive-regex unit
+  validation (`^[A-Za-z0-9][A-Za-z0-9._@-]*\.timer$`); previously
+  the negative `ContainsAny` filter accepted leading `-` which
+  systemctl parses as a flag.
+- **A1.8 — `helperinvoke.Call`**: ctx.Done() watcher closes the
+  conn on bare cancellation (the prior `SetDeadline(ctx.Deadline())`
+  only fired when ctx carried a deadline). Plugin always sets a
+  deadline so no observable change today; fixes the bare-cancel
+  case for future direct callers.
+- **B1.2 — `ratelimit.bucket.refund`**: updates `lastTouched` when
+  refunding a global token to a caller whose tool-bucket take
+  failed. Without this, a caller hammering a per-tool cap could
+  loop indefinitely while appearing idle to the sweeper.
+- **B1.4 — daemon main**: cache sweeper goroutine selects on
+  `ctx.Done()` for clean shutdown, matching the pattern
+  `ratelimit.RunSweeper` already uses.
+
+## Helper
+
+- **B2.5 — `unattended_upgrades_status`**: log Stat failure is no
+  longer fatal. `Enabled` comes from `apt-config dump` and is
+  returned even when the log dir read fails — turning a hard error
+  into a degraded-data response. Fleet has seen the slow-storage
+  rotation race trip the previous path.
+- **B2.6/B2.7/B2.8 — dead code**: removed an empty `if
+  !errors.Is(err, fs.ErrNotExist)` branch in `audit_status`, an
+  unused `*int exit` return slot in `aide_summary.parseAideLog`,
+  and the `_ = strconv.Atoi` import-keepers in `mdraid` and
+  `apt_pending`. Two unused stdlib imports removed in turn.
+
+## Plugin
+
+- **A1.10 — client `ResolveHost`**: explicit IPv6-literal handling.
+  Bracketed forms (`[fe80::1]`, `[fe80::1]:8443`) parsed correctly;
+  bare unbracketed IPv6 rejected with a clear error asking the
+  caller to bracket. Previously `strings.Count(s, ":") == 1` for
+  `fe80::1` evaluated to `no port` and the resolver emitted
+  malformed `fe80::1:8443`. This deployment uses IPv4 hostnames so no
+  visibility today; removes a latent footgun for IPv6-only routing.
+
+## Build
+
+- **B4.1/B4.3 — forbidden-call linter**: added `os.StartProcess`,
+  `syscall.Exec`, `syscall.StartProcess`, and
+  `golang.org/x/sys/unix.Exec` to the rejected-symbol set. All four
+  bypass `os/exec` to fork or replace the current process,
+  defeating the chokepoint discipline the existing rules enforce.
+  Dot-import / underscore-import of `os/exec` are already caught
+  by the import-path check at the import line, which fires before
+  any unqualified usage could matter.
+
+## Deferred from this wave (per operator-side coordination)
+
+- **A1.2** — stderr/argv leakage in `warnings[]` strings. Operator-
+  side wants the structured per-source error block extended to
+  every helper-backed tool first, then the stderr crumbs dropped
+  from the strings. Scheduled for 1.11.0.
+- **A1.5 + C1** — TLS client-cert `clientAuth` EKU enforcement and
+  helper deadline budget. Both require ansible-side coordination
+  (CSR template patch + forced cert rotation across the fleet, then
+  per-tool timeout bumps). Scheduled for 1.12.0.
+- **A1.9, A2.10, A2.9, C8, C10, B5** — skipped / deferred per
+  operator-side verdict (see audit-response handoff).
+
 # 1.9.5 (2026-05-15)
 
 ## Helper
