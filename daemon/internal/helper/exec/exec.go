@@ -97,6 +97,11 @@ func classify(runErr error, stdout, stderr *bytes.Buffer, cmd *exec.Cmd) error {
 	stderrBytes := stderr.Len()
 	sum := sha256.Sum256(stderr.Bytes())
 	stderrHex := hex.EncodeToString(sum[:])
+	stderrPref := sanitiseStderrPrefix(stderr.Bytes())
+	// Clone argv so the dispatch.Error is independent of the cmd
+	// lifetime. cmd.Args is [name, ...args].
+	argv := make([]string, len(cmd.Args))
+	copy(argv, cmd.Args)
 
 	// Deadline / killed by context.
 	if errors.Is(runErr, context.DeadlineExceeded) {
@@ -105,6 +110,8 @@ func classify(runErr error, stdout, stderr *bytes.Buffer, cmd *exec.Cmd) error {
 			Message:      "deadline exceeded",
 			StderrBytes:  stderrBytes,
 			StderrSHA256: stderrHex,
+			StderrPrefix: stderrPref,
+			Argv:         argv,
 		}
 	}
 
@@ -116,6 +123,8 @@ func classify(runErr error, stdout, stderr *bytes.Buffer, cmd *exec.Cmd) error {
 			Message:      fmt.Sprintf("stdout exceeded %d bytes", MaxStdout),
 			StderrBytes:  stderrBytes,
 			StderrSHA256: stderrHex,
+			StderrPrefix: stderrPref,
+			Argv:         argv,
 		}
 	}
 
@@ -124,6 +133,7 @@ func classify(runErr error, stdout, stderr *bytes.Buffer, cmd *exec.Cmd) error {
 		return &dispatch.Error{
 			Code:    proto.CodeToolMissing,
 			Message: cmd.Path + ": not found",
+			Argv:    argv,
 		}
 	}
 
@@ -138,9 +148,43 @@ func classify(runErr error, stdout, stderr *bytes.Buffer, cmd *exec.Cmd) error {
 		Message:      cmd.Path + " exited non-zero",
 		StderrBytes:  stderrBytes,
 		StderrSHA256: stderrHex,
+		StderrPrefix: stderrPref,
 		ToolExit:     &exit,
+		Argv:         argv,
 	}
 }
+
+// sanitiseStderrPrefix copies up to stderrPrefixMax bytes from b,
+// replacing every non-printable byte (outside the ASCII printable
+// range with tab/newline preserved) with '.'. The result is safe to
+// include in JSON error envelopes that the daemon-side audit log
+// and the MCP client both consume. Operator-controlled stderr from
+// canonical tools rarely contains addresses or hostnames; the
+// redactor's allowlist is not consulted here because the helper
+// does not know the operator's network config.
+func sanitiseStderrPrefix(b []byte) string {
+	if len(b) > stderrPrefixMax {
+		b = b[:stderrPrefixMax]
+	}
+	out := make([]byte, len(b))
+	for i, c := range b {
+		switch {
+		case c == '\n', c == '\t', c == ' ':
+			out[i] = c
+		case c >= 0x20 && c < 0x7f:
+			out[i] = c
+		default:
+			out[i] = '.'
+		}
+	}
+	return string(out)
+}
+
+// stderrPrefixMax bounds the per-call stderr prefix that crosses the
+// helper socket. 200 bytes is enough to carry one line of a real
+// error message ("Permission denied", "Invalid argument", a smartctl
+// status line, etc.) without bloating the envelope.
+const stderrPrefixMax = 200
 
 // truncatedError is returned by cappedWriter when the configured cap
 // would be exceeded. Surfaced to the caller as CodeOutputTruncated.

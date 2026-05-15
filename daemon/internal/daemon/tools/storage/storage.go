@@ -87,10 +87,17 @@ type SmartSummary struct {
 }
 
 // SmartError is the structured per-device collection failure. Code is
-// drawn from a fixed enum (REQ 4.13).
+// drawn from a fixed enum (REQ 4.13). Argv, ExitCode, StderrSHA256,
+// and StderrPrefix were added in schema 0.2.0 so single-canary
+// diagnoses don't require a round-trip; clients that don't know the
+// new fields ignore them (additive-minor, version-matrix C2).
 type SmartError struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	Code         string   `json:"code"`
+	Message      string   `json:"message"`
+	Argv         []string `json:"argv,omitempty"`
+	ExitCode     *int     `json:"exit_code,omitempty"`
+	StderrSHA256 string   `json:"stderr_sha256,omitempty"`
+	StderrPrefix string   `json:"stderr_prefix,omitempty"`
 }
 
 // Tool is the registered tool.
@@ -233,8 +240,12 @@ func helperErrorToSmartError(err error) *SmartError {
 	var he *helperinvoke.HelperError
 	if errors.As(err, &he) {
 		return &SmartError{
-			Code:    mapHelperCode(he.Code),
-			Message: he.Message,
+			Code:         mapHelperCode(he.Code),
+			Message:      he.Message,
+			Argv:         he.Argv,
+			ExitCode:     he.ToolExit,
+			StderrSHA256: he.StderrSHA256,
+			StderrPrefix: he.StderrPrefix,
 		}
 	}
 	return &SmartError{Code: "tool_failed", Message: err.Error()}

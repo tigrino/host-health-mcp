@@ -50,7 +50,9 @@ type Response struct {
 	Message      string          `json:"message,omitempty"`
 	StderrBytes  int             `json:"stderr_bytes,omitempty"`
 	StderrSHA256 string          `json:"stderr_sha256,omitempty"`
+	StderrPrefix string          `json:"stderr_prefix,omitempty"`
 	ToolExit     *int            `json:"tool_exit,omitempty"`
+	Argv         []string        `json:"argv,omitempty"`
 }
 
 // WriteFrame writes a length-prefixed JSON-encoded value under the

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -132,20 +133,38 @@ func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 		sort.Strings(d.NeedrestartPendingServices)
 	}
 
-	// /var/lib/apt/periodic/update-success-stamp is touched by the apt
-	// timer when an update succeeds. Treat its mtime as the last apt
-	// update timestamp; absence is worth a warning so the operator can
-	// confirm Update-Package-Lists is on.
-	const aptStampPath = "/var/lib/apt/periodic/update-success-stamp"
-	if info, err := os.Stat(aptStampPath); err == nil {
-		ts := info.ModTime().UTC()
+	// apt's last-success stamp file moved between releases. Probe the
+	// canonical names from modern (apt 2.4+, Debian 12+) through the
+	// legacy name and take the freshest mtime.
+	aptStampCandidates := []string{
+		"/var/lib/apt/periodic/update-stamp",         // apt >= 2.4
+		"/var/lib/apt/periodic/update-success-stamp", // legacy
+	}
+	var (
+		newestStamp time.Time
+		foundStamp  bool
+	)
+	for _, p := range aptStampCandidates {
+		info, err := os.Stat(p)
+		if err == nil {
+			foundStamp = true
+			if mt := info.ModTime(); mt.After(newestStamp) {
+				newestStamp = mt
+			}
+			continue
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			warnings = append(warnings, "updates: stat "+p+": "+err.Error())
+		}
+	}
+	if foundStamp {
+		ts := newestStamp.UTC()
 		d.LastAptUpdateTS = &ts
-	} else if errors.Is(err, os.ErrNotExist) {
-		warnings = append(warnings,
-			"updates: "+aptStampPath+" absent; APT::Periodic::Update-Package-Lists "+
-				"may not be enabled or apt-daily.timer has never run successfully")
 	} else {
-		warnings = append(warnings, "updates: stat "+aptStampPath+": "+err.Error())
+		warnings = append(warnings,
+			"updates: none of "+strings.Join(aptStampCandidates, ", ")+
+				" exist; APT::Periodic::Update-Package-Lists may not be enabled "+
+				"or apt-daily.timer has never run successfully")
 	}
 
 	// Unattended-upgrades source-of-truth is `apt-config dump` (read

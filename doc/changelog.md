@@ -3,6 +3,45 @@ title: Host Health MCP - Changelog
 author: Albert 'Tigr' Zenkoff <albert@tigr.net>
 ---
 
+# 1.7.0 (2026-05-15)
+
+## Wire schema
+
+- Schema version bumped to **0.2.0** (additive-minor; version-matrix
+  C2 forward-compatible with 0.1.0 clients).
+- Per-source error blocks gain four optional fields: `argv`,
+  `exit_code`, `stderr_sha256`, `stderr_prefix`. Today populated on
+  `storage.smart[].error`; the same fields will appear on any
+  future per-source error block.
+
+## Daemon
+
+- Helper-invocation errors now carry the full subprocess argv, exit
+  code, SHA-256 of stderr (was already in the wire frame, now
+  surfaced), and a sanitised 200-char prefix of stderr. This
+  collapses an entire class of "did the fix land?" round-trips into
+  a single canary call — the operator can see exactly what was
+  executed and why it failed.
+- `storage.smart[].error` populates the new fields directly from the
+  helper response.
+- `HelperError.Error()` (used in `warnings[]` entries) now includes
+  argv, exit code, and stderr prefix so non-storage tools also
+  benefit even though their per-source error blocks haven't been
+  extended yet.
+- `updates.last_apt_update_ts`: probe order extended to cover
+  modern apt's stamp file. Tries `update-stamp` (apt >= 2.4) and
+  `update-success-stamp` (legacy), taking the freshest mtime.
+  Warning lists both names when neither exists.
+
+## Helper
+
+- `exec.classify` populates the new `Argv` and `StderrPrefix` fields
+  on `dispatch.Error` for every failure mode (deadline, truncation,
+  tool-missing, generic non-zero exit). Argv is the full subprocess
+  command vector; `StderrPrefix` is byte-level control-char
+  sanitised and capped at 200 chars before crossing the unix socket.
+  Raw stderr is still kept inside the helper.
+
 # 1.6.0 (2026-05-15)
 
 ## Daemon

@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 
 	"tigr.net/host-health-mcp/daemon/internal/shared/proto"
@@ -81,23 +82,42 @@ func (c *Client) Call(ctx context.Context, op string, param string) (json.RawMes
 			Message:      resp.Message,
 			StderrBytes:  resp.StderrBytes,
 			StderrSHA256: resp.StderrSHA256,
+			StderrPrefix: resp.StderrPrefix,
 			ToolExit:     resp.ToolExit,
+			Argv:         resp.Argv,
 		}
 	}
 	return resp.Data, nil
 }
 
 // HelperError is the typed error a helper call returns on Status=err.
+// Argv and StderrPrefix carry actionable diagnostics for per-source
+// error blocks (schema 0.2.0).
 type HelperError struct {
 	Code         string
 	Message      string
 	StderrBytes  int
 	StderrSHA256 string
+	StderrPrefix string
 	ToolExit     *int
+	Argv         []string
 }
 
 func (e *HelperError) Error() string {
-	return fmt.Sprintf("helper: %s: %s", e.Code, e.Message)
+	// The argv + stderr-prefix go into the human-readable string so
+	// logs and warnings[] both carry the actionable bits without the
+	// caller having to type-assert *HelperError.
+	parts := []string{fmt.Sprintf("helper: %s: %s", e.Code, e.Message)}
+	if len(e.Argv) > 0 {
+		parts = append(parts, "argv="+strings.Join(e.Argv, " "))
+	}
+	if e.ToolExit != nil {
+		parts = append(parts, fmt.Sprintf("exit=%d", *e.ToolExit))
+	}
+	if e.StderrPrefix != "" {
+		parts = append(parts, "stderr="+e.StderrPrefix)
+	}
+	return strings.Join(parts, " ")
 }
 
 // CallJSON wraps Call and unmarshals the result into v.

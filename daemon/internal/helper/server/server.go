@@ -186,36 +186,46 @@ func (s *Server) checkPeer(c net.Conn) bool {
 
 func (s *Server) dispatch(ctx context.Context, req *proto.Request) *proto.Response {
 	if !proto.IsKnownOp(req.Op) {
-		return errResp(proto.CodeBadOp, "unknown op token", 0, "", nil)
+		return errResp(proto.CodeBadOp, "unknown op token")
 	}
 	h, ok := s.cfg.Registry.Lookup(req.Op)
 	if !ok {
-		return errResp(proto.CodeBadOp, "op not compiled into this helper", 0, "", nil)
+		return errResp(proto.CodeBadOp, "op not compiled into this helper")
 	}
 
 	result, err := h(ctx, req.Param)
 	if err != nil {
 		var de *dispatch.Error
 		if errors.As(err, &de) {
-			return errResp(de.Code, de.Message, de.StderrBytes, de.StderrSHA256, de.ToolExit)
+			return errRespFromDispatch(de)
 		}
-		return errResp(proto.CodeInternal, err.Error(), 0, "", nil)
+		return errResp(proto.CodeInternal, err.Error())
 	}
 
 	body, mErr := json.Marshal(result)
 	if mErr != nil {
-		return errResp(proto.CodeInternal, "result marshal: "+mErr.Error(), 0, "", nil)
+		return errResp(proto.CodeInternal, "result marshal: "+mErr.Error())
 	}
 	return &proto.Response{Status: proto.StatusOK, Data: body}
 }
 
-func errResp(code, msg string, stderrBytes int, stderrSHA string, toolExit *int) *proto.Response {
+func errResp(code, msg string) *proto.Response {
+	return &proto.Response{
+		Status:  proto.StatusErr,
+		Code:    code,
+		Message: msg,
+	}
+}
+
+func errRespFromDispatch(de *dispatch.Error) *proto.Response {
 	return &proto.Response{
 		Status:       proto.StatusErr,
-		Code:         code,
-		Message:      msg,
-		StderrBytes:  stderrBytes,
-		StderrSHA256: stderrSHA,
-		ToolExit:     toolExit,
+		Code:         de.Code,
+		Message:      de.Message,
+		StderrBytes:  de.StderrBytes,
+		StderrSHA256: de.StderrSHA256,
+		StderrPrefix: de.StderrPrefix,
+		ToolExit:     de.ToolExit,
+		Argv:         de.Argv,
 	}
 }

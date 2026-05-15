@@ -20,12 +20,24 @@ type Handler func(ctx context.Context, param string) (result any, err error)
 
 // Error is the typed error a Handler may return to convey the helper-
 // side error code in proto/codes.go.
+//
+// Argv and StderrPrefix were added in schema 0.2.0 so the daemon's
+// per-source error blocks can carry actionable diagnostics back to
+// the operator. Argv is the full subprocess command vector
+// (deterministic and operator-validated where the param is operator-
+// supplied — smart device names, btrfs mountpoints, systemd unit
+// names). StderrPrefix is the leading 200 chars of subprocess
+// stderr after byte-level control-char sanitisation. Raw stderr is
+// still kept inside the helper; only the bounded, sanitised prefix
+// crosses the socket.
 type Error struct {
 	Code         string
 	Message      string
 	StderrBytes  int
 	StderrSHA256 string
+	StderrPrefix string
 	ToolExit     *int
+	Argv         []string
 }
 
 func (e *Error) Error() string {
