@@ -165,10 +165,7 @@ func readMaybeGzipped(path string) ([]byte, error) {
 // parseAideLog extracts (change_count, last_exit_code) from a single
 // log body. Conservative: returns nil pointers when nothing matches.
 func parseAideLog(body []byte) (*int, *int) {
-	var (
-		cnt  *int
-		exit *int
-	)
+	var cnt *int
 	scanner := bufio.NewScanner(bytes.NewReader(body))
 	scanner.Buffer(make([]byte, 64*1024), 64*1024)
 
@@ -203,8 +200,9 @@ func parseAideLog(body []byte) (*int, *int) {
 	}
 	// AIDE itself doesn't routinely log its exit status; operators
 	// often wrap it in a cron script that logs the exit code on its
-	// own line ("aide exit: N"). Leave exit nil unless a clear
-	// convention emerges; the operator's wrapper is free to add it.
-	_ = exit
+	// own line ("aide exit: N"). The daemon-side security.go
+	// parser handles the operator-supplied aide_log_path with a
+	// derived exit code; this helper-side log scan stays
+	// change-count-only.
 	return cnt, nil
 }

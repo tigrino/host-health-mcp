@@ -3,7 +3,6 @@ package ops
 import (
 	"context"
 	"errors"
-	"io/fs"
 	"os"
 	"regexp"
 	"strings"
@@ -89,10 +88,9 @@ var rotatedSuffixRE = regexp.MustCompile(`^[0-9]+(\.gz)?$`)
 func newestRotatedLog(dir, prefix string) time.Time {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		if !errors.Is(err, fs.ErrNotExist) {
-			// permission errors and similar fall through; the field
-			// being null is the correct signal.
-		}
+		// fs.ErrNotExist (no audit log dir on this host) and
+		// permission errors both result in a null LastRotationTS,
+		// which is the correct signal.
 		return time.Time{}
 	}
 	var newest time.Time

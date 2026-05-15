@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"io/fs"
 	"os"
 	"strings"
 	"time"
@@ -50,12 +49,14 @@ func UnattendedUpgradesStatus(ctx context.Context, _ string) (any, error) {
 
 	// Log parsing is best-effort: a host that just installed the
 	// package but hasn't run it yet has no log. That is not an error.
+	// Log stat is best-effort. If it fails for any reason (file
+	// missing, permission denied, dir-traversal race on a
+	// slow host where logrotate just ran), keep the
+	// apt-config-derived Enabled state and return — failing the
+	// whole op would mask Enabled, which IS known.
 	info, err := os.Stat(unattendedUpgradesLogPath)
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return out, nil
-		}
-		return nil, err
+		return out, nil
 	}
 	ts := info.ModTime().UTC()
 	out.LastRunTS = &ts

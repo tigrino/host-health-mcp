@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"regexp"
-	"strconv"
 
 	"host-health-mcp/daemon/internal/helper/dispatch"
 	helperexec "host-health-mcp/daemon/internal/helper/exec"
@@ -80,6 +79,5 @@ func MdraidDetail(ctx context.Context, param string) (any, error) {
 	// a follow-up; the --export form does not include it on every
 	// mdadm version, so we leave SyncProgress nil unless we saw a
 	// non-idle resync action above.
-	_ = strconv.Atoi // silence unused-import in case the file is extended
 	return out, nil
 }

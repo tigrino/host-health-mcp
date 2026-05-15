@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"strconv"
 	"strings"
 
 	helperexec "host-health-mcp/daemon/internal/helper/exec"
@@ -86,5 +85,3 @@ func extractHeld(b []byte) []string {
 	}
 	return held
 }
-
-var _ = strconv.Atoi // reserved for follow-up parser extensions
