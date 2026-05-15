@@ -403,8 +403,19 @@ func (t *Tool) fillAideFromLog(d *Aide, addWarning func(string)) {
 	}
 	switch {
 	case foundNoDiff && !foundDiff:
+		// AIDE's clean-state report is "AIDE found NO differences
+		// between database and filesystem". On that path AIDE 0.19.x
+		// omits the "Total number of differences:" header and the
+		// per-class "Added/Removed/Changed entries:" lines entirely
+		// — the headline is the only signal. Infer change_count=0
+		// from the headline instead of leaving it null, otherwise
+		// every clean run warns "change_count unparseable" even
+		// though the answer is trivially zero.
 		zero := 0
 		d.LastExitCode = &zero
+		if d.ChangeCount == nil {
+			d.ChangeCount = &zero
+		}
 	case foundDiff:
 		one := 1
 		d.LastExitCode = &one

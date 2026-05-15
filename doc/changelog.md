@@ -3,6 +3,19 @@ title: Host Health MCP - Changelog
 author: Albert 'Tigr' Zenkoff <albert@tigr.net>
 ---
 
+# 1.9.3 (2026-05-15)
+
+## Daemon
+
+- `security.aide_or_equivalent.change_count`: on a clean AIDE run
+  (`AIDE found NO differences between database and filesystem`),
+  AIDE 0.19.x omits the `Total number of differences:` header and
+  the per-class `Added/Removed/Changed entries:` lines entirely.
+  Inferring change_count from the headline match (0 when the
+  clean-state phrase appears) closes the last null in the canary's
+  security envelope; previously every clean run emitted
+  "change_count unparseable" alongside an exit_code:0.
+
 # 1.9.2 (2026-05-15)
 
 ## Helper
