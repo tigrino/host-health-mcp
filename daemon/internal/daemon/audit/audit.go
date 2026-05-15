@@ -7,6 +7,7 @@ package audit
 import (
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"time"
 )
@@ -42,16 +43,27 @@ func New() Logger {
 type stdLogger struct{}
 
 func (l *stdLogger) Log(e Entry) {
+	// All caller-influenced string fields are %q-quoted so that
+	// control characters, '=', ']', spaces, or newlines inside a
+	// client cert's CommonName cannot mangle a downstream
+	// (now-hypothetical, later-real) log parser. Args map keys are
+	// sorted to give deterministic output across calls — Go's range
+	// over a map is intentionally non-deterministic, so two
+	// otherwise-identical entries would render differently without
+	// the sort.
 	var args strings.Builder
-	first := true
-	for k, v := range e.Args {
-		if !first {
+	keys := make([]string, 0, len(e.Args))
+	for k := range e.Args {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for i, k := range keys {
+		if i > 0 {
 			args.WriteByte(',')
 		}
-		first = false
-		fmt.Fprintf(&args, "%s=%s", k, v)
+		fmt.Fprintf(&args, "%q=%q", k, e.Args[k])
 	}
-	log.Printf("audit caller=%s tool=%s args=[%s] size=%d duration_ms=%d result=%s reject_reason=%q",
+	log.Printf("audit caller=%q tool=%q args=[%s] size=%d duration_ms=%d result=%q reject_reason=%q",
 		e.CallerIdentity, e.Tool, args.String(), e.ResponseSize,
 		e.Duration.Milliseconds(), e.Result, e.RejectReason)
 }
