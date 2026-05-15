@@ -17,16 +17,22 @@ import (
 
 	"host-health-mcp/daemon/internal/daemon/helperinvoke"
 	"host-health-mcp/daemon/internal/shared/proto"
+	"host-health-mcp/daemon/internal/shared/schema"
 )
 
-// Data is the response data for tool security.
+// Data is the response data for tool security. Errors carries one
+// entry per failed helper invocation with the full structured
+// diagnostics (argv, exit, stderr fingerprint, stderr prefix);
+// warnings[] in the envelope carries only the section + op + code
+// summary (1.11.0 structured-error refactor).
 type Data struct {
-	AideOrEquivalent     Aide      `json:"aide_or_equivalent"`
-	Auditd               Auditd    `json:"auditd"`
-	Rkhunter             Rkhunter  `json:"rkhunter"`
-	DebsumsOrEquivalent  Debsums   `json:"debsums_or_equivalent"`
-	IntrusionPrevention  IPS       `json:"intrusion_prevention"`
-	SSHLogins            SSHLogins `json:"ssh_logins"`
+	AideOrEquivalent     Aide                    `json:"aide_or_equivalent"`
+	Auditd               Auditd                  `json:"auditd"`
+	Rkhunter             Rkhunter                `json:"rkhunter"`
+	DebsumsOrEquivalent  Debsums                 `json:"debsums_or_equivalent"`
+	IntrusionPrevention  IPS                     `json:"intrusion_prevention"`
+	SSHLogins            SSHLogins               `json:"ssh_logins"`
+	Errors               []schema.HelperOpError  `json:"errors,omitempty"`
 }
 
 // Aide mirrors the aide_or_equivalent block.
@@ -149,11 +155,29 @@ func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 		warnings = append(warnings, s)
 		warningsMu.Unlock()
 	}
+	// addOpError records a structured helper-call failure in
+	// d.Errors AND emits a short, code-only warning. The
+	// argv/stderr_prefix diagnostics live in d.Errors only; the
+	// warning string stays clean.
+	addOpError := func(opName string, err error) {
+		if err == nil {
+			return
+		}
+		oe := helperinvoke.OpErrorFrom(err)
+		oe.Op = opName
+		warningsMu.Lock()
+		d.Errors = append(d.Errors, *oe)
+		warningsMu.Unlock()
+		addWarning("security: " + opName + ": " + helperinvoke.CodeOf(err))
+	}
 
 	var (
-		aide     helperAide
-		audit    helperAudit
-		fail2ban helperFail2ban
+		aide        helperAide
+		audit       helperAudit
+		fail2ban    helperFail2ban
+		aideErr     error
+		auditErr    error
+		fail2banErr error
 	)
 	fail2banAttempted := false
 
@@ -161,25 +185,22 @@ func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		if err := t.hc.CallJSON(ctx, proto.OpReadAideSummary, "", &aide); err != nil {
-			addWarning("security: read_aide_summary: " + err.Error())
-		}
+		aideErr = t.hc.CallJSON(ctx, proto.OpReadAideSummary, "", &aide)
 	}()
 	go func() {
 		defer wg.Done()
-		if err := t.hc.CallJSON(ctx, proto.OpReadAuditStatus, "", &audit); err != nil {
-			addWarning("security: read_audit_status: " + err.Error())
-		}
+		auditErr = t.hc.CallJSON(ctx, proto.OpReadAuditStatus, "", &audit)
 	}()
 	wg.Wait()
+	addOpError(proto.OpReadAideSummary, aideErr)
+	addOpError(proto.OpReadAuditStatus, auditErr)
 
 	// fail2ban probe runs only when the backend is detected to avoid
 	// invoking the helper for an absent binary.
 	if detectIPS() == "fail2ban" {
 		fail2banAttempted = true
-		if err := t.hc.CallJSON(ctx, proto.OpFail2banStatus, "", &fail2ban); err != nil {
-			addWarning("security: fail2ban_status: " + err.Error())
-		}
+		fail2banErr = t.hc.CallJSON(ctx, proto.OpFail2banStatus, "", &fail2ban)
+		addOpError(proto.OpFail2banStatus, fail2banErr)
 	}
 
 	d.AideOrEquivalent = Aide{
@@ -229,7 +250,7 @@ func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 	// read it. The helper (root, CAP_DAC_READ_SEARCH) covers both.
 	var rk helperRkhunter
 	if err := t.hc.CallJSON(ctx, proto.OpRkhunterSummary, "", &rk); err != nil {
-		addWarning("security: rkhunter_summary: " + err.Error())
+		addOpError(proto.OpRkhunterSummary, err)
 	}
 	d.Rkhunter.Present = rk.Present || anyExists("/usr/bin/rkhunter", "/usr/sbin/rkhunter")
 	d.Rkhunter.LastRunTS = rk.LastRunTS
@@ -243,7 +264,7 @@ func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 
 	d.DebsumsOrEquivalent.Present = anyExists("/usr/bin/debsums")
 	if d.DebsumsOrEquivalent.Present {
-		t.fillDebsums(ctx, &d.DebsumsOrEquivalent, addWarning)
+		t.fillDebsums(ctx, &d.DebsumsOrEquivalent, addWarning, addOpError)
 	}
 
 	d.IntrusionPrevention.BackendInUse = detectIPS()
@@ -268,7 +289,7 @@ func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 	} else {
 		var jc helperSshJournalCounts
 		if err := t.hc.CallJSON(ctx, proto.OpSshJournalCounts, "", &jc); err != nil {
-			addWarning("security: ssh_journal_counts: " + err.Error())
+			addOpError(proto.OpSshJournalCounts, err)
 		} else if jc.Present {
 			d.SSHLogins.AcceptedSinceBoot = jc.AcceptedSinceBoot
 			d.SSHLogins.FailedSinceBoot = jc.FailedSinceBoot
@@ -297,7 +318,7 @@ type helperSystemdTimer struct {
 //   2. debsums-check.timer's LastTriggerUSec via the helper (Debian
 //      packages of debsums-mail ship this timer);
 //   3. nothing — emit a warning so the operator sees the config gap.
-func (t *Tool) fillDebsums(ctx context.Context, d *Debsums, addWarning func(string)) {
+func (t *Tool) fillDebsums(ctx context.Context, d *Debsums, addWarning func(string), addOpError func(string, error)) {
 	if t.debsumsLogPath != "" {
 		info, err := os.Stat(t.debsumsLogPath)
 		if err != nil {
@@ -317,8 +338,9 @@ func (t *Tool) fillDebsums(ctx context.Context, d *Debsums, addWarning func(stri
 	// No path configured: try the timer as a secondary signal.
 	var tim helperSystemdTimer
 	if err := t.hc.CallJSON(ctx, proto.OpSystemdTimerLastTrigger, "debsums-check.timer", &tim); err != nil {
+		addOpError(proto.OpSystemdTimerLastTrigger, err)
 		addWarning("security: debsums installed but no debsums_log_path is configured " +
-			"and debsums-check.timer is unreachable (" + err.Error() + ")")
+			"and debsums-check.timer is unreachable; see errors[] for cause")
 		return
 	}
 	switch {

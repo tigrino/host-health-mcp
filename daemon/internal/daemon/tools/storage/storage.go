@@ -17,17 +17,22 @@ import (
 
 	"host-health-mcp/daemon/internal/daemon/helperinvoke"
 	"host-health-mcp/daemon/internal/shared/proto"
+	"host-health-mcp/daemon/internal/shared/schema"
 )
 
 // Data is the response data for tool storage. Mirrors StorageData in
-// doc/schema-draft.yaml.
+// doc/schema-draft.yaml. Per-device SMART errors stay on the device
+// (smart[].error). Tool-level Errors carries one entry per failed
+// helper call for sections that aren't per-element (mdraid lookups
+// per array, lvm_report, zpool_status, btrfs_scrub per mountpoint).
 type Data struct {
-	Mdraid   []MdraidArray  `json:"mdraid"`
-	LvmVgs   []LvmVg        `json:"lvm_vgs"`
-	LvmLvs   []LvmLv        `json:"lvm_lvs"`
-	Smart    []SmartSummary `json:"smart"`
-	Btrfs    []BtrfsScrub   `json:"btrfs"`
-	ZfsPools []ZfsPool      `json:"zfs_pools"`
+	Mdraid   []MdraidArray          `json:"mdraid"`
+	LvmVgs   []LvmVg                `json:"lvm_vgs"`
+	LvmLvs   []LvmLv                `json:"lvm_lvs"`
+	Smart    []SmartSummary         `json:"smart"`
+	Btrfs    []BtrfsScrub           `json:"btrfs"`
+	ZfsPools []ZfsPool              `json:"zfs_pools"`
+	Errors   []schema.HelperOpError `json:"errors,omitempty"`
 }
 
 // LvmVg mirrors the helper's typed VG row.
@@ -85,22 +90,8 @@ type SmartSummary struct {
 	TemperatureC        *int         `json:"temperature_c,omitempty"`
 	ReallocatedSectors  *int         `json:"reallocated_sectors,omitempty"`
 	PowerOnHours        *int         `json:"power_on_hours,omitempty"`
-	SmartctlExitCode    *int         `json:"smartctl_exit_code,omitempty"`
-	Error               *SmartError  `json:"error,omitempty"`
-}
-
-// SmartError is the structured per-device collection failure. Code is
-// drawn from a fixed enum (REQ 4.13). Argv, ExitCode, StderrSHA256,
-// and StderrPrefix were added in schema 0.2.0 so single-canary
-// diagnoses don't require a round-trip; clients that don't know the
-// new fields ignore them (additive-minor, version-matrix C2).
-type SmartError struct {
-	Code         string   `json:"code"`
-	Message      string   `json:"message"`
-	Argv         []string `json:"argv,omitempty"`
-	ExitCode     *int     `json:"exit_code,omitempty"`
-	StderrSHA256 string   `json:"stderr_sha256,omitempty"`
-	StderrPrefix string   `json:"stderr_prefix,omitempty"`
+	SmartctlExitCode    *int                  `json:"smartctl_exit_code,omitempty"`
+	Error               *schema.HelperOpError `json:"error,omitempty"`
 }
 
 // Tool is the registered tool.
@@ -149,6 +140,12 @@ func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 		ZfsPools: []ZfsPool{},
 	}
 	var warnings []string
+	addOpError := func(opName string, err error) {
+		oe := helperinvoke.OpErrorFrom(err)
+		oe.Op = opName
+		d.Errors = append(d.Errors, *oe)
+		warnings = append(warnings, "storage: "+opName+": "+helperinvoke.CodeOf(err))
+	}
 
 	devices, err := enumerateBlockDevices()
 	if err != nil {
@@ -165,7 +162,7 @@ func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 	for _, arr := range arrays {
 		var ma MdraidArray
 		if err := t.hc.CallJSON(ctx, proto.OpMdraidDetail, arr, &ma); err != nil {
-			warnings = append(warnings, "storage: mdraid_detail "+arr+": "+err.Error())
+			addOpError(proto.OpMdraidDetail+":"+arr, err)
 			continue
 		}
 		d.Mdraid = append(d.Mdraid, ma)
@@ -178,7 +175,7 @@ func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 		LVs []LvmLv `json:"lvs"`
 	}
 	if err := t.hc.CallJSON(ctx, proto.OpLvmReport, "", &lvm); err != nil {
-		warnings = append(warnings, "storage: lvm_report: "+err.Error())
+		addOpError(proto.OpLvmReport, err)
 	} else {
 		d.LvmVgs = lvm.VGs
 		d.LvmLvs = lvm.LVs
@@ -189,7 +186,7 @@ func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 		Pools []ZfsPool `json:"pools"`
 	}
 	if err := t.hc.CallJSON(ctx, proto.OpZpoolStatus, "", &zfs); err != nil {
-		warnings = append(warnings, "storage: zpool_status: "+err.Error())
+		addOpError(proto.OpZpoolStatus, err)
 	} else {
 		d.ZfsPools = zfs.Pools
 	}
@@ -200,7 +197,7 @@ func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 	for _, mp := range t.btrfsMountpoints {
 		var b BtrfsScrub
 		if err := t.hc.CallJSON(ctx, proto.OpBtrfsScrub, mp, &b); err != nil {
-			warnings = append(warnings, "storage: btrfs_scrub "+mp+": "+err.Error())
+			addOpError(proto.OpBtrfsScrub+":"+mp, err)
 			continue
 		}
 		d.Btrfs = append(d.Btrfs, b)
@@ -239,19 +236,15 @@ func (t *Tool) collectSmart(ctx context.Context, devices []string) []SmartSummar
 	return out
 }
 
-func helperErrorToSmartError(err error) *SmartError {
-	var he *helperinvoke.HelperError
-	if errors.As(err, &he) {
-		return &SmartError{
-			Code:         mapHelperCode(he.Code),
-			Message:      he.Message,
-			Argv:         he.Argv,
-			ExitCode:     he.ToolExit,
-			StderrSHA256: he.StderrSHA256,
-			StderrPrefix: he.StderrPrefix,
-		}
+// helperErrorToSmartError converts a helper-call failure into the
+// per-source error block, with the helper's proto.Code* mapped down
+// to the REQ 4.13 enum.
+func helperErrorToSmartError(err error) *schema.HelperOpError {
+	op := helperinvoke.OpErrorFrom(err)
+	if op != nil {
+		op.Code = mapHelperCode(op.Code)
 	}
-	return &SmartError{Code: "tool_failed", Message: err.Error()}
+	return op
 }
 
 // mapHelperCode collapses the helper's proto.Code* set into the

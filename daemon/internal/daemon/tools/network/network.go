@@ -21,16 +21,18 @@ import (
 
 	"host-health-mcp/daemon/internal/daemon/helperinvoke"
 	"host-health-mcp/daemon/internal/shared/proto"
+	"host-health-mcp/daemon/internal/shared/schema"
 )
 
 // Data is the response data for tool network. Mirrors NetworkData in
 // doc/schema-draft.yaml.
 type Data struct {
-	Interfaces                  []NetworkInterface  `json:"interfaces"`
-	DefaultRoutes               []DefaultRoute      `json:"default_routes"`
-	NftTableCounts              map[string]NftTable `json:"nft_table_counts"`
-	ResolvConfFirstNameserver   *string             `json:"resolv_conf_first_nameserver"`
-	IPv6PolicyCompliant         bool                `json:"ipv6_policy_compliant"`
+	Interfaces                  []NetworkInterface     `json:"interfaces"`
+	DefaultRoutes               []DefaultRoute         `json:"default_routes"`
+	NftTableCounts              map[string]NftTable    `json:"nft_table_counts"`
+	ResolvConfFirstNameserver   *string                `json:"resolv_conf_first_nameserver"`
+	IPv6PolicyCompliant         bool                   `json:"ipv6_policy_compliant"`
+	Errors                      []schema.HelperOpError `json:"errors,omitempty"`
 }
 
 // NetworkInterface mirrors the schema.
@@ -137,7 +139,10 @@ func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 		} `json:"tables"`
 	}
 	if err := t.hc.CallJSON(ctx, proto.OpNftTableCounts, "", &nft); err != nil {
-		warnings = append(warnings, "network: nft_table_counts: "+err.Error())
+		oe := helperinvoke.OpErrorFrom(err)
+		oe.Op = proto.OpNftTableCounts
+		d.Errors = append(d.Errors, *oe)
+		warnings = append(warnings, "network: "+proto.OpNftTableCounts+": "+helperinvoke.CodeOf(err))
 	} else {
 		for k, v := range nft.Tables {
 			d.NftTableCounts[k] = NftTable{

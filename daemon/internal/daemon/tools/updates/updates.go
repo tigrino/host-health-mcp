@@ -16,20 +16,22 @@ import (
 
 	"host-health-mcp/daemon/internal/daemon/helperinvoke"
 	"host-health-mcp/daemon/internal/shared/proto"
+	"host-health-mcp/daemon/internal/shared/schema"
 )
 
 // Data is the response data for tool updates. Mirrors UpdatesData in
 // doc/schema-draft.yaml.
 type Data struct {
-	AptLockState                   string     `json:"apt_lock_state"`
-	SecurityUpdatesPending         *int       `json:"security_updates_pending"`
-	RegularUpdatesPending          *int       `json:"regular_updates_pending"`
-	HeldPackages                   []string   `json:"held_packages"`
-	LastAptUpdateTS                *time.Time `json:"last_apt_update_ts"`
-	UnattendedUpgradesEnabled      bool       `json:"unattended_upgrades_enabled"`
-	UnattendedUpgradesLastRunTS    *time.Time `json:"unattended_upgrades_last_run_ts"`
-	UnattendedUpgradesLastExitCode *int       `json:"unattended_upgrades_last_exit_code"`
-	NeedrestartPendingServices     []string   `json:"needrestart_pending_services"`
+	AptLockState                   string                 `json:"apt_lock_state"`
+	SecurityUpdatesPending         *int                   `json:"security_updates_pending"`
+	RegularUpdatesPending          *int                   `json:"regular_updates_pending"`
+	HeldPackages                   []string               `json:"held_packages"`
+	LastAptUpdateTS                *time.Time             `json:"last_apt_update_ts"`
+	UnattendedUpgradesEnabled      bool                   `json:"unattended_upgrades_enabled"`
+	UnattendedUpgradesLastRunTS    *time.Time             `json:"unattended_upgrades_last_run_ts"`
+	UnattendedUpgradesLastExitCode *int                   `json:"unattended_upgrades_last_exit_code"`
+	NeedrestartPendingServices     []string               `json:"needrestart_pending_services"`
+	Errors                         []schema.HelperOpError `json:"errors,omitempty"`
 }
 
 // Tool is the registered tool.
@@ -107,8 +109,18 @@ func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 		AptLockState:               "unknown",
 	}
 
+	addOpError := func(opName string, err error) {
+		if err == nil {
+			return
+		}
+		oe := helperinvoke.OpErrorFrom(err)
+		oe.Op = opName
+		d.Errors = append(d.Errors, *oe)
+		warnings = append(warnings, "updates: "+opName+": "+helperinvoke.CodeOf(err))
+	}
+
 	if aptErr != nil {
-		warnings = append(warnings, "updates: apt_pending: "+aptErr.Error())
+		addOpError(proto.OpAptPending, aptErr)
 	} else {
 		if apt.LockState == "" {
 			// Helper returned an empty envelope. Treat as a non-fatal
@@ -127,7 +139,7 @@ func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 	}
 
 	if needErr != nil {
-		warnings = append(warnings, "updates: needrestart: "+needErr.Error())
+		addOpError(proto.OpNeedrestart, needErr)
 	} else if need.PendingServices != nil {
 		d.NeedrestartPendingServices = need.PendingServices
 		sort.Strings(d.NeedrestartPendingServices)
@@ -174,7 +186,7 @@ func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 	// missed the canonical "20auto-upgrades" file shipped by the
 	// unattended-upgrades package.
 	if uuErr != nil {
-		warnings = append(warnings, "updates: unattended_upgrades_status: "+uuErr.Error())
+		addOpError(proto.OpUnattendedUpgradesStatus, uuErr)
 	} else {
 		d.UnattendedUpgradesEnabled = uu.Enabled
 		d.UnattendedUpgradesLastRunTS = uu.LastRunTS

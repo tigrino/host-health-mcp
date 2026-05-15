@@ -9,13 +9,14 @@ package helperinvoke
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
-	"strings"
 	"sync"
 	"time"
 
 	"host-health-mcp/daemon/internal/shared/proto"
+	"host-health-mcp/daemon/internal/shared/schema"
 )
 
 // Client dials the helper's unix socket per call. Calls do not share a
@@ -120,21 +121,56 @@ type HelperError struct {
 	Argv         []string
 }
 
+// Error returns a short, code-only summary. Argv, exit code, and
+// stderr prefix are deliberately NOT included so that warning
+// strings built from `err.Error()` don't leak subprocess command
+// vectors or stderr bytes into the envelope. Callers that want the
+// actionable diagnostics should place the structured field via
+// AsOpError() into their tool's response data instead.
 func (e *HelperError) Error() string {
-	// The argv + stderr-prefix go into the human-readable string so
-	// logs and warnings[] both carry the actionable bits without the
-	// caller having to type-assert *HelperError.
-	parts := []string{fmt.Sprintf("helper: %s: %s", e.Code, e.Message)}
-	if len(e.Argv) > 0 {
-		parts = append(parts, "argv="+strings.Join(e.Argv, " "))
+	if e.Message != "" {
+		return fmt.Sprintf("helper: %s: %s", e.Code, e.Message)
 	}
-	if e.ToolExit != nil {
-		parts = append(parts, fmt.Sprintf("exit=%d", *e.ToolExit))
+	return "helper: " + e.Code
+}
+
+// AsOpError returns the wire-schema HelperOpError shape carrying the
+// full structured diagnostics. Used by tools that surface a
+// per-source error block in their response.
+func (e *HelperError) AsOpError() *schema.HelperOpError {
+	return &schema.HelperOpError{
+		Code:         e.Code,
+		Message:      e.Message,
+		Argv:         e.Argv,
+		ExitCode:     e.ToolExit,
+		StderrSHA256: e.StderrSHA256,
+		StderrPrefix: e.StderrPrefix,
 	}
-	if e.StderrPrefix != "" {
-		parts = append(parts, "stderr="+e.StderrPrefix)
+}
+
+// OpErrorFrom converts any error into a *schema.HelperOpError. A
+// *HelperError contributes its structured fields; anything else
+// becomes a generic tool_failed with the error string in Message.
+func OpErrorFrom(err error) *schema.HelperOpError {
+	if err == nil {
+		return nil
 	}
-	return strings.Join(parts, " ")
+	var he *HelperError
+	if errors.As(err, &he) {
+		return he.AsOpError()
+	}
+	return &schema.HelperOpError{Code: "tool_failed", Message: err.Error()}
+}
+
+// CodeOf extracts the helper error code from err, or returns
+// "tool_failed" for any non-HelperError. Used by tool code that
+// builds short warning strings.
+func CodeOf(err error) string {
+	var he *HelperError
+	if errors.As(err, &he) {
+		return he.Code
+	}
+	return "tool_failed"
 }
 
 // CallJSON wraps Call and unmarshals the result into v.

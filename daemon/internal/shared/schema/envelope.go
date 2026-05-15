@@ -9,7 +9,7 @@ import (
 
 // SchemaVersion is the semver baked into the daemon at build. Bumped per
 // REQ 7.3: minor on field-additive, major on field-removal or rename.
-const SchemaVersion = "0.3.0"
+const SchemaVersion = "0.4.0"
 
 // Envelope is the response shape for a successful tool call.
 type Envelope struct {

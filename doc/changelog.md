@@ -3,6 +3,54 @@ title: Host Health MCP - Changelog
 author: Albert 'Tigr' Zenkoff <albert@tigr.net>
 ---
 
+# 1.11.0 (2026-05-15)
+
+A1.2 from the audit: extend the structured per-source error pattern
+(originally only on `storage.smart[].error`) to every helper-backed
+tool, and stop putting argv/exit/stderr_prefix into `warnings[]`
+strings. Same diagnostics, structured + redactable; the privacy
+posture improves without losing operator-side observability.
+
+## Wire schema
+
+- Schema version bumped to **0.4.0** (additive-minor; version-matrix
+  C2 forward-compatible with 0.3.0 clients).
+- New `schema.HelperOpError` type defined in
+  `daemon/internal/shared/schema/error.go`. Fields: `op` (omitempty;
+  helper op name when used in a tool-level array), `code`, `message`,
+  `argv`, `exit_code`, `stderr_sha256`, `stderr_prefix`. The shape
+  matches and replaces `storage.SmartError`.
+- Every helper-backed tool's `Data` gains an optional
+  `errors[]` field of `HelperOpError`. Populated with one entry per
+  failed helper call.
+
+## Daemon
+
+- `helperinvoke.HelperError.Error()` no longer formats argv, exit
+  code, or stderr prefix into the returned string — only `helper:
+  <code>: <message>`. Callers that need the structured diagnostics
+  go through `helperinvoke.OpErrorFrom(err)` / `(*HelperError).AsOpError()`.
+- New `helperinvoke.OpErrorFrom(err) *schema.HelperOpError` and
+  `helperinvoke.CodeOf(err) string` helpers.
+- `storage.SmartError` removed; `storage.smart[].error` uses the
+  shared `schema.HelperOpError` (wire-compatible — same JSON shape).
+- `security`, `updates`, `mail`, `network`, and `storage` all now
+  populate `errors[]` on helper-call failures and emit code-only
+  `warnings[]` strings (`<tool>: <op>: <code>`). The argv, exit code,
+  stderr SHA-256, and 200-char stderr prefix live in the structured
+  field where they can be inspected or redacted at the egress.
+- `logs` returns the helper error as a tool-level failure (envelope
+  `error.code = "tool_failed"` with a fixed `error.message`); no
+  warnings-side leak, no per-source field needed.
+
+## Operator-visible
+
+- Warnings strings shrink to short codes. If a downstream parser
+  was extracting argv/stderr from warning strings, it should now
+  read `data.errors[].argv` etc. instead.
+- For tools whose data uses per-element error blocks
+  (`storage.smart[]`), behaviour is unchanged.
+
 # 1.10.0 (2026-05-15)
 
 Safe wave from the 1.9.5 security/quality audit. Each finding is

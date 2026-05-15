@@ -12,16 +12,18 @@ import (
 
 	"host-health-mcp/daemon/internal/daemon/helperinvoke"
 	"host-health-mcp/daemon/internal/shared/proto"
+	"host-health-mcp/daemon/internal/shared/schema"
 )
 
 // Data is the response data for tool mail. Mirrors MailData in
 // doc/schema-draft.yaml.
 type Data struct {
-	MTAInUse              string     `json:"mta_in_use"`
-	QueueDepth            int        `json:"queue_depth"`
-	LastSuccessfulSendTS  *time.Time `json:"last_successful_send_ts"`
-	LastFailureTS         *time.Time `json:"last_failure_ts"`
-	LastFailureReason     *string    `json:"last_failure_reason"`
+	MTAInUse              string                 `json:"mta_in_use"`
+	QueueDepth            int                    `json:"queue_depth"`
+	LastSuccessfulSendTS  *time.Time             `json:"last_successful_send_ts"`
+	LastFailureTS         *time.Time             `json:"last_failure_ts"`
+	LastFailureReason     *string                `json:"last_failure_reason"`
+	Errors                []schema.HelperOpError `json:"errors,omitempty"`
 }
 
 // Tool is the registered tool.
@@ -56,7 +58,10 @@ func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 	if d.MTAInUse == "postfix" {
 		var pq helperPostqueue
 		if err := t.hc.CallJSON(ctx, proto.OpPostqueue, "", &pq); err != nil {
-			warnings = append(warnings, "mail: postqueue: "+err.Error())
+			oe := helperinvoke.OpErrorFrom(err)
+			oe.Op = proto.OpPostqueue
+			d.Errors = append(d.Errors, *oe)
+			warnings = append(warnings, "mail: "+proto.OpPostqueue+": "+helperinvoke.CodeOf(err))
 		} else {
 			d.QueueDepth = pq.QueueDepth
 		}
