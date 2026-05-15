@@ -15,11 +15,15 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
-// Entry is one cached payload.
+// Entry is one cached payload. Warnings is the tool's
+// warnings[] slice as returned by Tool.Handle; it must travel
+// alongside Data because warnings are properties of the tool run, not
+// of the request, and must persist across cache hits.
 type Entry struct {
-	Data    json.RawMessage
-	Builtat time.Time
-	TTL     time.Duration
+	Data     json.RawMessage
+	Warnings []string
+	Builtat  time.Time
+	TTL      time.Duration
 }
 
 // Age returns how long ago the entry was constructed.
@@ -93,16 +97,16 @@ func (c *Cache) Store(key string, e Entry) {
 }
 
 // Do executes fn under singleflight keyed by k. Concurrent callers of
-// Do with the same k will share one invocation of fn and one result.
+// Do with the same k will share one invocation of fn and one Entry.
 // fn is expected to populate the cache itself on success.
-func (c *Cache) Do(ctx context.Context, k string, fn func() (json.RawMessage, error)) (json.RawMessage, error) {
+func (c *Cache) Do(ctx context.Context, k string, fn func() (Entry, error)) (Entry, error) {
 	v, err, _ := c.sf.Do(k, func() (any, error) {
 		return fn()
 	})
 	if err != nil {
-		return nil, err
+		return Entry{}, err
 	}
-	return v.(json.RawMessage), nil
+	return v.(Entry), nil
 }
 
 // Sweep evicts entries whose age exceeds their TTL. Called by a

@@ -166,7 +166,7 @@ func (s *Server) handleToolBody(w http.ResponseWriter, r *http.Request, tool too
 	key := cache.Key(toolName, body)
 
 	if entry, ok := s.cache.Lookup(key); ok {
-		s.writeEnvelope(w, entry.Data, int(entry.Age().Seconds()), nil)
+		s.writeEnvelope(w, entry.Data, int(entry.Age().Seconds()), entry.Warnings)
 		s.auditor.Log(audit.Entry{
 			CallerIdentity: caller,
 			Tool:           toolName,
@@ -181,49 +181,37 @@ func (s *Server) handleToolBody(w http.ResponseWriter, r *http.Request, tool too
 	toolCtx, cancel := context.WithTimeout(r.Context(), timeout)
 	defer cancel()
 
-	data, err := s.cache.Do(toolCtx, key, func() (json.RawMessage, error) {
+	entry, err := s.cache.Do(toolCtx, key, func() (cache.Entry, error) {
 		result, warnings, herr := tool.Handle(toolCtx, body)
 		if herr != nil {
-			return nil, herr
+			return cache.Entry{}, herr
 		}
-		env := buildEnvelopeBody(result, warnings)
-		raw, mErr := json.Marshal(env.Data)
+		raw, mErr := json.Marshal(result)
 		if mErr != nil {
-			return nil, mErr
+			return cache.Entry{}, mErr
 		}
-		s.cache.Store(key, cache.Entry{
-			Data:    raw,
-			Builtat: time.Now(),
-			TTL:     ttl,
-		})
-		return raw, nil
+		e := cache.Entry{
+			Data:     raw,
+			Warnings: warnings,
+			Builtat:  time.Now(),
+			TTL:      ttl,
+		}
+		s.cache.Store(key, e)
+		return e, nil
 	})
 	if err != nil {
 		s.handleToolError(w, r, toolName, err, start)
 		return
 	}
 
-	s.writeEnvelope(w, data, 0, nil)
+	s.writeEnvelope(w, entry.Data, 0, entry.Warnings)
 	s.auditor.Log(audit.Entry{
 		CallerIdentity: caller,
 		Tool:           toolName,
-		ResponseSize:   len(data),
+		ResponseSize:   len(entry.Data),
 		Duration:       time.Since(start),
 		Result:         "ok",
 	})
-}
-
-type envelopeBody struct {
-	Data     json.RawMessage
-	Warnings []string
-}
-
-func buildEnvelopeBody(result any, warnings []string) envelopeBody {
-	raw, err := json.Marshal(result)
-	if err != nil {
-		raw = json.RawMessage(`null`)
-	}
-	return envelopeBody{Data: raw, Warnings: warnings}
 }
 
 func (s *Server) writeEnvelope(w http.ResponseWriter, data json.RawMessage, cacheAgeS int, warnings []string) {

@@ -3,6 +3,39 @@ title: Host Health MCP - Changelog
 author: Albert 'Tigr' Zenkoff <albert@tigr.net>
 ---
 
+# 1.6.0 (2026-05-15)
+
+## Daemon
+
+- **Critical envelope bug**: every tool's `warnings[]` slice was
+  silently dropped at the HTTP boundary. The cache stored only
+  `Data`, and `writeEnvelope` was called with `nil` warnings on both
+  cache-hit and cache-miss paths. Every "no silent nulls" warning
+  emitted by tools since 1.0.0 was being thrown away before reaching
+  the operator. Fixed: `cache.Entry` now carries `Warnings` too;
+  cache miss and hit paths both propagate it through to the envelope.
+- `updates.last_apt_update_ts`: warns when
+  `/var/lib/apt/periodic/update-success-stamp` is absent instead of
+  silently leaving the field null.
+- `security` AIDE wiring: new manifest key `aide_log_path`. When
+  set, the daemon stats it for `last_run_ts`, parses
+  `Total number of differences:` or `Added/Removed/Changed entries:`
+  for `change_count`, and `AIDE found (NO) differences` for a
+  derived `last_exit_code` (0 / 1).
+
+## Helper
+
+- `smart_summary` for NVMe: invocation now passes `-d nvme` when the
+  device matches `^nvme[0-9]+n[0-9]+$`. The smartctl auto-detect
+  heuristic walks `/sys/class/block/` and on some kernel versions
+  fails to discover the NVMe device type from a namespace path.
+  Forcing the device type makes the call deterministic across
+  kernels.
+- `read_audit_status.last_rotation_ts`: rotated-file scan no longer
+  requires `.gz` suffix. auditd's own ROTATE action does not gzip;
+  the previous filter missed every plain-rotated file. Now matches
+  `audit.log.<N>` and `audit.log.<N>.gz`.
+
 # 1.5.0 (2026-05-15)
 
 ## Daemon

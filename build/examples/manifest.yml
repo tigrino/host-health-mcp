@@ -63,6 +63,15 @@ backup_backend: none
 # returning null fields.
 debsums_log_path: null
 
+# Tool 4.5 AIDE sub-field. Set to the path of the operator's AIDE
+# log if the cron wrapper writes one (e.g. /var/log/aide-check.log).
+# The daemon parses 'AIDE found differences' / 'AIDE found NO
+# differences' for last_exit_code, and 'Total number of differences:'
+# or 'Added/Removed/Changed entries:' for change_count. Null leaves
+# the helper's AIDE-DB mtime lookup as the only source (no
+# change_count, no exit code).
+aide_log_path: null
+
 # Tool 4.3 - one of required-off / required-on / not-enforced.
 ipv6_policy: not-enforced
 

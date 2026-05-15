@@ -7,7 +7,7 @@ import (
 	"errors"
 	"io/fs"
 	"os"
-	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -71,19 +71,27 @@ func ReadAuditStatus(ctx context.Context, _ string) (any, error) {
 	}
 
 	// last_rotation_ts: scan /var/log/audit/ for the newest rotated
-	// file (audit.log.1.gz, audit.log.2.gz, ...). The mtime of the
-	// most recent rotated file is the last rotation timestamp.
-	if ts := newestRotatedLog("/var/log/audit", "audit.log.", true); !ts.IsZero() {
+	// file (audit.log.1, audit.log.2, ...). auditd's own ROTATE
+	// action does NOT gzip by default on Debian, so the previous
+	// filter that required .gz missed every rotation. Match the
+	// numbered-suffix shape instead.
+	if ts := newestRotatedLog("/var/log/audit", "audit.log."); !ts.IsZero() {
 		out.LastRotationTS = &ts
 	}
 
 	return out, nil
 }
 
-// newestRotatedLog returns the mtime of the newest file matching
-// prefix in dir. wantGzipped restricts to .gz files (rotated copies
-// after a rotation; the live log lacks the .gz suffix).
-func newestRotatedLog(dir, prefix string, wantGzipped bool) time.Time {
+// rotatedSuffixRE matches the numbered-suffix portion of a rotated
+// log filename — `.1`, `.2`, `.1.gz`, `.2.gz`, etc. — but not the
+// live `.log` file itself.
+var rotatedSuffixRE = regexp.MustCompile(`^[0-9]+(\.gz)?$`)
+
+// newestRotatedLog returns the mtime of the newest rotated file
+// matching prefix in dir. Rotated files are recognised by a numeric
+// suffix (optionally followed by .gz) so logrotate-managed gzipped
+// rotations and auditd-managed plain rotations both qualify.
+func newestRotatedLog(dir, prefix string) time.Time {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if !errors.Is(err, fs.ErrNotExist) {
@@ -98,7 +106,7 @@ func newestRotatedLog(dir, prefix string, wantGzipped bool) time.Time {
 		if !strings.HasPrefix(name, prefix) {
 			continue
 		}
-		if wantGzipped && filepath.Ext(name) != ".gz" {
+		if !rotatedSuffixRE.MatchString(strings.TrimPrefix(name, prefix)) {
 			continue
 		}
 		info, err := e.Info()

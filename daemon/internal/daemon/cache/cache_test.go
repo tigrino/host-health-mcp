@@ -70,10 +70,13 @@ func TestDoSingleflight(t *testing.T) {
 	var wg sync.WaitGroup
 	start := make(chan struct{})
 
-	work := func() (json.RawMessage, error) {
+	work := func() (Entry, error) {
 		calls.Add(1)
 		time.Sleep(20 * time.Millisecond)
-		return json.RawMessage(`"hi"`), nil
+		return Entry{
+			Data:     json.RawMessage(`"hi"`),
+			Warnings: []string{"warn"},
+		}, nil
 	}
 
 	for i := 0; i < 16; i++ {
@@ -82,8 +85,8 @@ func TestDoSingleflight(t *testing.T) {
 			defer wg.Done()
 			<-start
 			got, err := c.Do(context.Background(), "k", work)
-			if err != nil || string(got) != `"hi"` {
-				t.Errorf("Do: got=%s err=%v", string(got), err)
+			if err != nil || string(got.Data) != `"hi"` || len(got.Warnings) != 1 {
+				t.Errorf("Do: data=%s warnings=%v err=%v", string(got.Data), got.Warnings, err)
 			}
 		}()
 	}

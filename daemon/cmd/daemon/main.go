@@ -103,7 +103,7 @@ func main() {
 	reg.Register(backup.New(manifestCfg.BackupLogPath, manifestCfg.BackupBackend, manifestCfg.BackupStatePath))
 	reg.Register(sensors.New())
 	reg.Register(network.New(hc, manifestCfg.IPv6Policy))
-	reg.Register(security.New(hc, manifestCfg.DebsumsLogPath))
+	reg.Register(security.New(hc, manifestCfg.DebsumsLogPath, manifestCfg.AideLogPath))
 
 	// Build the redactor from operator-configured allowlists. Used by
 	// the logs tool to scrub sample messages (REQ 6.3).

@@ -9,6 +9,8 @@ import (
 	"context"
 	"errors"
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -77,14 +79,18 @@ type SSHLogins struct {
 type Tool struct {
 	hc             *helperinvoke.Client
 	debsumsLogPath string
+	aideLogPath    string
 }
 
 // New returns a new tool instance. debsumsLogPath is the
 // manifest-declared `/var/log/debsums.log` style path; empty disables
 // the path-based last-run lookup (a debsums-check.timer timestamp
-// will be used as a secondary fallback).
-func New(hc *helperinvoke.Client, debsumsLogPath string) *Tool {
-	return &Tool{hc: hc, debsumsLogPath: debsumsLogPath}
+// will be used as a secondary fallback). aideLogPath is similar for
+// AIDE: when set the daemon parses it for change_count and a derived
+// last_exit_code, overriding whatever the helper's AIDE-DB lookup
+// reports.
+func New(hc *helperinvoke.Client, debsumsLogPath, aideLogPath string) *Tool {
+	return &Tool{hc: hc, debsumsLogPath: debsumsLogPath, aideLogPath: aideLogPath}
 }
 
 // Name returns the tool name.
@@ -179,14 +185,24 @@ func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 		LastExitCode: aide.LastExitCode,
 		ChangeCount:  aide.ChangeCount,
 	}
+	// AIDE: when the operator points at an aide_log_path, the daemon
+	// stat + parses it. Overrides the helper's DB-mtime LastRunTS
+	// because the log mtime is the run-end timestamp.
+	if t.aideLogPath != "" {
+		t.fillAideFromLog(&d.AideOrEquivalent, addWarning)
+	}
 	// AIDE often shows a DB mtime (last_run_ts) without any matching
 	// log entries because Debian's cron wrapper doesn't always write
 	// to /var/log/aide. Surface that case rather than emit silent
 	// nulls.
-	if d.AideOrEquivalent.Present && aide.LastRunTS != nil && aide.ChangeCount == nil {
-		addWarning("security: aide DB mtime found but change_count unparseable; " +
-			"ensure /var/log/aide/aide.log captures 'Total number of differences:' or " +
-			"'Added/Removed/Changed entries:' totals")
+	if d.AideOrEquivalent.Present && d.AideOrEquivalent.LastRunTS != nil && d.AideOrEquivalent.ChangeCount == nil {
+		hint := "ensure /var/log/aide/aide.log captures 'Total number of differences:' or " +
+			"'Added/Removed/Changed entries:' totals, or set aide_log_path in manifest.yml"
+		if t.aideLogPath != "" {
+			hint = "aide_log_path is set to " + t.aideLogPath +
+				" but no 'Total number of differences:' / 'Added/Removed/Changed entries:' totals were found"
+		}
+		addWarning("security: aide change_count unparseable; " + hint)
 	}
 
 	d.Auditd = Auditd{
@@ -318,6 +334,89 @@ func (t *Tool) fillDebsums(ctx context.Context, d *Debsums, addWarning func(stri
 			"and no debsums-check.timer present; last_run_ts and modified_count are null")
 	}
 }
+
+// fillAideFromLog parses the operator-supplied aide_log_path and
+// fills LastRunTS (from mtime), ChangeCount (sum of
+// Added/Removed/Changed or the Total-differences line), and
+// LastExitCode (1 when "AIDE found differences" appears, 0 when
+// "AIDE found NO differences" appears).
+func (t *Tool) fillAideFromLog(d *Aide, addWarning func(string)) {
+	info, err := os.Stat(t.aideLogPath)
+	if err != nil {
+		addWarning("security: aide_log_path " + t.aideLogPath + ": " + err.Error())
+		return
+	}
+	ts := info.ModTime().UTC()
+	d.LastRunTS = &ts
+
+	f, err := os.Open(t.aideLogPath)
+	if err != nil {
+		addWarning("security: aide_log_path open: " + err.Error())
+		return
+	}
+	defer f.Close()
+
+	var (
+		total       *int
+		added       int
+		removed     int
+		changed     int
+		haveDetail  bool
+		foundDiff   bool
+		foundNoDiff bool
+	)
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 64*1024), 1<<20)
+	for scanner.Scan() {
+		line := scanner.Text()
+		switch {
+		case strings.Contains(line, "AIDE found NO differences"):
+			foundNoDiff = true
+		case strings.Contains(line, "AIDE found differences"):
+			foundDiff = true
+		}
+		if m := aideTotalRE.FindStringSubmatch(line); m != nil {
+			v, _ := strconv.Atoi(m[1])
+			total = &v
+		}
+		if m := aideAddedRE.FindStringSubmatch(line); m != nil {
+			added, _ = strconv.Atoi(m[1])
+			haveDetail = true
+		}
+		if m := aideRemovedRE.FindStringSubmatch(line); m != nil {
+			removed, _ = strconv.Atoi(m[1])
+			haveDetail = true
+		}
+		if m := aideChangedRE.FindStringSubmatch(line); m != nil {
+			changed, _ = strconv.Atoi(m[1])
+			haveDetail = true
+		}
+	}
+	if haveDetail {
+		sum := added + removed + changed
+		d.ChangeCount = &sum
+	} else if total != nil {
+		d.ChangeCount = total
+	}
+	switch {
+	case foundNoDiff && !foundDiff:
+		zero := 0
+		d.LastExitCode = &zero
+	case foundDiff:
+		one := 1
+		d.LastExitCode = &one
+	}
+}
+
+// AIDE log regexes mirror the helper's parser but match the
+// operator-supplied log shape (which may or may not match the
+// Debian package's /var/log/aide/aide.log conventions).
+var (
+	aideTotalRE   = regexp.MustCompile(`(?i)Total number of differences:\s+(\d+)`)
+	aideAddedRE   = regexp.MustCompile(`(?i)Added entries?:\s+(\d+)`)
+	aideRemovedRE = regexp.MustCompile(`(?i)Removed entries?:\s+(\d+)`)
+	aideChangedRE = regexp.MustCompile(`(?i)Changed entries?:\s+(\d+)`)
+)
 
 // countDebsumsChanged counts lines in the debsums log that look like
 // the CHANGED-file output of `debsums -c` / `debsums-mail`. The

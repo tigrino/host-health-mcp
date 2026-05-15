@@ -52,6 +52,7 @@ type Manifest struct {
 	BackupBackend          string   `yaml:"backup_backend"`
 	BackupStatePath        string   `yaml:"backup_state_path"`
 	DebsumsLogPath         string   `yaml:"debsums_log_path"`
+	AideLogPath            string   `yaml:"aide_log_path"`
 	IPv6Policy             string   `yaml:"ipv6_policy"`
 	BtrfsMountpoints       []string `yaml:"btrfs_mountpoints"`
 }

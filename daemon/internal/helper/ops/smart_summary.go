@@ -16,6 +16,13 @@ import (
 // and a partition is at best a no-op.
 var deviceRE = regexp.MustCompile(`^(sd[a-z]+|nvme[0-9]+n[0-9]+|vd[a-z]+|hd[a-z]+|xvd[a-z]+)$`)
 
+// nvmeRE matches an NVMe namespace device name. smartctl's auto-detect
+// heuristic walks /sys/class/block/ and on some kernel versions fails
+// to discover the NVMe device type from a namespace path (nvme0n1
+// rather than nvme0). Forcing -d nvme makes the invocation
+// deterministic on every kernel the helper might see.
+var nvmeRE = regexp.MustCompile(`^nvme[0-9]+n[0-9]+$`)
+
 // SmartSummary is the typed result for op smart_summary, populated from
 // smartctl --json -a /dev/<dev>. Fields not reported by smartctl are
 // left null; per-device collection failures are reported by the
@@ -62,7 +69,12 @@ func SmartSummaryHandler(ctx context.Context, param string) (any, error) {
 		}
 	}
 	devPath := "/dev/" + param
-	stdout, err := helperexec.Run(ctx, "smartctl", "--json", "-a", devPath)
+	args := []string{"--json", "-a"}
+	if nvmeRE.MatchString(param) {
+		args = append(args, "-d", "nvme")
+	}
+	args = append(args, devPath)
+	stdout, err := helperexec.Run(ctx, "smartctl", args...)
 	if err != nil {
 		// smartctl exits with low-bits-set status to signal SMART
 		// conditions (e.g. exit 4 = checksum error) while still

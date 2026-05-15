@@ -7,6 +7,7 @@ package updates
 
 import (
 	"context"
+	"errors"
 	"os"
 	"sort"
 	"sync"
@@ -133,10 +134,18 @@ func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 
 	// /var/lib/apt/periodic/update-success-stamp is touched by the apt
 	// timer when an update succeeds. Treat its mtime as the last apt
-	// update timestamp.
-	if info, err := os.Stat("/var/lib/apt/periodic/update-success-stamp"); err == nil {
+	// update timestamp; absence is worth a warning so the operator can
+	// confirm Update-Package-Lists is on.
+	const aptStampPath = "/var/lib/apt/periodic/update-success-stamp"
+	if info, err := os.Stat(aptStampPath); err == nil {
 		ts := info.ModTime().UTC()
 		d.LastAptUpdateTS = &ts
+	} else if errors.Is(err, os.ErrNotExist) {
+		warnings = append(warnings,
+			"updates: "+aptStampPath+" absent; APT::Periodic::Update-Package-Lists "+
+				"may not be enabled or apt-daily.timer has never run successfully")
+	} else {
+		warnings = append(warnings, "updates: stat "+aptStampPath+": "+err.Error())
 	}
 
 	// Unattended-upgrades source-of-truth is `apt-config dump` (read
