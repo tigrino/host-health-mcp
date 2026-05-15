@@ -3,6 +3,25 @@ title: Host Health MCP - Changelog
 author: Albert 'Tigr' Zenkoff <albert@tigr.net>
 ---
 
+# 1.12.1 (2026-05-15)
+
+## Helper
+
+- `helper/exec.RunStreaming`: new line-streaming primitive that
+  invokes a subprocess and calls a visitor on each stdout line
+  without buffering. Per-call memory is bounded by `MaxLineLength`
+  (1 MiB) regardless of total output volume.
+- `ssh_journal_counts` now uses `RunStreaming` with a
+  closure-captured accumulator. Resolves the accumulator-reuse case where
+  even after the 1.9.5 `journalctl --grep` pre-filter, the
+  ssh.service journal still ran 451 KiB on long-uptime public-target
+  hosts (driven by ~120-byte "Accepted publickey … SHA256:…" lines).
+  Streaming removes the cap concern entirely; the pre-filter is
+  retained because it halves the bytes journalctl emits.
+- Regression test `TestRunStreaming_NoBufferCap` drives `seq 1
+  200000` (~1.16 MiB) through `RunStreaming` and confirms every
+  line is visited without tripping a cap.
+
 # 1.12.0 (2026-05-15)
 
 Two audit findings that needed coordinated rollout: TLS client-cert

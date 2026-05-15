@@ -9,6 +9,7 @@
 package exec
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -111,6 +112,106 @@ func Run(ctx context.Context, name string, args ...string) ([]byte, error) {
 		return stdout.Bytes(), classify(err, &stdout, &stderr, cmd)
 	}
 	return stdout.Bytes(), nil
+}
+
+// MaxLineLength caps a single stdout line for RunStreaming. SSH
+// journal entries with full SHA-256 pubkey hashes run ~120 bytes;
+// 1 MiB is far more than any real log line should need and bounds
+// memory under attacker-induced flood.
+const MaxLineLength = 1024 * 1024
+
+// RunStreaming invokes name with args and calls visit on each line
+// of stdout (without trailing newline) as it arrives. stdout is
+// never buffered in full, so the per-call memory ceiling is just
+// MaxLineLength regardless of how much output the subprocess
+// produces. Returns the total number of lines visited.
+//
+// Intended for line-counting ops where the daemon's interest is
+// "how many matching lines did the underlying tool produce" rather
+// than the lines themselves — public-target hosts can emit
+// hundreds of KiB of ssh.service journal entries per boot, and
+// neither the helper's 256 KiB MaxStdout cap nor a journalctl
+// --grep pre-filter is enough headroom on long-uptime
+// internet-facing hosts where pubkey-hash lines dominate. Streaming
+// removes the cap concern entirely.
+//
+// visit is called from the goroutine that runs Wait; if visit
+// touches state shared with other goroutines the caller is
+// responsible for synchronisation.
+func RunStreaming(ctx context.Context, visit func([]byte), name string, args ...string) (int, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Env = safeEnv
+
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return 0, fmt.Errorf("helperexec: stdoutpipe: %w", err)
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	var (
+		timerMu   sync.Mutex
+		killTimer *time.Timer
+	)
+	cmd.Cancel = func() error {
+		_ = cmd.Process.Signal(syscall.SIGTERM)
+		timerMu.Lock()
+		killTimer = time.AfterFunc(KillGrace, func() {
+			_ = cmd.Process.Kill()
+		})
+		timerMu.Unlock()
+		return nil
+	}
+
+	if err := cmd.Start(); err != nil {
+		if errors.Is(err, exec.ErrNotFound) {
+			return 0, &dispatch.Error{
+				Code:    proto.CodeToolMissing,
+				Message: cmd.Path + ": not found",
+				Argv:    append([]string(nil), cmd.Args...),
+			}
+		}
+		return 0, fmt.Errorf("helperexec: start: %w", err)
+	}
+
+	count := 0
+	scanner := bufio.NewScanner(stdoutPipe)
+	scanner.Buffer(make([]byte, 64*1024), MaxLineLength)
+	for scanner.Scan() {
+		visit(scanner.Bytes())
+		count++
+	}
+	scanErr := scanner.Err()
+	waitErr := cmd.Wait()
+
+	timerMu.Lock()
+	if killTimer != nil {
+		killTimer.Stop()
+	}
+	timerMu.Unlock()
+
+	if waitErr != nil {
+		return count, classify(waitErr, nil, &stderr, cmd)
+	}
+	if scanErr != nil {
+		return count, &dispatch.Error{
+			Code:         proto.CodeToolFailed,
+			Message:      "stdout scanner: " + scanErr.Error(),
+			Argv:         append([]string(nil), cmd.Args...),
+			StderrBytes:  stderr.Len(),
+			StderrSHA256: hexSum(stderr.Bytes()),
+			StderrPrefix: sanitiseStderrPrefix(stderr.Bytes()),
+		}
+	}
+	return count, nil
+}
+
+// hexSum is the SHA-256 hex helper used by RunStreaming's error
+// path. Run uses the same computation inline; factor here so both
+// stay in sync.
+func hexSum(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
 }
 
 func classify(runErr error, stdout, stderr *bytes.Buffer, cmd *exec.Cmd) error {

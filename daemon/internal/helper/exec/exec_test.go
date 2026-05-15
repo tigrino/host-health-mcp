@@ -64,6 +64,61 @@ func TestRun_NormalSuccess(t *testing.T) {
 	}
 }
 
+// TestRunStreaming_NoBufferCap drives a subprocess that produces
+// well over MaxStdout bytes of output and asserts RunStreaming
+// counts every matching line without tripping the truncation cap.
+// Regression for the observed case where ssh.service journal output ran
+// 451 KiB even after the journalctl --grep pre-filter — Run's
+// 256 KiB cap would have classified that as output_truncated.
+func TestRunStreaming_NoBufferCap(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// `seq 1 200000` produces ~1.16 MiB of output (each line is
+	// "<n>\n", 4-7 bytes for the values 1..200000). Far beyond the
+	// 256 KiB Run cap. Visitor counts all lines starting with '1'.
+	visited := 0
+	matched := 0
+	_, err := RunStreaming(ctx, func(line []byte) {
+		visited++
+		if len(line) > 0 && line[0] == '1' {
+			matched++
+		}
+	}, "seq", "1", "200000")
+	if err != nil {
+		t.Fatalf("RunStreaming(seq): %v", err)
+	}
+	if visited != 200000 {
+		t.Errorf("visited = %d, want 200000", visited)
+	}
+	// Numbers 1, 10..19, 100..199, 1000..1999, 10000..19999,
+	// 100000..199999 start with '1'. Just check we got a sane
+	// nonzero count rather than enumerate; the point is that the
+	// visitor saw lines.
+	if matched < 100000 {
+		t.Errorf("matched = %d, want >=100000", matched)
+	}
+}
+
+// TestRunStreaming_ToolMissing verifies CodeToolMissing on a
+// non-existent binary.
+func TestRunStreaming_ToolMissing(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	_, err := RunStreaming(ctx, func([]byte) {}, "this-binary-deliberately-does-not-exist-host-health-mcp")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	var de *dispatch.Error
+	if !errors.As(err, &de) {
+		t.Fatalf("expected *dispatch.Error, got %T: %v", err, err)
+	}
+	if de.Code != proto.CodeToolMissing {
+		t.Errorf("expected code %q, got %q", proto.CodeToolMissing, de.Code)
+	}
+}
+
 // TestRun_ToolMissing verifies the CodeToolMissing classification
 // when the binary doesn't exist on PATH.
 func TestRun_ToolMissing(t *testing.T) {
