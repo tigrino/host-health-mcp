@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/coreos/go-systemd/v22/daemon"
 
@@ -69,6 +70,9 @@ func main() {
 	if _, err := daemon.SdNotify(false, daemon.SdNotifyReady); err != nil {
 		log.Printf("helper: sd_notify ready: %v (continuing)", err)
 	}
+	if interval, err := daemon.SdWatchdogEnabled(false); err == nil && interval > 0 {
+		go runWatchdog(ctx, interval/2)
+	}
 
 	if err := srv.Serve(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		log.Fatalf("helper: %v", err)
@@ -79,4 +83,19 @@ func main() {
 	}
 
 	_ = os.Remove(cfg.SocketPath)
+}
+
+func runWatchdog(ctx context.Context, period time.Duration) {
+	t := time.NewTicker(period)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if _, err := daemon.SdNotify(false, daemon.SdNotifyWatchdog); err != nil {
+				log.Printf("helper: sd_notify watchdog: %v", err)
+			}
+		}
+	}
 }

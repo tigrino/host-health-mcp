@@ -172,11 +172,33 @@ func main() {
 		log.Printf("daemon: sd_notify ready: %v (continuing)", err)
 	}
 
+	// The unit declares Type=notify and WatchdogSec=. systemd kills
+	// the process if WATCHDOG=1 is not received within the configured
+	// window; ping at half the interval per the systemd recommendation.
+	if interval, err := daemon.SdWatchdogEnabled(false); err == nil && interval > 0 {
+		go runWatchdog(ctx, interval/2)
+	}
+
 	if err := srv.Start(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		log.Fatalf("daemon: %v", err)
 	}
 
 	if _, err := daemon.SdNotify(false, daemon.SdNotifyStopping); err != nil {
 		log.Printf("daemon: sd_notify stopping: %v", err)
+	}
+}
+
+func runWatchdog(ctx context.Context, period time.Duration) {
+	t := time.NewTicker(period)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if _, err := daemon.SdNotify(false, daemon.SdNotifyWatchdog); err != nil {
+				log.Printf("daemon: sd_notify watchdog: %v", err)
+			}
+		}
 	}
 }

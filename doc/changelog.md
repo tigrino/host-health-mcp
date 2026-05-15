@@ -3,6 +3,21 @@ title: Host Health MCP - Changelog
 author: Albert 'Tigr' Zenkoff <albert@tigr.net>
 ---
 
+# 1.2.2 (2026-05-15)
+
+## Daemon, Helper
+
+- Both binaries now ping the systemd watchdog at half the configured
+  `WatchdogSec` interval. The unit files declared `Type=notify` and
+  `WatchdogSec=30s` per REQ 9.2 but neither process emitted
+  `WATCHDOG=1` after the initial `READY=1`, so systemd killed and
+  restarted them every ~30s. Symptom: calls that hit the dead window
+  failed with `connection refused`; calls that hit the live window
+  succeeded.
+- Watchdog goroutine activates only when `WATCHDOG_USEC` is set in
+  the environment (systemd injects it on `Type=notify` units with
+  `WatchdogSec=`). Outside systemd the watchdog loop never starts.
+
 # 1.2.1 (2026-05-14)
 
 ## Helper
