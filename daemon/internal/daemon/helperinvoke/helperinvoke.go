@@ -13,6 +13,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"time"
 
 	"host-health-mcp/daemon/internal/shared/proto"
 )
@@ -66,6 +67,22 @@ func (c *Client) Call(ctx context.Context, op string, param string) (json.RawMes
 	if deadline, ok := ctx.Deadline(); ok {
 		_ = conn.SetDeadline(deadline)
 	}
+
+	// Watch ctx.Done(): closing the conn from a watcher unblocks
+	// any in-flight WriteFrame/ReadFrame even when the ctx is
+	// cancelled without a deadline (the SetDeadline above only
+	// fires when ctx carries one). Without this, a bare
+	// context.Cancel() leaves the call pinned to the helper's idle
+	// deadline (60 s) and leaks the goroutine until then.
+	watcherDone := make(chan struct{})
+	defer close(watcherDone)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.SetDeadline(time.Unix(1, 0))
+		case <-watcherDone:
+		}
+	}()
 
 	if err := proto.WriteFrame(conn, proto.Request{Op: op, Param: param}); err != nil {
 		return nil, fmt.Errorf("helperinvoke: write: %w", err)

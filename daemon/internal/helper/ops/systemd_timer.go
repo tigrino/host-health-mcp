@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -28,20 +29,22 @@ type SystemdTimerLastTriggerResult struct {
 // going through systemctl rather than linking go-systemd's dbus
 // client keeps the helper static (REQ 5.4) at the cost of one extra
 // process.
+// timerUnitRE is a positive whitelist for systemd timer unit names.
+// First char must be alphanumeric (rejects '-foo.timer' which
+// systemctl would parse as a flag); the rest is the conservative
+// systemd unit-name character set; must end in ".timer". Negative
+// filters (ContainsAny) leave too much surface — a positive regex
+// makes the accepted set explicit.
+var timerUnitRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._@-]*\.timer$`)
+
 func SystemdTimerLastTrigger(ctx context.Context, param string) (any, error) {
 	out := SystemdTimerLastTriggerResult{}
 
 	unit := strings.TrimSpace(param)
-	if unit == "" || !strings.HasSuffix(unit, ".timer") {
+	if !timerUnitRE.MatchString(unit) {
 		return nil, &dispatch.Error{
 			Code:    proto.CodeToolFailed,
-			Message: "systemd_timer_last_trigger: param must be a non-empty .timer unit name",
-		}
-	}
-	if strings.ContainsAny(unit, "\x00/ \t\n\r") {
-		return nil, &dispatch.Error{
-			Code:    proto.CodeToolFailed,
-			Message: "systemd_timer_last_trigger: unit name contains invalid characters",
+			Message: "systemd_timer_last_trigger: param must match " + timerUnitRE.String(),
 		}
 	}
 
