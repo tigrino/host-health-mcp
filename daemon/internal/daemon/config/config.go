@@ -50,6 +50,8 @@ type Manifest struct {
 	CertRenewalUnits       []string `yaml:"cert_renewal_units"`
 	BackupLogPath          string   `yaml:"backup_log_path"`
 	BackupBackend          string   `yaml:"backup_backend"`
+	BackupStatePath        string   `yaml:"backup_state_path"`
+	DebsumsLogPath         string   `yaml:"debsums_log_path"`
 	IPv6Policy             string   `yaml:"ipv6_policy"`
 	BtrfsMountpoints       []string `yaml:"btrfs_mountpoints"`
 }

@@ -39,13 +39,29 @@ cert_paths: []
 cert_renewal_units: []
 
 # Tool 4.8. backup_backend is one of borg, borgmatic, restic,
-# rsnapshot, duplicity, or none. backup_log_path may be left null:
-# when null and backup_backend is set, the tool auto-probes
-# /var/log/<backend>/<backend>.log and a couple of common variants;
-# the response carries a warning naming the probed paths so the
-# operator can pin the right one back here.
+# rsnapshot, duplicity, or none.
+#
+# Source precedence (highest first):
+#   1. backup_state_path (default /var/lib/host-health-mcp/backup-state.json).
+#      The operator's backup wrapper writes a small JSON with the four
+#      fields the tool returns (last_start_ts, last_end_ts,
+#      last_exit_code, last_archive_label). Backend-agnostic; no
+#      passphrase ever enters the daemon. Recommended.
+#   2. backup_log_path. mtime of the log file gives last_end_ts; the
+#      other fields stay null.
+#   3. Auto-probe of well-known log paths by backend if backup_log_path
+#      is null. Always emits a warning naming the probed paths.
 backup_log_path: null
+backup_state_path: null    # null falls back to /var/lib/host-health-mcp/backup-state.json
 backup_backend: none
+
+# Tool 4.5 debsums sub-field. Set to the path of the operator's
+# debsums log (typically /var/log/debsums.log from a cron wrapper).
+# When null and debsums is installed the tool falls back to the
+# `debsums-check.timer`'s LastTriggerUSec for last_run_ts only; if
+# neither is available a warning is surfaced rather than silently
+# returning null fields.
+debsums_log_path: null
 
 # Tool 4.3 - one of required-off / required-on / not-enforced.
 ipv6_policy: not-enforced

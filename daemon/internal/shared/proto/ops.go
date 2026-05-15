@@ -17,9 +17,11 @@ const (
 	OpWireguardShow    = "wireguard_show"
 	OpAptPending       = "apt_pending"
 	OpNeedrestart      = "needrestart"
-	OpJournalQuery     = "journal_query"
-	OpNftTableCounts   = "nft_table_counts"
-	OpFail2banStatus   = "fail2ban_status"
+	OpJournalQuery              = "journal_query"
+	OpNftTableCounts            = "nft_table_counts"
+	OpFail2banStatus            = "fail2ban_status"
+	OpSshJournalCounts          = "ssh_journal_counts"
+	OpSystemdTimerLastTrigger   = "systemd_timer_last_trigger"
 )
 
 // AllOps lists every op token in a stable order. Used by the helper to
@@ -41,6 +43,8 @@ var AllOps = []string{
 	OpJournalQuery,
 	OpNftTableCounts,
 	OpFail2banStatus,
+	OpSshJournalCounts,
+	OpSystemdTimerLastTrigger,
 }
 
 // IsKnownOp reports whether op is one of the recognised tokens.

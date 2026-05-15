@@ -28,4 +28,6 @@ func RegisterAll(r *dispatch.Registry) {
 	r.Register(proto.OpJournalQuery, JournalQuery)
 	r.Register(proto.OpNftTableCounts, NftTableCounts)
 	r.Register(proto.OpFail2banStatus, Fail2banStatus)
+	r.Register(proto.OpSshJournalCounts, SshJournalCounts)
+	r.Register(proto.OpSystemdTimerLastTrigger, SystemdTimerLastTrigger)
 }

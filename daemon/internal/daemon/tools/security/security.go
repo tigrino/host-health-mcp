@@ -75,11 +75,17 @@ type SSHLogins struct {
 
 // Tool is the registered tool.
 type Tool struct {
-	hc *helperinvoke.Client
+	hc             *helperinvoke.Client
+	debsumsLogPath string
 }
 
-// New returns a new tool instance.
-func New(hc *helperinvoke.Client) *Tool { return &Tool{hc: hc} }
+// New returns a new tool instance. debsumsLogPath is the
+// manifest-declared `/var/log/debsums.log` style path; empty disables
+// the path-based last-run lookup (a debsums-check.timer timestamp
+// will be used as a secondary fallback).
+func New(hc *helperinvoke.Client, debsumsLogPath string) *Tool {
+	return &Tool{hc: hc, debsumsLogPath: debsumsLogPath}
+}
 
 // Name returns the tool name.
 func (*Tool) Name() string { return "security" }
@@ -185,6 +191,9 @@ func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 	}
 
 	d.DebsumsOrEquivalent.Present = anyExists("/usr/bin/debsums")
+	if d.DebsumsOrEquivalent.Present {
+		t.fillDebsums(ctx, &d.DebsumsOrEquivalent, addWarning)
+	}
 
 	d.IntrusionPrevention.BackendInUse = detectIPS()
 	switch {
@@ -199,15 +208,112 @@ func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 		d.IntrusionPrevention.CurrentBanCount = -1
 	}
 
-	// SSH login counters from /var/log/auth.log mtime is too coarse;
-	// the journal_query helper op gives us severity-filtered samples
-	// but counting requires a separate ssh-targeted query the helper
-	// doesn't expose today. /var/log/auth.log fallback parser counts
-	// "Accepted " and "Failed " lines since the file's mtime is
-	// post-boot; good enough as an MVP signal.
-	d.SSHLogins.AcceptedSinceBoot, d.SSHLogins.FailedSinceBoot = readAuthLogCounters()
+	// SSH login counters: file-based first (auth.log on Debian,
+	// secure on RHEL-family), helper-backed journal fallback for
+	// journal-only systems.
+	if a, f, found := readAuthLogCounters(); found {
+		d.SSHLogins.AcceptedSinceBoot = a
+		d.SSHLogins.FailedSinceBoot = f
+	} else {
+		var jc helperSshJournalCounts
+		if err := t.hc.CallJSON(ctx, proto.OpSshJournalCounts, "", &jc); err != nil {
+			addWarning("security: ssh_journal_counts: " + err.Error())
+		} else if jc.Present {
+			d.SSHLogins.AcceptedSinceBoot = jc.AcceptedSinceBoot
+			d.SSHLogins.FailedSinceBoot = jc.FailedSinceBoot
+		}
+	}
 
 	return d, warnings, nil
+}
+
+// helperSshJournalCounts mirrors the helper op's response.
+type helperSshJournalCounts struct {
+	Present           bool `json:"present"`
+	AcceptedSinceBoot int  `json:"accepted_since_boot"`
+	FailedSinceBoot   int  `json:"failed_since_boot"`
+}
+
+// helperSystemdTimer mirrors the helper op's response.
+type helperSystemdTimer struct {
+	Present     bool       `json:"present"`
+	LastTrigger *time.Time `json:"last_trigger"`
+}
+
+// fillDebsums fills LastRunTS and ModifiedCount from one of three
+// sources, in preference order:
+//   1. operator-supplied debsums_log_path (manifest);
+//   2. debsums-check.timer's LastTriggerUSec via the helper (Debian
+//      packages of debsums-mail ship this timer);
+//   3. nothing — emit a warning so the operator sees the config gap.
+func (t *Tool) fillDebsums(ctx context.Context, d *Debsums, addWarning func(string)) {
+	if t.debsumsLogPath != "" {
+		info, err := os.Stat(t.debsumsLogPath)
+		if err != nil {
+			addWarning("security: debsums_log_path: " + err.Error())
+			return
+		}
+		ts := info.ModTime().UTC()
+		d.LastRunTS = &ts
+		if n, err := countDebsumsChanged(t.debsumsLogPath); err == nil {
+			d.ModifiedCount = &n
+		} else {
+			addWarning("security: debsums log parse: " + err.Error())
+		}
+		return
+	}
+
+	// No path configured: try the timer as a secondary signal.
+	var tim helperSystemdTimer
+	if err := t.hc.CallJSON(ctx, proto.OpSystemdTimerLastTrigger, "debsums-check.timer", &tim); err != nil {
+		addWarning("security: debsums installed but no debsums_log_path is configured " +
+			"and debsums-check.timer is unreachable (" + err.Error() + ")")
+		return
+	}
+	if tim.Present && tim.LastTrigger != nil {
+		d.LastRunTS = tim.LastTrigger
+		// ModifiedCount stays nil — the timer doesn't carry it.
+		addWarning("security: debsums last_run_ts derived from debsums-check.timer; " +
+			"modified_count unknown (set debsums_log_path in manifest.yml to populate)")
+		return
+	}
+	addWarning("security: debsums installed but no debsums_log_path is configured " +
+		"and no debsums-check.timer present; last_run_ts and modified_count are null")
+}
+
+// countDebsumsChanged counts lines in the debsums log that look like
+// the CHANGED-file output of `debsums -c` / `debsums-mail`. The
+// canonical line shape is:
+//
+//	/path/to/file FAILED
+//
+// Some operator wrappers emit just `/path/to/file` per line; both
+// patterns are accepted because a non-zero count is the operator
+// signal that matters. Empty lines and lines beginning with `debsums:`
+// (progress / status lines) are ignored.
+func countDebsumsChanged(path string) (int, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	count := 0
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 64*1024), 1<<20)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "debsums:") {
+			continue
+		}
+		if !strings.HasPrefix(line, "/") {
+			continue
+		}
+		count++
+	}
+	if err := scanner.Err(); err != nil {
+		return count, err
+	}
+	return count, nil
 }
 
 func anyExists(paths ...string) bool {
@@ -260,13 +366,12 @@ var authLogPaths = []string{
 	"/var/log/secure",
 }
 
-// readAuthLogCounters returns (accepted, failed) counts from the
-// first existing path in authLogPaths. Best-effort: rotation
-// truncates the file at midnight, so this is "since the last
-// rotation" rather than "since boot". The schema's "since boot"
-// semantics are approximated; a future helper op can do a precise
-// journalctl --boot count when the journal is the only source.
-func readAuthLogCounters() (int, int) {
+// readAuthLogCounters returns (accepted, failed, found) counts from
+// the first existing path in authLogPaths. found=false means no
+// file-based source exists and the caller should fall back to the
+// helper's journal counter. The file-based path approximates
+// "since boot" via "since the last rotation".
+func readAuthLogCounters() (accepted, failed int, found bool) {
 	var path string
 	for _, p := range authLogPaths {
 		if _, err := os.Stat(p); err == nil {
@@ -275,14 +380,13 @@ func readAuthLogCounters() (int, int) {
 		}
 	}
 	if path == "" {
-		return 0, 0
+		return 0, 0, false
 	}
 	f, err := os.Open(path)
 	if err != nil {
-		return 0, 0
+		return 0, 0, false
 	}
 	defer f.Close()
-	var accepted, failed int
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 64*1024), 1<<20)
 	for scanner.Scan() {
@@ -294,5 +398,5 @@ func readAuthLogCounters() (int, int) {
 			failed++
 		}
 	}
-	return accepted, failed
+	return accepted, failed, true
 }

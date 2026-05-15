@@ -3,6 +3,52 @@ title: Host Health MCP - Changelog
 author: Albert 'Tigr' Zenkoff <albert@tigr.net>
 ---
 
+# 1.4.0 (2026-05-15)
+
+## Daemon
+
+- `security.debsums_or_equivalent`: when debsums is installed, the
+  tool now reads `last_run_ts` and `modified_count` from a manifest-
+  declared `debsums_log_path` (file mtime + line count over lines
+  beginning with `/`). When no path is configured the tool falls
+  back to `debsums-check.timer`'s `LastTriggerUSec` for
+  `last_run_ts` only. When neither is available a warning surfaces
+  the gap instead of silently returning null. New manifest key
+  `debsums_log_path` (string, defaults to null).
+- `security.ssh_logins` gains a journal-only fallback: when neither
+  `/var/log/auth.log` nor `/var/log/secure` is present, the daemon
+  calls the helper's new `ssh_journal_counts` op and uses the
+  journalctl-derived counts.
+- `backup`: state-file-first source order. The operator's backup
+  wrapper deposits
+  `/var/lib/host-health-mcp/backup-state.json` carrying the four
+  envelope fields (last_start_ts, last_end_ts, last_exit_code,
+  last_archive_label); the tool returns them verbatim. Falls back to
+  the manifest's `backup_log_path` and the 1.3.0 backend auto-probe
+  when the state file is absent. Manifest gains `backup_state_path`
+  (override; defaults to the documented contract location). No
+  backup-tool passphrases or backend-specific code in the daemon or
+  helper — wrappers translate their tool's output into the shared
+  JSON shape.
+
+## Helper
+
+- New op `ssh_journal_counts`: runs `journalctl --boot -u ssh.service
+  --output=cat --no-pager` and counts via prefix-match on `Accepted `
+  and `Failed `. Returns `present=false` when journalctl is absent.
+- New op `systemd_timer_last_trigger`: parameterised by a `.timer`
+  unit name; runs `systemctl show <unit> --property=LastTriggerUSec
+  --value` and returns the parsed timestamp. The helper validates
+  the unit name (must end in `.timer`, must not contain whitespace,
+  slashes, or NUL). Reaches systemd over dbus internally via
+  systemctl, keeping the helper static (REQ 5.4).
+
+## Docs
+
+- `build/examples/manifest.yml` documents `debsums_log_path`,
+  `backup_state_path`, and the backup state-file source-precedence
+  contract.
+
 # 1.3.0 (2026-05-15)
 
 ## Daemon
