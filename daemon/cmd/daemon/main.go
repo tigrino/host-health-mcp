@@ -143,13 +143,6 @@ func main() {
 	}))
 
 	cch := cache.New()
-	go func() {
-		t := time.NewTicker(15 * time.Second)
-		defer t.Stop()
-		for range t.C {
-			cch.Sweep()
-		}
-	}()
 
 	global := ratelimit.BucketCfg{SustainedPerMin: 30, Burst: 10}
 	perTool := map[string]ratelimit.BucketCfg{}
@@ -165,6 +158,23 @@ func main() {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
+
+	// Cache sweeper: ctx-aware so it exits cleanly on shutdown
+	// rather than leaking until process exit. The ratelimit sweeper
+	// below already follows this pattern; symmetry matters because
+	// future tests will want clean teardown.
+	go func() {
+		t := time.NewTicker(15 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				cch.Sweep()
+			}
+		}
+	}()
 
 	go limiter.RunSweeper(ctx)
 

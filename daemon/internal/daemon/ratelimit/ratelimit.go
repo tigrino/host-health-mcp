@@ -103,7 +103,7 @@ func (l *Limiter) Allow(caller, tool string) (ok bool, reason string) {
 			// but charging on tool-bucket-reject conflates the two error
 			// sources for the caller. Refund keeps the global meter
 			// honest.
-			gb.refund()
+			gb.refund(now)
 			return false, "tool"
 		}
 	}
@@ -156,9 +156,15 @@ func (b *bucket) tryTake(now time.Time) bool {
 	return false
 }
 
-func (b *bucket) refund() {
+// refund returns a global-bucket token to a caller whose tool-bucket
+// take then failed. Marking lastTouched here matters because the
+// caller IS active — without it, a caller bursting against a
+// tool-bucket cap could go indefinite-refund and still appear idle
+// to the sweeper, getting evicted prematurely.
+func (b *bucket) refund(now time.Time) {
 	b.tokens++
 	if b.tokens > float64(b.cfg.Burst) {
 		b.tokens = float64(b.cfg.Burst)
 	}
+	b.lastTouched = now
 }
