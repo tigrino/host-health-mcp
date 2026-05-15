@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"sync"
 
-	"tigr.net/host-health-mcp/daemon/internal/shared/proto"
+	"host-health-mcp/daemon/internal/shared/proto"
 )
 
 // Handler runs one helper op. Implementations validate the parameter,

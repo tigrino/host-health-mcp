@@ -1,4 +1,4 @@
-module tigr.net/host-health-mcp/build/linter
+module host-health-mcp/build/linter
 
 go 1.22
 

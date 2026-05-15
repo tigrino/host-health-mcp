@@ -7,9 +7,9 @@ import (
 	"errors"
 	"strings"
 
-	"tigr.net/host-health-mcp/daemon/internal/helper/dispatch"
-	helperexec "tigr.net/host-health-mcp/daemon/internal/helper/exec"
-	"tigr.net/host-health-mcp/daemon/internal/shared/proto"
+	"host-health-mcp/daemon/internal/helper/dispatch"
+	helperexec "host-health-mcp/daemon/internal/helper/exec"
+	"host-health-mcp/daemon/internal/shared/proto"
 )
 
 // SshJournalCountsResult is the typed result for op ssh_journal_counts.

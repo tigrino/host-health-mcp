@@ -20,12 +20,12 @@ import (
 	"testing"
 	"time"
 
-	"tigr.net/host-health-mcp/daemon/internal/daemon/audit"
-	"tigr.net/host-health-mcp/daemon/internal/daemon/cache"
-	"tigr.net/host-health-mcp/daemon/internal/daemon/config"
-	"tigr.net/host-health-mcp/daemon/internal/daemon/ratelimit"
-	"tigr.net/host-health-mcp/daemon/internal/daemon/tools"
-	"tigr.net/host-health-mcp/daemon/internal/shared/schema"
+	"host-health-mcp/daemon/internal/daemon/audit"
+	"host-health-mcp/daemon/internal/daemon/cache"
+	"host-health-mcp/daemon/internal/daemon/config"
+	"host-health-mcp/daemon/internal/daemon/ratelimit"
+	"host-health-mcp/daemon/internal/daemon/tools"
+	"host-health-mcp/daemon/internal/shared/schema"
 )
 
 // testTool always returns the same payload. Used to exercise the

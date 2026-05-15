@@ -19,8 +19,8 @@ import (
 	"strings"
 	"time"
 
-	"tigr.net/host-health-mcp/daemon/internal/daemon/helperinvoke"
-	"tigr.net/host-health-mcp/daemon/internal/shared/proto"
+	"host-health-mcp/daemon/internal/daemon/helperinvoke"
+	"host-health-mcp/daemon/internal/shared/proto"
 )
 
 // Data is the response data for tool network. Mirrors NetworkData in

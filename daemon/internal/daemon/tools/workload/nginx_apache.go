@@ -6,7 +6,7 @@ import (
 	"context"
 	"errors"
 
-	"tigr.net/host-health-mcp/daemon/internal/daemon/helperinvoke"
+	"host-health-mcp/daemon/internal/daemon/helperinvoke"
 )
 
 func init() {

@@ -8,9 +8,9 @@ import (
 	"strconv"
 	"strings"
 
-	"tigr.net/host-health-mcp/daemon/internal/helper/dispatch"
-	helperexec "tigr.net/host-health-mcp/daemon/internal/helper/exec"
-	"tigr.net/host-health-mcp/daemon/internal/shared/proto"
+	"host-health-mcp/daemon/internal/helper/dispatch"
+	helperexec "host-health-mcp/daemon/internal/helper/exec"
+	"host-health-mcp/daemon/internal/shared/proto"
 )
 
 // Fail2banStatusResult is the typed result for op fail2ban_status.

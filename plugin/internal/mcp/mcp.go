@@ -34,8 +34,8 @@ import (
 	"sync"
 	"time"
 
-	"tigr.net/host-health-mcp/plugin/internal/client"
-	pluginschema "tigr.net/host-health-mcp/plugin/internal/schema"
+	"host-health-mcp/plugin/internal/client"
+	pluginschema "host-health-mcp/plugin/internal/schema"
 )
 
 // protocolVersion is the MCP spec date the server advertises.

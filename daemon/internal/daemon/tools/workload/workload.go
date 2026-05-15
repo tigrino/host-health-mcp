@@ -5,7 +5,7 @@ import (
 	"sort"
 	"time"
 
-	"tigr.net/host-health-mcp/daemon/internal/daemon/helperinvoke"
+	"host-health-mcp/daemon/internal/daemon/helperinvoke"
 )
 
 // Data is the response data for tool workload. Mirrors the schema:

@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"strconv"
 
-	"tigr.net/host-health-mcp/daemon/internal/helper/dispatch"
-	helperexec "tigr.net/host-health-mcp/daemon/internal/helper/exec"
-	"tigr.net/host-health-mcp/daemon/internal/shared/proto"
+	"host-health-mcp/daemon/internal/helper/dispatch"
+	helperexec "host-health-mcp/daemon/internal/helper/exec"
+	"host-health-mcp/daemon/internal/shared/proto"
 )
 
 // LvmReportResult is the typed result for op lvm_report.

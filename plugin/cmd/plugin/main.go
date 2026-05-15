@@ -15,8 +15,8 @@ import (
 	"strconv"
 	"syscall"
 
-	"tigr.net/host-health-mcp/plugin/internal/client"
-	"tigr.net/host-health-mcp/plugin/internal/mcp"
+	"host-health-mcp/plugin/internal/client"
+	"host-health-mcp/plugin/internal/mcp"
 )
 
 var buildID = "dev"

@@ -21,8 +21,8 @@ import (
 	"syscall"
 	"time"
 
-	"tigr.net/host-health-mcp/daemon/internal/helper/dispatch"
-	"tigr.net/host-health-mcp/daemon/internal/shared/proto"
+	"host-health-mcp/daemon/internal/helper/dispatch"
+	"host-health-mcp/daemon/internal/shared/proto"
 )
 
 // MaxStdout is the per-call cap on captured stdout. Tools whose

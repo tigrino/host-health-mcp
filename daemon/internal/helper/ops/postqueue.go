@@ -6,7 +6,7 @@ import (
 	"context"
 	"strings"
 
-	helperexec "tigr.net/host-health-mcp/daemon/internal/helper/exec"
+	helperexec "host-health-mcp/daemon/internal/helper/exec"
 )
 
 // PostqueueResult is the typed result for op postqueue.

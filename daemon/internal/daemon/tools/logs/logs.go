@@ -10,9 +10,9 @@ import (
 	"fmt"
 	"time"
 
-	"tigr.net/host-health-mcp/daemon/internal/daemon/helperinvoke"
-	"tigr.net/host-health-mcp/daemon/internal/daemon/redact"
-	"tigr.net/host-health-mcp/daemon/internal/shared/proto"
+	"host-health-mcp/daemon/internal/daemon/helperinvoke"
+	"host-health-mcp/daemon/internal/daemon/redact"
+	"host-health-mcp/daemon/internal/shared/proto"
 )
 
 // Request is the typed argument shape for tool logs.

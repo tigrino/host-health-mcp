@@ -7,7 +7,7 @@ import (
 	"context"
 	"time"
 
-	"tigr.net/host-health-mcp/daemon/internal/shared/schema"
+	"host-health-mcp/daemon/internal/shared/schema"
 )
 
 // Data is the response data for tool manifest. Mirrors ManifestData in

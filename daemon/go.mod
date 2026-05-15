@@ -1,4 +1,4 @@
-module tigr.net/host-health-mcp/daemon
+module host-health-mcp/daemon
 
 go 1.22
 

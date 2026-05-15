@@ -5,8 +5,8 @@
 package ops
 
 import (
-	"tigr.net/host-health-mcp/daemon/internal/helper/dispatch"
-	"tigr.net/host-health-mcp/daemon/internal/shared/proto"
+	"host-health-mcp/daemon/internal/helper/dispatch"
+	"host-health-mcp/daemon/internal/shared/proto"
 )
 
 // RegisterAll registers every op the helper knows how to perform.

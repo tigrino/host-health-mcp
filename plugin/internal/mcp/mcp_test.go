@@ -20,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	"tigr.net/host-health-mcp/plugin/internal/client"
+	"host-health-mcp/plugin/internal/client"
 )
 
 // driveSession executes a sequence of newline-delimited JSON-RPC

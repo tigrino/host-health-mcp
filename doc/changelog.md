@@ -118,10 +118,10 @@ laurel).
   flags that travel alongside a valid JSON body (`SMART command
   failed`, `prefail thresholds`, `error log records present`, etc.).
   The helper now passes status-bit-only exits through to the parser
-  instead of dropping the entire response. Fox's FORESEE 512GB SSD
-  (exit 4 — one SMART command unsupported) now returns model,
-  smart_overall, temperature, and power-on hours instead of
-  `tool_failed`.
+  instead of dropping the entire response. A canary NVMe SSD whose
+  firmware does not implement every SMART subcommand (exit 4 — one
+  SMART command unsupported) now returns model, smart_overall,
+  temperature, and power-on hours instead of `tool_failed`.
 - `exec.Run`: returns captured stdout alongside the error on
   non-zero exit. Callers that ignore stdout on error (every existing
   call site) keep their previous behaviour; smart_summary uses the
@@ -138,8 +138,9 @@ laurel).
   rather than falling back on `euid==0`; under
   `NoNewPrivileges=yes`, an empty ambient set causes those tools to
   observe zero capabilities even though the parent is root. Fixes
-  `auditctl exited non-zero / stderr=You must be root to run this
-  program.` on fox.
+  the canary's `auditctl exited non-zero / stderr=You must be root
+  to run this program.` failure on hosts where the security tool is
+  enabled.
 
 # 1.7.0 (2026-05-15)
 

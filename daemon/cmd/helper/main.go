@@ -21,10 +21,10 @@ import (
 
 	"github.com/coreos/go-systemd/v22/daemon"
 
-	"tigr.net/host-health-mcp/daemon/internal/helper/config"
-	"tigr.net/host-health-mcp/daemon/internal/helper/dispatch"
-	"tigr.net/host-health-mcp/daemon/internal/helper/ops"
-	"tigr.net/host-health-mcp/daemon/internal/helper/server"
+	"host-health-mcp/daemon/internal/helper/config"
+	"host-health-mcp/daemon/internal/helper/dispatch"
+	"host-health-mcp/daemon/internal/helper/ops"
+	"host-health-mcp/daemon/internal/helper/server"
 )
 
 var buildID = "dev"

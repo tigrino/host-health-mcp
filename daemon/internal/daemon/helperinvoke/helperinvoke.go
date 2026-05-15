@@ -14,7 +14,7 @@ import (
 	"strings"
 	"sync"
 
-	"tigr.net/host-health-mcp/daemon/internal/shared/proto"
+	"host-health-mcp/daemon/internal/shared/proto"
 )
 
 // Client dials the helper's unix socket per call. Calls do not share a

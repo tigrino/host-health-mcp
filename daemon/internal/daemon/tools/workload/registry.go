@@ -7,7 +7,7 @@ import (
 	"context"
 	"sync"
 
-	"tigr.net/host-health-mcp/daemon/internal/daemon/helperinvoke"
+	"host-health-mcp/daemon/internal/daemon/helperinvoke"
 )
 
 // Plugin is one compile-time workload contribution. Each plugin

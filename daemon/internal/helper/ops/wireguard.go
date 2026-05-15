@@ -8,9 +8,9 @@ import (
 	"strconv"
 	"strings"
 
-	"tigr.net/host-health-mcp/daemon/internal/helper/dispatch"
-	helperexec "tigr.net/host-health-mcp/daemon/internal/helper/exec"
-	"tigr.net/host-health-mcp/daemon/internal/shared/proto"
+	"host-health-mcp/daemon/internal/helper/dispatch"
+	helperexec "host-health-mcp/daemon/internal/helper/exec"
+	"host-health-mcp/daemon/internal/shared/proto"
 )
 
 // wgPublicKeyRE validates a peer or interface public key. Base64 of 32

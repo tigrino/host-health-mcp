@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	helperexec "tigr.net/host-health-mcp/daemon/internal/helper/exec"
+	helperexec "host-health-mcp/daemon/internal/helper/exec"
 )
 
 // ZpoolStatusResult is the typed result for op zpool_status.
