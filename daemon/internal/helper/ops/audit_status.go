@@ -1,20 +1,13 @@
 package ops
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"errors"
 	"io/fs"
 	"os"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
-
-	"tigr.net/host-health-mcp/daemon/internal/helper/dispatch"
-	helperexec "tigr.net/host-health-mcp/daemon/internal/helper/exec"
-	"tigr.net/host-health-mcp/daemon/internal/shared/proto"
 )
 
 // AuditStatus is the typed result for op read_audit_status. Mirrors
@@ -26,49 +19,32 @@ type AuditStatus struct {
 	LastRotationTS  *time.Time `json:"last_rotation_ts"`
 }
 
-// ReadAuditStatus invokes `auditctl -s` and parses the key-value
-// status output. Requires CAP_AUDIT_READ on the helper unit (templated
-// in at install when security is enabled in manifest). Reports
-// present=false when auditctl is not installed; queue_depth and
-// lost_events are null when the auditd kernel subsystem is not
-// initialised.
+// ReadAuditStatus queries the kernel audit subsystem over
+// NETLINK_AUDIT. Replaces the previous `auditctl -s` invocation
+// (which on audit-userspace 4.0.x refuses to run without
+// CAP_AUDIT_CONTROL even for read-only operations); the kernel's
+// own AUDIT_GET check requires only CAP_AUDIT_READ, which the
+// helper already holds when the manifest enables the security tool.
+//
+// Reports present=false when the kernel was built without
+// CONFIG_AUDIT (no NETLINK_AUDIT protocol). Reports an error for
+// every other failure mode (EPERM from missing caps, timeout,
+// malformed reply) so the daemon's warnings[] surfaces the cause.
 func ReadAuditStatus(ctx context.Context, _ string) (any, error) {
 	out := AuditStatus{}
 
-	stdout, err := helperexec.Run(ctx, "auditctl", "-s")
+	st, err := queryAuditStatus(ctx)
 	if err != nil {
-		var de *dispatch.Error
-		if errors.As(err, &de) && de.Code == proto.CodeToolMissing {
-			// auditctl truly absent: present=false, no error.
+		if errors.Is(err, errKernelAuditAbsent) {
 			return AuditStatus{Present: false}, nil
 		}
-		// auditctl exists but the call failed (kernel audit
-		// uninitialised, permission denied, etc.). Surface the
-		// failure so the daemon's warnings[] carries it instead of
-		// returning a silent Present:false that contradicts the
-		// daemon's binary check.
 		return nil, err
 	}
 	out.Present = true
-
-	scanner := bufio.NewScanner(bytes.NewReader(stdout))
-	for scanner.Scan() {
-		line := scanner.Text()
-		fields := strings.Fields(line)
-		if len(fields) < 2 {
-			continue
-		}
-		switch fields[0] {
-		case "backlog":
-			if v, err := strconv.Atoi(fields[1]); err == nil {
-				out.QueueDepth = &v
-			}
-		case "lost":
-			if v, err := strconv.Atoi(fields[1]); err == nil {
-				out.LostEvents = &v
-			}
-		}
-	}
+	backlog := int(st.Backlog)
+	lost := int(st.Lost)
+	out.QueueDepth = &backlog
+	out.LostEvents = &lost
 
 	// last_rotation_ts: scan /var/log/audit/ for the newest rotated
 	// file (audit.log.1, audit.log.2, ...). auditd's own ROTATE

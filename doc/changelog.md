@@ -3,6 +3,36 @@ title: Host Health MCP - Changelog
 author: Albert 'Tigr' Zenkoff <albert@tigr.net>
 ---
 
+# 1.9.0 (2026-05-15)
+
+## Helper
+
+- `read_audit_status` no longer shells out to `auditctl`. The op
+  speaks NETLINK_AUDIT directly: opens an `AF_NETLINK / SOCK_RAW /
+  NETLINK_AUDIT` socket, issues `AUDIT_GET` (msg type 1000), parses
+  the kernel's `audit_status` reply.
+- **Why this matters.** audit-userspace 4.0.x (Debian 13, Ubuntu
+  24.04) tightened the read/control split: `auditctl` refuses to
+  run any subcommand — including read-only `-s` — without
+  `CAP_AUDIT_CONTROL` in the effective set. The check
+  (`audit_can_control()`) is applied at the top of `main()` and
+  does not fall back on `geteuid()==0`. Granting `CAP_AUDIT_CONTROL`
+  to the helper just to read status would have been a needless
+  privilege expansion. The kernel's own `AUDIT_GET` check is
+  `netlink_capable(skb, CAP_AUDIT_READ)` per `kernel/audit.c`, so
+  going straight to netlink honours the actual policy while keeping
+  the helper at the lower cap.
+- Pure stdlib + `golang.org/x/sys/unix` (already a dependency). No
+  CGO, no `libaudit`. Implementation is ~120 lines in
+  `internal/helper/ops/audit_netlink.go`.
+- Presence semantics shift slightly: `present:false` now means
+  "kernel built without `CONFIG_AUDIT`" rather than "auditctl
+  binary not installed". The daemon's binary-detection cross-check
+  (binary present, helper says no) remains and still warns when
+  the two disagree.
+- No change to `last_rotation_ts`: still derived from the newest
+  numbered file in `/var/log/audit/`.
+
 # 1.8.0 (2026-05-15)
 
 ## Wire schema
