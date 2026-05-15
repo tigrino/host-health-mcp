@@ -56,7 +56,8 @@ func Run(ctx context.Context, name string, args ...string) ([]byte, error) {
 	cmd.Env = safeEnv
 
 	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &cappedWriter{buf: &stdout, max: MaxStdout}
+	stdoutWriter := &cappedWriter{buf: &stdout, max: MaxStdout}
+	cmd.Stdout = stdoutWriter
 	cmd.Stderr = &stderr
 
 	// killTimer is captured at cancel time so the post-Wait code can
@@ -86,6 +87,19 @@ func Run(ctx context.Context, name string, args ...string) ([]byte, error) {
 		killTimer.Stop()
 	}
 	timerMu.Unlock()
+
+	// If the stdout writer truncated, surface that as the proximate
+	// cause regardless of what cmd.Run reported. The chain is:
+	// cappedWriter returns *truncatedError -> os/exec stops copying ->
+	// process gets SIGPIPE on its next write OR our Cancel SIGTERMs
+	// it -> cmd.Wait reports *exec.ExitError (signal: pipe / signal:
+	// terminated). That ExitError masks the original truncatedError
+	// at classify-time, so the helper would report a generic
+	// tool_failed with exit=-1 instead of output_truncated. The
+	// sticky flag on the writer is the only reliable signal.
+	if stdoutWriter.truncated {
+		err = &truncatedError{Max: stdoutWriter.max}
+	}
 
 	if err != nil {
 		// Return the captured stdout along with the classified
@@ -203,6 +217,13 @@ func (e *truncatedError) Error() string {
 type cappedWriter struct {
 	buf *bytes.Buffer
 	max int
+	// truncated is sticky once the cap is hit. The os/exec copy
+	// goroutine stops on the first Write error, but the process may
+	// already be dying from SIGPIPE/SIGTERM and cmd.Wait()'s
+	// *exec.ExitError will mask our *truncatedError. The post-Wait
+	// path in Run reads this flag to surface truncation as the
+	// proximate cause.
+	truncated bool
 }
 
 func (w *cappedWriter) Write(p []byte) (int, error) {
@@ -211,6 +232,7 @@ func (w *cappedWriter) Write(p []byte) (int, error) {
 		if room > 0 {
 			_, _ = w.buf.Write(p[:room])
 		}
+		w.truncated = true
 		return 0, &truncatedError{Max: w.max}
 	}
 	return w.buf.Write(p)

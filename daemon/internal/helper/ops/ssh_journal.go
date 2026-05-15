@@ -22,12 +22,18 @@ type SshJournalCountsResult struct {
 // SshJournalCounts counts since-boot Accepted/Failed SSH login lines
 // emitted to the systemd journal by ssh.service. Used as a fallback
 // when neither /var/log/auth.log nor /var/log/secure is present
-// (journal-only Debian/RHEL hosts). The helper runs journalctl with a
-// fixed arg vector and counts via prefix matching on "Accepted " and
-// "Failed " — both are operator-controlled prefixes, but using a
-// prefix instead of a substring match avoids being confused by lines
-// like "Failed password for invalid user" (which still starts with
-// "Failed ", so we still count it — that's the intended semantics).
+// (journal-only Debian/RHEL hosts).
+//
+// The --grep filter is done by journalctl itself so the helper's
+// stdout cap (256 KiB) is not the limiting factor on hosts with long
+// uptime or noisy public surfaces — public-target hosts can easily
+// emit hundreds of KiB of ssh.service journal entries per boot, and
+// piping unfiltered output through the helper would trip the
+// truncation cap (and previously masked the truncation as a generic
+// ExitError because the kernel SIGPIPE-killed journalctl before the
+// truncatedError reached classify()). With --grep, the data crossing
+// the pipe is bounded by the count of matching lines, which is the
+// answer we want anyway.
 func SshJournalCounts(ctx context.Context, _ string) (any, error) {
 	out := SshJournalCountsResult{}
 
@@ -37,6 +43,7 @@ func SshJournalCounts(ctx context.Context, _ string) (any, error) {
 		"-u", "ssh.service",
 		"--output=cat",
 		"--no-pager",
+		"--grep=^(Accepted|Failed) ",
 	)
 	if err != nil {
 		var de *dispatch.Error

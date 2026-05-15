@@ -3,6 +3,44 @@ title: Host Health MCP - Changelog
 author: Albert 'Tigr' Zenkoff <albert@tigr.net>
 ---
 
+# 1.9.5 (2026-05-15)
+
+## Helper
+
+- `ssh_journal_counts`: pass `--grep=^(Accepted|Failed) ` to
+  `journalctl` so the line filtering happens server-side. Hosts with
+  long uptime and noisy public surfaces (relays, public service
+  endpoints) emit hundreds of KiB of `ssh.service` journal entries
+  per boot; piping the unfiltered stream into the helper blew past
+  the 256 KiB stdout cap, the cappedWriter returned
+  `*truncatedError`, the subprocess got SIGPIPE'd, and the resulting
+  `*exec.ExitError` masked the truncation cause — the op reported a
+  generic `tool_failed exit=-1` instead of `output_truncated`. With
+  `--grep`, the bytes crossing the pipe are bounded by the count of
+  matching lines.
+- `exec.Run`: cappedWriter now carries a sticky `truncated` flag.
+  Run checks it after `cmd.Wait()` and substitutes a fresh
+  `*truncatedError` for whatever `cmd.Run` reported, so truncation
+  is surfaced as the proximate cause regardless of which signal
+  killed the subprocess. Closes a latent bug that would have hit any
+  future helper op whose tool produces large output. Regression
+  tests added in `internal/helper/exec/exec_test.go` covering the
+  truncation-masked-by-signal case, the happy path, and the
+  tool-missing classification.
+
+# 1.9.4 (2026-05-15)
+
+## Privacy
+
+- Privacy scrub. Go module path changed from
+  `tigr.net/host-health-mcp/{daemon,plugin}` to dotless
+  `host-health-mcp/{daemon,plugin}` across 43 files. Changelog
+  narrative for 1.8.0 genericised (specific canary hostname and
+  NVMe model removed). `git filter-branch` rewrote three commit
+  message bodies that named a specific fleet host and referenced an
+  external ansible repository commit; tags 1.6.0 → 1.9.3 remapped
+  onto the rewritten commits.
+
 # 1.9.3 (2026-05-15)
 
 ## Daemon
