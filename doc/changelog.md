@@ -3,6 +3,40 @@ title: Host Health MCP - Changelog
 author: Albert 'Tigr' Zenkoff <albert@tigr.net>
 ---
 
+# 1.4.1 (2026-05-15)
+
+## Daemon
+
+- `security.rkhunter`: scan moved to the helper. `/var/log/rkhunter.log`
+  is `root:adm 0640` on Debian; the daemon (an unprivileged user not
+  in `adm`) could stat the path but not read its body, so
+  `warning_count` came back null even when the log was full of
+  `Warning:` lines. The helper has `CAP_DAC_READ_SEARCH` when the
+  operator enables the security tool.
+- `security` no-silent-nulls pass:
+  - Warn explicitly when AIDE's DB mtime is present but
+    `change_count` is null (operator's cron wrapper writes elsewhere
+    than `/var/log/aide/aide.log`).
+  - Warn explicitly when the daemon detects the auditd binary but
+    the helper's `read_audit_status` reports `Present:false`
+    (auditctl not installed or unreachable).
+  - Warn explicitly when rkhunter's binary is present but no log
+    exists, or when the log exists but the helper can't read it.
+  - Distinguish the debsums "timer present but never triggered" case
+    from "no timer at all"; emit a precise warning per case
+    (previously both fell through the same misleading message).
+
+## Helper
+
+- `read_audit_status`: distinguish `auditctl` missing (return
+  `Present:false`, no error) from `auditctl` present but failing
+  (return an error so the daemon's `warnings[]` surfaces the cause).
+  Previously the latter was silently converted to `Present:false`,
+  contradicting the daemon's binary detection.
+- New op `rkhunter_summary`: stats `/var/log/rkhunter.log` for mtime
+  and counts `Warning:` lines; runs as root so it can read
+  `root:adm` logs the daemon can't.
+
 # 1.4.0 (2026-05-15)
 
 ## Daemon

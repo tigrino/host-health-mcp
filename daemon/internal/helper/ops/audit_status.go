@@ -12,7 +12,9 @@ import (
 	"strings"
 	"time"
 
+	"tigr.net/host-health-mcp/daemon/internal/helper/dispatch"
 	helperexec "tigr.net/host-health-mcp/daemon/internal/helper/exec"
+	"tigr.net/host-health-mcp/daemon/internal/shared/proto"
 )
 
 // AuditStatus is the typed result for op read_audit_status. Mirrors
@@ -35,10 +37,17 @@ func ReadAuditStatus(ctx context.Context, _ string) (any, error) {
 
 	stdout, err := helperexec.Run(ctx, "auditctl", "-s")
 	if err != nil {
-		// auditctl missing: report present=false rather than failing.
-		// Other errors (kernel rejecting the syscall, permission)
-		// surface as the op's failure to the daemon.
-		return AuditStatus{Present: false}, nil
+		var de *dispatch.Error
+		if errors.As(err, &de) && de.Code == proto.CodeToolMissing {
+			// auditctl truly absent: present=false, no error.
+			return AuditStatus{Present: false}, nil
+		}
+		// auditctl exists but the call failed (kernel audit
+		// uninitialised, permission denied, etc.). Surface the
+		// failure so the daemon's warnings[] carries it instead of
+		// returning a silent Present:false that contradicts the
+		// daemon's binary check.
+		return nil, err
 	}
 	out.Present = true
 

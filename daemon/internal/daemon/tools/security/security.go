@@ -119,6 +119,13 @@ type helperFail2ban struct {
 	TotalBanned int  `json:"total_banned"`
 }
 
+// helperRkhunter mirrors the helper's RkhunterSummaryResult.
+type helperRkhunter struct {
+	Present      bool       `json:"present"`
+	LastRunTS    *time.Time `json:"last_run_ts"`
+	WarningCount *int       `json:"warning_count"`
+}
+
 // Handle composes the security envelope. Presence is detected daemon-
 // side by binary or socket presence; deep fields come from the helper
 // ops where available.
@@ -172,22 +179,47 @@ func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 		LastExitCode: aide.LastExitCode,
 		ChangeCount:  aide.ChangeCount,
 	}
+	// AIDE often shows a DB mtime (last_run_ts) without any matching
+	// log entries because Debian's cron wrapper doesn't always write
+	// to /var/log/aide. Surface that case rather than emit silent
+	// nulls.
+	if d.AideOrEquivalent.Present && aide.LastRunTS != nil && aide.ChangeCount == nil {
+		addWarning("security: aide DB mtime found but change_count unparseable; " +
+			"ensure /var/log/aide/aide.log captures 'Total number of differences:' or " +
+			"'Added/Removed/Changed entries:' totals")
+	}
+
 	d.Auditd = Auditd{
 		Present:        audit.Present || anyExists("/sbin/auditd", "/usr/sbin/auditd"),
 		QueueDepth:     audit.QueueDepth,
 		LostEvents:     audit.LostEvents,
 		LastRotationTS: audit.LastRotationTS,
 	}
+	// auditctl may be absent (Present:false from helper, no error) on
+	// hosts that have auditd installed but never invoke auditctl.
+	// When daemon binary detection says yes but helper says no, that
+	// is a contradiction worth surfacing: queue_depth and friends
+	// will be null and the operator should know why.
+	if !audit.Present && anyExists("/sbin/auditd", "/usr/sbin/auditd") {
+		addWarning("security: auditd binary present but auditctl not installed or unreachable; " +
+			"queue_depth/lost_events/last_rotation_ts null")
+	}
 
-	d.Rkhunter.Present = anyExists("/usr/bin/rkhunter", "/usr/sbin/rkhunter")
-	if d.Rkhunter.Present {
-		if info, err := os.Stat("/var/log/rkhunter.log"); err == nil {
-			ts := info.ModTime().UTC()
-			d.Rkhunter.LastRunTS = &ts
-			if w := readRkhunterWarningCount("/var/log/rkhunter.log"); w != nil {
-				d.Rkhunter.WarningCount = w
-			}
-		}
+	// rkhunter scan moved to the helper: /var/log/rkhunter.log is
+	// root:adm 0640 on Debian and the daemon user can stat but not
+	// read it. The helper (root, CAP_DAC_READ_SEARCH) covers both.
+	var rk helperRkhunter
+	if err := t.hc.CallJSON(ctx, proto.OpRkhunterSummary, "", &rk); err != nil {
+		addWarning("security: rkhunter_summary: " + err.Error())
+	}
+	d.Rkhunter.Present = rk.Present || anyExists("/usr/bin/rkhunter", "/usr/sbin/rkhunter")
+	d.Rkhunter.LastRunTS = rk.LastRunTS
+	d.Rkhunter.WarningCount = rk.WarningCount
+	if d.Rkhunter.Present && rk.LastRunTS == nil {
+		addWarning("security: rkhunter binary present but /var/log/rkhunter.log absent; " +
+			"last_run_ts and warning_count null")
+	} else if d.Rkhunter.Present && rk.LastRunTS != nil && rk.WarningCount == nil {
+		addWarning("security: rkhunter log present but unreadable from the helper; warning_count null")
 	}
 
 	d.DebsumsOrEquivalent.Present = anyExists("/usr/bin/debsums")
@@ -270,15 +302,21 @@ func (t *Tool) fillDebsums(ctx context.Context, d *Debsums, addWarning func(stri
 			"and debsums-check.timer is unreachable (" + err.Error() + ")")
 		return
 	}
-	if tim.Present && tim.LastTrigger != nil {
+	switch {
+	case tim.Present && tim.LastTrigger != nil:
 		d.LastRunTS = tim.LastTrigger
 		// ModifiedCount stays nil — the timer doesn't carry it.
 		addWarning("security: debsums last_run_ts derived from debsums-check.timer; " +
 			"modified_count unknown (set debsums_log_path in manifest.yml to populate)")
-		return
+	case tim.Present:
+		// Timer is registered with systemd but has never fired.
+		addWarning("security: debsums installed; no debsums_log_path is configured; " +
+			"debsums-check.timer is registered but has never been triggered " +
+			"(LastTriggerUSec=0); last_run_ts and modified_count are null")
+	default:
+		addWarning("security: debsums installed; no debsums_log_path is configured " +
+			"and no debsums-check.timer present; last_run_ts and modified_count are null")
 	}
-	addWarning("security: debsums installed but no debsums_log_path is configured " +
-		"and no debsums-check.timer present; last_run_ts and modified_count are null")
 }
 
 // countDebsumsChanged counts lines in the debsums log that look like
@@ -336,26 +374,6 @@ func detectIPS() string {
 	default:
 		return "none"
 	}
-}
-
-// readRkhunterWarningCount scans rkhunter's log for "Warning:" lines.
-// Returns nil when the file is empty or unreadable.
-func readRkhunterWarningCount(path string) *int {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil
-	}
-	defer f.Close()
-	count := 0
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 64*1024), 1<<20)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.Contains(line, "Warning:") {
-			count++
-		}
-	}
-	return &count
 }
 
 // authLogPaths lists candidate SSH login log files in preference

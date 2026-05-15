@@ -22,6 +22,7 @@ const (
 	OpFail2banStatus            = "fail2ban_status"
 	OpSshJournalCounts          = "ssh_journal_counts"
 	OpSystemdTimerLastTrigger   = "systemd_timer_last_trigger"
+	OpRkhunterSummary           = "rkhunter_summary"
 )
 
 // AllOps lists every op token in a stable order. Used by the helper to
@@ -45,6 +46,7 @@ var AllOps = []string{
 	OpFail2banStatus,
 	OpSshJournalCounts,
 	OpSystemdTimerLastTrigger,
+	OpRkhunterSummary,
 }
 
 // IsKnownOp reports whether op is one of the recognised tokens.

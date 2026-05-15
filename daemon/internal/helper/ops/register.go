@@ -30,4 +30,5 @@ func RegisterAll(r *dispatch.Registry) {
 	r.Register(proto.OpFail2banStatus, Fail2banStatus)
 	r.Register(proto.OpSshJournalCounts, SshJournalCounts)
 	r.Register(proto.OpSystemdTimerLastTrigger, SystemdTimerLastTrigger)
+	r.Register(proto.OpRkhunterSummary, RkhunterSummary)
 }
