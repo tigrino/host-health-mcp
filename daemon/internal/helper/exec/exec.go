@@ -88,7 +88,13 @@ func Run(ctx context.Context, name string, args ...string) ([]byte, error) {
 	timerMu.Unlock()
 
 	if err != nil {
-		return nil, classify(err, &stdout, &stderr, cmd)
+		// Return the captured stdout along with the classified
+		// error. Most callers ignore stdout when err != nil, but
+		// some tools (smartctl with bit-encoded exit codes,
+		// btrfs-progs returning non-zero with valid output) need to
+		// inspect the body to distinguish status-bit-only from
+		// fatal exits.
+		return stdout.Bytes(), classify(err, &stdout, &stderr, cmd)
 	}
 	return stdout.Bytes(), nil
 }

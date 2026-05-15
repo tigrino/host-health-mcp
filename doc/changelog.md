@@ -3,6 +3,48 @@ title: Host Health MCP - Changelog
 author: Albert 'Tigr' Zenkoff <albert@tigr.net>
 ---
 
+# 1.8.0 (2026-05-15)
+
+## Wire schema
+
+- Schema version bumped to **0.3.0** (additive-minor; C2-compatible
+  with 0.2.0 clients).
+- `storage.smart[].smartctl_exit_code` (optional `*int`): surfaces
+  smartctl's raw exit code when it is non-zero but the JSON output
+  is still complete (status-bit-only exits — bits 2-7 of smartctl's
+  bit-encoded exit per `man smartctl §EXIT STATUS`).
+
+## Helper
+
+- `smart_summary`: smartctl's exit code is a bit field, not a
+  pass/fail signal. Bits 0 (`command line did not parse`) and 1
+  (`device open failed`) are real failures; bits 2-7 are status
+  flags that travel alongside a valid JSON body (`SMART command
+  failed`, `prefail thresholds`, `error log records present`, etc.).
+  The helper now passes status-bit-only exits through to the parser
+  instead of dropping the entire response. Fox's FORESEE 512GB SSD
+  (exit 4 — one SMART command unsupported) now returns model,
+  smart_overall, temperature, and power-on hours instead of
+  `tool_failed`.
+- `exec.Run`: returns captured stdout alongside the error on
+  non-zero exit. Callers that ignore stdout on error (every existing
+  call site) keep their previous behaviour; smart_summary uses the
+  body to decide whether to parse despite the bit-encoded exit.
+
+## Install
+
+- `caps-template.sh` now emits both `CapabilityBoundingSet=` and
+  `AmbientCapabilities=` into the helper drop-in. Bounding carries
+  `CAP_CHOWN + <per-op caps>`; ambient carries `<per-op caps>` only
+  (CAP_CHOWN stays out of ambient because only the helper process
+  itself does chown, not its subprocesses). The ambient half matters
+  because tools like `auditctl` introspect their own effective set
+  rather than falling back on `euid==0`; under
+  `NoNewPrivileges=yes`, an empty ambient set causes those tools to
+  observe zero capabilities even though the parent is root. Fixes
+  `auditctl exited non-zero / stderr=You must be root to run this
+  program.` on fox.
+
 # 1.7.0 (2026-05-15)
 
 ## Wire schema

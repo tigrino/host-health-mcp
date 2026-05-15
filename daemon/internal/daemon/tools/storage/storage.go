@@ -75,7 +75,9 @@ type MdraidArray struct {
 
 // SmartSummary mirrors the schema. Per-device collection failures are
 // recorded in the Error block; smart_overall and the detail fields
-// are null on failure.
+// are null on failure. SmartctlExitCode (0.3.0) surfaces smartctl's
+// raw exit code when it is non-zero but the JSON was still parseable
+// (status-bit-only exits — bits 2-7 of smartctl's bit-encoded exit).
 type SmartSummary struct {
 	Device              string       `json:"device"`
 	Model               *string      `json:"model,omitempty"`
@@ -83,6 +85,7 @@ type SmartSummary struct {
 	TemperatureC        *int         `json:"temperature_c,omitempty"`
 	ReallocatedSectors  *int         `json:"reallocated_sectors,omitempty"`
 	PowerOnHours        *int         `json:"power_on_hours,omitempty"`
+	SmartctlExitCode    *int         `json:"smartctl_exit_code,omitempty"`
 	Error               *SmartError  `json:"error,omitempty"`
 }
 

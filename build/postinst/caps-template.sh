@@ -74,13 +74,27 @@ mkdir -p "$DROPIN_DIR"
     echo "# from $MANIFEST."
     echo "# Edit $MANIFEST and re-run the generator to refresh."
     echo "[Service]"
-    if [ -z "$caps" ]; then
-        echo "CapabilityBoundingSet="
-    else
-        printf 'CapabilityBoundingSet='
-        for c in $caps; do printf '%s ' "$c"; done
-        printf '\n'
-    fi
+    # Bounding set carries every cap the helper or its subprocesses
+    # might need, including CAP_CHOWN which only the helper itself
+    # uses (to chown the runtime dir + socket at startup).
+    printf 'CapabilityBoundingSet='
+    for c in $caps; do printf '%s ' "$c"; done
+    printf '\n'
+    # Ambient set carries the per-op caps EXCLUDING CAP_CHOWN.
+    # Modern tools that introspect their effective set (auditctl
+    # checks CAP_AUDIT_READ explicitly rather than falling back on
+    # euid==0) need their caps inherited via the ambient set across
+    # execve under NoNewPrivileges=yes; an empty ambient set means
+    # they observe zero capabilities even though the parent process
+    # is root.
+    printf 'AmbientCapabilities='
+    for c in $caps; do
+        case "$c" in
+            CAP_CHOWN) ;; # parent-only
+            *) printf '%s ' "$c" ;;
+        esac
+    done
+    printf '\n'
 } > "$DROPIN"
 
 echo "caps-template: wrote $DROPIN" >&2

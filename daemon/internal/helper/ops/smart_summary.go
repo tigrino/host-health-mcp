@@ -3,6 +3,7 @@ package ops
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 
@@ -27,6 +28,14 @@ var nvmeRE = regexp.MustCompile(`^nvme[0-9]+n[0-9]+$`)
 // smartctl --json -a /dev/<dev>. Fields not reported by smartctl are
 // left null; per-device collection failures are reported by the
 // daemon-side schema's error block, not here.
+//
+// SmartctlExitCode (schema 0.3.0) surfaces smartctl's raw exit code
+// when it is non-zero but the JSON was still parseable. smartctl's
+// exit code is a bit field (see man smartctl §EXIT STATUS): bits 0
+// (parse error) and 1 (device open error) are real failures with no
+// valid JSON; bits 2-7 are status flags that travel alongside a
+// complete JSON document. The helper now passes through the status-
+// flag cases instead of dropping the response.
 type SmartSummary struct {
 	Device              string  `json:"device"`
 	Model               *string `json:"model,omitempty"`
@@ -34,7 +43,13 @@ type SmartSummary struct {
 	TemperatureC        *int    `json:"temperature_c,omitempty"`
 	ReallocatedSectors  *int    `json:"reallocated_sectors,omitempty"`
 	PowerOnHours        *int    `json:"power_on_hours,omitempty"`
+	SmartctlExitCode    *int    `json:"smartctl_exit_code,omitempty"`
 }
+
+// smartctlExitBits names the bit positions that mean "real failure".
+// Anything outside this mask is a status flag and the JSON body is
+// valid.
+const smartctlFatalBits = 1<<0 | 1<<1
 
 // rawSmart matches the subset of smartctl --json output we read.
 type rawSmart struct {
@@ -75,23 +90,37 @@ func SmartSummaryHandler(ctx context.Context, param string) (any, error) {
 	}
 	args = append(args, devPath)
 	stdout, err := helperexec.Run(ctx, "smartctl", args...)
-	if err != nil {
-		// smartctl exits with low-bits-set status to signal SMART
-		// conditions (e.g. exit 4 = checksum error) while still
-		// emitting valid JSON. Surface failures through the per-
-		// device error path; do not pretend the device is healthy.
-		return nil, err
-	}
 
-	var raw rawSmart
-	if err := json.Unmarshal(stdout, &raw); err != nil {
-		return nil, &dispatch.Error{
-			Code:    proto.CodeToolFailed,
-			Message: fmt.Sprintf("smartctl JSON parse: %s", err.Error()),
+	// smartctl uses a bit-encoded exit code: bits 0 (parse error)
+	// and 1 (device open error) are real failures with no JSON;
+	// bits 2-7 are status flags (one SMART command failed, prefail
+	// thresholds, etc.) that travel alongside a complete JSON
+	// document. The helper passes those status-flag cases through
+	// to the parser instead of dropping the response.
+	var smartExit *int
+	if err != nil {
+		var de *dispatch.Error
+		if errors.As(err, &de) && de.Code == proto.CodeToolFailed && de.ToolExit != nil {
+			exit := *de.ToolExit
+			if exit > 0 && exit&smartctlFatalBits == 0 && len(stdout) > 0 {
+				smartExit = &exit
+				err = nil
+			}
+		}
+		if err != nil {
+			return nil, err
 		}
 	}
 
-	out := SmartSummary{Device: param}
+	var raw rawSmart
+	if jerr := json.Unmarshal(stdout, &raw); jerr != nil {
+		return nil, &dispatch.Error{
+			Code:    proto.CodeToolFailed,
+			Message: fmt.Sprintf("smartctl JSON parse: %s", jerr.Error()),
+		}
+	}
+
+	out := SmartSummary{Device: param, SmartctlExitCode: smartExit}
 	if raw.ModelName != "" {
 		m := raw.ModelName
 		out.Model = &m
