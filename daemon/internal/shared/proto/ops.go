@@ -25,6 +25,7 @@ const (
 	OpRkhunterSummary           = "rkhunter_summary"
 	OpUnattendedUpgradesStatus  = "unattended_upgrades_status"
 	OpFirewallInspect           = "firewall_inspect"
+	OpFirewallLookup            = "firewall_lookup"
 )
 
 // AllOps lists every op token in a stable order. Used by the helper to
@@ -51,6 +52,7 @@ var AllOps = []string{
 	OpRkhunterSummary,
 	OpUnattendedUpgradesStatus,
 	OpFirewallInspect,
+	OpFirewallLookup,
 }
 
 // IsKnownOp reports whether op is one of the recognised tokens.

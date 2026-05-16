@@ -3,6 +3,69 @@ title: Host Health MCP - Changelog
 author: Albert 'Tigr' Zenkoff <albert@tigr.net>
 ---
 
+# 1.14.0 (2026-05-16)
+
+New tool `host_firewall_lookup` — given an IPv4/IPv6 address or
+CIDR, report every chain rule and set element across the host's
+nftables ruleset that references it. The intended fleet use is
+"is this address banned anywhere?" and "which host's policy is
+letting X through?" without pulling and grepping the full ruleset
+per host. Schema bumps to `0.6.0` (additive: one new tool).
+
+## Daemon
+
+- **New tool `host_firewall_lookup`** (POST `/v1/host_firewall_lookup`).
+  Request: `{ "query": "<ip-or-cidr>", "include_set_elements": false }`.
+  Response data:
+  - `query`, `query_kind` (`ipv4_addr` | `ipv6_addr` |
+    `ipv4_cidr` | `ipv6_cidr`).
+  - `matches[]` — one entry per rule hit. Carries `family`,
+    `table`, `chain`, `rule_handle`, `rule_text` (compact JSON
+    expr), `field` (`saddr`/`daddr`), `operator`,
+    `matched_value`, optional `set_name`, and the discriminated
+    `match_kind`:
+    - `saddr_exact` / `daddr_exact`
+    - `saddr_in_subnet` / `daddr_in_subnet`
+    - `set_member` / `set_subset_overlap`
+  - `sets[]` — one entry per set/map element hit. Carries
+    `family`, `table`, `set`, `element_key`, optional
+    `expires_s` / `timeout_s`, and `match_kind` (`set_member` or
+    `set_subset_overlap`). Populated only when
+    `include_set_elements=true`.
+  - `searched_tables`, `searched_chains`, `searched_rules`,
+    `searched_sets` — coverage counters so a no-match result is
+    distinguishable from an empty ruleset.
+- Cache TTL default 30 s, per-call timeout 6 s. Cache key
+  includes the request body so different queries don't collide.
+- Manifest gating shares the existing `firewall.enabled` flag —
+  operators who disable firewall introspection turn off both
+  tools at once.
+
+## Helper
+
+- **New op `firewall_lookup`** runs a single `nft -j list ruleset`
+  call (RunCapped, 32 MiB ceiling) and performs all matching
+  in-process. Same caps profile as `firewall_inspect`
+  (`CAP_NET_ADMIN`). Set-membership is computed once per
+  invocation and reused for rules referencing `@setname`, so
+  even hosts with 69k-entry ban sets run a single linear pass.
+
+## Wire schema (0.6.0)
+
+- Additive: new top-level tool `host_firewall_lookup` with data
+  block as described above.
+
+## Out of scope (deliberate)
+
+- No `rule_text` rendering in nft's textual form. `rule_text`
+  carries the compact JSON of the expression array; rebuilding
+  nft's userspace renderer is not implemented. Operators wanting
+  the readable rule body can still call `nft list ruleset` on the
+  host or use `host_firewall mode=detail`.
+- No MAC-address or port lookups. The matcher only considers
+  ip / ip6 saddr/daddr payload expressions. Layer-4 and link-
+  layer matches are a separate concern.
+
 # 1.13.1 (2026-05-16)
 
 ## Helper

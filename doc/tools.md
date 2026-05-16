@@ -295,6 +295,68 @@ ceiling report `elements_truncated: true` plus the live
   printer; operators wanting the text form should call `nft list
   ruleset` directly on the host.
 
+## `host_firewall_lookup` (1.14.0+, OPTIONAL)
+
+Search the host's nftables ruleset for any reference to a given
+IPv4/IPv6 address or CIDR. Intended for fleet queries of the form
+"is this IP banned anywhere?" and "which host's policy is letting
+X through?". A single `nft -j list ruleset` call per invocation;
+all matching is performed in-process.
+
+### Request
+
+| Field                  | Type    | Default | Notes                                            |
+|------------------------|---------|---------|--------------------------------------------------|
+| `query`                | string  | —       | Required. IPv4/IPv6 address or CIDR.             |
+| `include_set_elements` | bool    | `false` | Populate `sets[]` with per-element hits.         |
+
+### Response data
+
+- `query`, `query_kind` (`ipv4_addr` | `ipv6_addr` |
+  `ipv4_cidr` | `ipv6_cidr`).
+- `matches[]` — rule hits. Each entry:
+  - `match_kind` — `saddr_exact`, `daddr_exact`,
+    `saddr_in_subnet`, `daddr_in_subnet`, `set_member`, or
+    `set_subset_overlap`.
+  - `family`, `table`, `chain`, `rule_handle`.
+  - `rule_text` — compact JSON encoding of nftables' expression
+    array.
+  - `operator`, `matched_value`, optional `set_name`.
+- `sets[]` — set/map element hits (only when
+  `include_set_elements=true`). Each entry:
+  - `match_kind` — `set_member` or `set_subset_overlap`.
+  - `family`, `table`, `set`, `element_key`.
+  - Optional `expires_s`, `timeout_s` for timeout-flagged sets.
+- `searched_tables`, `searched_chains`, `searched_rules`,
+  `searched_sets` — coverage counters.
+- `errors[]` — structured per-op errors (schema `HelperOpError`).
+
+Cache TTL default: 30 s. Timeout default: 6 s.
+
+### Match semantics
+
+- IP query, rule rhs is a literal IP → `saddr_exact` / `daddr_exact`.
+- IP query, rule rhs is a prefix or anonymous-set member that
+  covers the IP → `saddr_in_subnet` / `daddr_in_subnet`.
+- IP query, rule rhs is `@setname` and the IP is a member →
+  `set_member`.
+- CIDR query, anywhere the query overlaps → either
+  `*_in_subnet` (literal/prefix/range rhs) or
+  `set_subset_overlap` (set reference).
+
+### Manifest gating
+
+Shares `firewall.enabled` with `host_firewall`. If the firewall
+block is disabled, this tool returns an empty payload plus the
+`firewall: disabled in manifest` warning.
+
+### Limitations
+
+- Only `ip` and `ip6` `saddr` / `daddr` payload matches are
+  considered. Layer-4 and link-layer rules are skipped.
+- `rule_text` is JSON, not nft's textual rendering. See
+  `host_firewall` tool docs for the rationale.
+
 # Helper op reference
 
 Internal — the daemon's `internal/helperinvoke` package is the only
@@ -317,6 +379,7 @@ caller. Listed here so reviewers can find each implementation:
 | `journal_query`     | `internal/helper/ops/journal.go`                    | none (root reads the journal directly)  |
 | `nft_table_counts`  | `internal/helper/ops/nft.go`                        | `CAP_NET_ADMIN`                         |
 | `firewall_inspect`  | `internal/helper/ops/firewall.go`                   | `CAP_NET_ADMIN`                         |
+| `firewall_lookup`   | `internal/helper/ops/firewall_lookup.go`            | `CAP_NET_ADMIN`                         |
 
 The `caps-template.sh` post-install scriptlet maps the manifest's
 `enabled_tools[]` and `workload_plugins[]` to the union of required

@@ -33,4 +33,5 @@ func RegisterAll(r *dispatch.Registry) {
 	r.Register(proto.OpRkhunterSummary, RkhunterSummary)
 	r.Register(proto.OpUnattendedUpgradesStatus, UnattendedUpgradesStatus)
 	r.Register(proto.OpFirewallInspect, FirewallInspect)
+	r.Register(proto.OpFirewallLookup, FirewallLookup)
 }
