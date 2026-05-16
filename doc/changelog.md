@@ -3,6 +3,19 @@ title: Host Health MCP - Changelog
 author: Albert 'Tigr' Zenkoff <albert@tigr.net>
 ---
 
+# 1.14.1 (2026-05-16)
+
+## Docs
+
+- `tools.md`: tightened the `host_firewall_lookup` match-semantics
+  section. Behavior is unchanged from 1.14.0 — a CIDR query
+  against a rule pinning a single literal IP inside that range
+  was already classified as `saddr_in_subnet` / `daddr_in_subnet`
+  (test `TestFirewallLookup_CIDRQueryAgainstLiteralRule` covers
+  this) — but the spec text glossed over the case. The full
+  query × rhs matrix is now explicit so operators don't have to
+  infer the rule from the implementation.
+
 # 1.14.0 (2026-05-16)
 
 New tool `host_firewall_lookup` — given an IPv4/IPv6 address or

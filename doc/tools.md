@@ -335,14 +335,29 @@ Cache TTL default: 30 s. Timeout default: 6 s.
 
 ### Match semantics
 
-- IP query, rule rhs is a literal IP → `saddr_exact` / `daddr_exact`.
-- IP query, rule rhs is a prefix or anonymous-set member that
-  covers the IP → `saddr_in_subnet` / `daddr_in_subnet`.
-- IP query, rule rhs is `@setname` and the IP is a member →
-  `set_member`.
-- CIDR query, anywhere the query overlaps → either
-  `*_in_subnet` (literal/prefix/range rhs) or
-  `set_subset_overlap` (set reference).
+`match_kind` describes the **relationship** between query and
+rule, not the shape of the rule itself. A rule pinning a single
+literal IP still gets `saddr_in_subnet` when the caller queried a
+covering CIDR — the use case "show me everything touching
+10.0.0.0/24" must surface every single-address rule inside that
+range. The full matrix:
+
+| Query  | Rule rhs           | match_kind                                  |
+|--------|--------------------|---------------------------------------------|
+| IP     | literal IP equal   | `saddr_exact` / `daddr_exact`               |
+| IP     | prefix covering IP | `saddr_in_subnet` / `daddr_in_subnet`       |
+| IP     | range covering IP  | `saddr_in_subnet` / `daddr_in_subnet`       |
+| IP     | anon-set member    | `saddr_in_subnet` / `daddr_in_subnet`       |
+| IP     | `@setname` (IP ∈ set) | `set_member`                             |
+| CIDR   | literal IP inside  | `saddr_in_subnet` / `daddr_in_subnet`       |
+| CIDR   | prefix overlapping | `saddr_in_subnet` / `daddr_in_subnet`       |
+| CIDR   | range overlapping  | `saddr_in_subnet` / `daddr_in_subnet`       |
+| CIDR   | `@setname` (overlap) | `set_subset_overlap`                      |
+
+In short: `*_exact` requires both sides to be single addresses and
+equal. Anything broader on either side that still overlaps the
+query produces `*_in_subnet` (literal/prefix/range rhs) or
+`set_subset_overlap` (set reference, CIDR query).
 
 ### Manifest gating
 
