@@ -3,6 +3,24 @@ title: Host Health MCP - Changelog
 author: Albert 'Tigr' Zenkoff <albert@tigr.net>
 ---
 
+# 1.15.1 (2026-05-16)
+
+## Plugin
+
+- **Plugin-side tool list catches up with the daemon.** The two
+  firewall tools (`firewall`, `firewall_lookup`) shipped on the
+  daemon in 1.13.0 / 1.14.0 / 1.15.0 but were never added to the
+  plugin's hardcoded tool list at `plugin/cmd/plugin/main.go`. As
+  a result MCP clients that connected through the plugin saw 17
+  tools instead of the full 19, and could not invoke the
+  firewall surface even on hosts where the daemon exposed it.
+  Same class of miss as the 1.14.2 daemon-side mirror fix — both
+  sides of a feature need to land at the same release, and 1.13/
+  1.14 only updated the daemon side.
+- No daemon or wire-schema change; the daemon was always correct.
+  Schema stays at 0.7.0. Operators only need to upgrade the
+  plugin binary on the workstation / relay.
+
 # 1.15.0 (2026-05-16)
 
 Breaking surface change: the firewall tools are renamed to match

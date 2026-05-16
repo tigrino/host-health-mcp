@@ -78,6 +78,8 @@ func main() {
 		{Name: prefix + "updates", DaemonRPC: "updates", Description: "pending APT updates and needrestart services (read-only)", TimeoutS: 10},
 		{Name: prefix + "storage", DaemonRPC: "storage", Description: "mdraid, LVM, SMART, btrfs, zfs (read-only)", TimeoutS: 10},
 		{Name: prefix + "sensors", DaemonRPC: "sensors", Description: "hwmon temperatures, fans, voltages (read-only)", TimeoutS: 3},
+		{Name: prefix + "firewall", DaemonRPC: "firewall", Description: "nftables ruleset, sets, and per-source ban summary (read-only)", TimeoutS: 6},
+		{Name: prefix + "firewall_lookup", DaemonRPC: "firewall_lookup", Description: "search the host's nftables ruleset and sets for any reference to an IPv4/IPv6 address or CIDR (read-only)", TimeoutS: 6},
 	}
 
 	srv := mcp.New(cli, tools, defaultHost, "host-health-mcp", buildID)
