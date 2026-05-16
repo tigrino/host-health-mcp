@@ -223,6 +223,78 @@ speeds (RPM), voltages. Empty `chips` array on hosts without hwmon
 
 Cache TTL default: 15 s. Timeout default: 2 s.
 
+## `host_firewall` (1.13.0+, OPTIONAL)
+
+Read-only inspection of the host's nftables ruleset, sets, and a
+synthesised per-source ban view. Source: `nft -j list ruleset`
+plus per-set `nft -j list set <family> <table> <name>` when
+inline elements are requested.
+
+### Request
+
+| Field                  | Type   | Default     | Notes                                                  |
+|------------------------|--------|-------------|--------------------------------------------------------|
+| `mode`                 | string | `"summary"` | `"summary"` or `"detail"`. Detail adds rule bodies.    |
+| `table`                | string | `""`        | Filter to one table, formatted `<family>/<name>`.      |
+| `include_set_elements` | bool   | `false`     | Populate `elements[]` per set up to the manifest cap.  |
+
+### Response data
+
+- `backend` — `"nftables"` or `"none"` (the latter when nft is not
+  installed or no tables exist).
+- `nft_version` — best-effort version string from `nft --version`.
+- `ruleset_hash_sha256` — sha256 over the raw `nft -j list
+  ruleset` bytes. Reproduce with `nft -j list ruleset | sha256sum`.
+  Suitable as a fleet-wide diff key.
+- `tables[]` — per-table `{ family, name, chain_count, set_count,
+  map_count, rule_count }`.
+- `chains[]` — `{ family, table, name, type, hook, prio, policy,
+  rule_count, rules[] }`. `rules[]` populated only when
+  `mode="detail"` AND `firewall.detail_mode_allowed=true` in the
+  manifest. Each rule carries `handle`, `expr` (the compact-JSON
+  encoding of nftables' expression array — not the rendered text
+  form), and an optional `counter` `{packets, bytes}`.
+- `sets[]` — `{ family, table, name, type, flags[], size_limit,
+  element_count, elements[], elements_truncated, is_map }`.
+  `elements[]` populated only when `include_set_elements=true`.
+- `bans` — `{ total_active_v4, total_active_v6, by_set[] }`.
+  `by_set[]` rows correspond 1:1 with the manifest's
+  `firewall.ban_sets`. A ban_set the manifest names but nft does
+  not report carries `count: 0` plus a warning.
+- `errors[]` — structured per-op errors (see schema
+  `HelperOpError`) on partial failures.
+
+Cache TTL default: 30 s. Timeout default: 6 s.
+
+### Manifest
+
+```yaml
+firewall:
+  enabled: true
+  ban_sets:
+    - { family: inet, table: net-ban,  name: banned_v4, source: net-ban }
+    - { family: inet, table: net-ban,  name: banned_v6, source: net-ban }
+    - { family: inet, table: crowdsec, name: crowdsec-blacklists, source: crowdsec }
+  detail_mode_allowed: true
+  max_set_elements_per_set: 2000
+  max_rule_text_bytes: 65536
+```
+
+`max_set_elements_per_set` is capped server-side at 40000 to
+bound the helper-to-daemon response under `MaxResponseFrame`
+(4 MiB in schema 0.5.0). Hosts whose ban sets exceed that
+ceiling report `elements_truncated: true` plus the live
+`element_count`.
+
+### Limitations
+
+- iptables-legacy is not enumerated. Hosts using legacy iptables
+  exclusively report `backend: "none"`.
+- `expr` is JSON-encoded, not nft's text rendering. Reconstructing
+  the textual form would require re-implementing the userspace nft
+  printer; operators wanting the text form should call `nft list
+  ruleset` directly on the host.
+
 # Helper op reference
 
 Internal — the daemon's `internal/helperinvoke` package is the only
@@ -244,6 +316,7 @@ caller. Listed here so reviewers can find each implementation:
 | `needrestart`       | `internal/helper/ops/needrestart.go`                | none                                    |
 | `journal_query`     | `internal/helper/ops/journal.go`                    | none (root reads the journal directly)  |
 | `nft_table_counts`  | `internal/helper/ops/nft.go`                        | `CAP_NET_ADMIN`                         |
+| `firewall_inspect`  | `internal/helper/ops/firewall.go`                   | `CAP_NET_ADMIN`                         |
 
 The `caps-template.sh` post-install scriptlet maps the manifest's
 `enabled_tools[]` and `workload_plugins[]` to the union of required

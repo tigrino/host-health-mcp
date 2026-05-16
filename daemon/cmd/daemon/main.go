@@ -31,6 +31,7 @@ import (
 	"host-health-mcp/daemon/internal/daemon/tools/backup"
 	"host-health-mcp/daemon/internal/daemon/tools/certs"
 	"host-health-mcp/daemon/internal/daemon/tools/dns"
+	"host-health-mcp/daemon/internal/daemon/tools/firewall"
 	"host-health-mcp/daemon/internal/daemon/tools/kernel"
 	"host-health-mcp/daemon/internal/daemon/tools/logs"
 	"host-health-mcp/daemon/internal/daemon/tools/mail"
@@ -104,6 +105,7 @@ func main() {
 	reg.Register(sensors.New())
 	reg.Register(network.New(hc, manifestCfg.IPv6Policy))
 	reg.Register(security.New(hc, manifestCfg.DebsumsLogPath, manifestCfg.AideLogPath))
+	reg.Register(firewall.New(hc, manifestCfg.Firewall))
 
 	// Build the redactor from operator-configured allowlists. Used by
 	// the logs tool to scrub sample messages (REQ 6.3).

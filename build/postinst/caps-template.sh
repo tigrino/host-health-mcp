@@ -36,6 +36,11 @@ fi
 #   wireguard_show     -> CAP_NET_ADMIN
 #   apt_pending        -> (none)
 #   needrestart        -> (none)
+#   host_firewall      -> CAP_NET_ADMIN
+#                          (nft list ruleset reads kernel nftables
+#                          state via netlink NFNL_SUBSYS_NFTABLES;
+#                          unprivileged callers cannot enumerate
+#                          tables/chains/sets on stock kernels.)
 #
 # Tool-to-op mapping (REQ 4):
 #   security        => read_audit_status, read_aide_summary
@@ -73,6 +78,7 @@ have storage   && { add CAP_SYS_RAWIO; add CAP_DAC_READ_SEARCH; add CAP_SYS_ADMI
 have mail      && true
 have updates   && true
 have workload  && have wireguard && add CAP_NET_ADMIN
+have host_firewall && add CAP_NET_ADMIN
 
 mkdir -p "$DROPIN_DIR"
 {

@@ -15,11 +15,17 @@ import (
 // cost of a daemon-side RCE attempting to OOM the helper.
 const MaxRequestFrame = 16 * 1024
 
-// MaxResponseFrame is the cap on a helper->daemon response frame. The
-// helper's parsed-and-typed output for tools like `journal_query`,
-// `lvm_report`, and `nft_table_counts` can exceed the request cap;
-// 256 KiB matches the stdout cap in helper/exec.
-const MaxResponseFrame = 256 * 1024
+// MaxResponseFrame is the cap on a helper->daemon response frame.
+// Sized to accommodate tools whose typed result contains caller-
+// tunable per-element lists — most prominently host_firewall, which
+// can return inline ban-set elements for sets containing tens of
+// thousands of entries on busy public-target hosts. 4 MiB at
+// ~100 bytes per element gives headroom for ~40k inline elements
+// without forcing artificial pagination at this layer. The helper's
+// per-op handler is still responsible for its own per-set / per-
+// response budgeting (see ops.firewallElemBudget). Bumped from
+// 256 KiB in schema 0.5.0.
+const MaxResponseFrame = 4 * 1024 * 1024
 
 // MaxFrameSize is retained as an alias for MaxRequestFrame to avoid
 // a major bump of code that read the old constant; new code should

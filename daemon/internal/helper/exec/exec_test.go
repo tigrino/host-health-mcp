@@ -119,6 +119,46 @@ func TestRunStreaming_ToolMissing(t *testing.T) {
 	}
 }
 
+// TestRunCapped_AcceptsLargeSingleLineBlob drives a subprocess that
+// emits a single multi-hundred-KiB line (no embedded newlines) and
+// asserts RunCapped captures it whole. This is the regression path
+// for `nft -j list ruleset` on fleet hosts where the entire JSON
+// document arrives on one line and bufio.Scanner-based readers
+// (RunStreaming, MaxLineLength = 1 MiB) would fail or truncate.
+func TestRunCapped_AcceptsLargeSingleLineBlob(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	out, truncated, err := RunCapped(ctx, 10*1024*1024,
+		"sh", "-c", `seq -s ' ' 1 100000`)
+	if err != nil {
+		t.Fatalf("RunCapped: %v", err)
+	}
+	if truncated {
+		t.Errorf("unexpected truncated=true at 10 MiB cap")
+	}
+	if len(out) < 500*1024 {
+		t.Errorf("captured %d bytes; expected >500 KiB", len(out))
+	}
+}
+
+// TestRunCapped_TruncatesAtBudget caps a runaway producer (`yes`)
+// at 8 KiB and confirms only the leading 8 KiB are returned with
+// the truncated flag set. No error fires — RunCapped's contract
+// treats truncation as a signal, not a fault.
+func TestRunCapped_TruncatesAtBudget(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	out, truncated, _ := RunCapped(ctx, 8*1024, "yes")
+	if !truncated {
+		t.Errorf("expected truncated=true")
+	}
+	if len(out) != 8*1024 {
+		t.Errorf("captured %d bytes; expected exactly 8 KiB cap", len(out))
+	}
+}
+
 // TestRun_ToolMissing verifies the CodeToolMissing classification
 // when the binary doesn't exist on PATH.
 func TestRun_ToolMissing(t *testing.T) {

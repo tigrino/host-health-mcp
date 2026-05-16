@@ -55,6 +55,32 @@ type Manifest struct {
 	AideLogPath            string   `yaml:"aide_log_path"`
 	IPv6Policy             string   `yaml:"ipv6_policy"`
 	BtrfsMountpoints       []string `yaml:"btrfs_mountpoints"`
+	Firewall               Firewall `yaml:"firewall"`
+}
+
+// Firewall is the manifest's host_firewall block. Empty (zero-value)
+// means the tool returns an empty payload with a "firewall: disabled
+// in manifest" warning. The two byte caps default to 2000 elements
+// per set and 65536 bytes of rule text per chain to keep the helper
+// reply comfortably under proto.MaxResponseFrame regardless of the
+// host's ruleset size.
+type Firewall struct {
+	Enabled              bool              `yaml:"enabled"`
+	BanSets              []FirewallBanSet  `yaml:"ban_sets"`
+	DetailModeAllowed    bool              `yaml:"detail_mode_allowed"`
+	MaxSetElementsPerSet int               `yaml:"max_set_elements_per_set"`
+	MaxRuleTextBytes     int               `yaml:"max_rule_text_bytes"`
+}
+
+// FirewallBanSet names one nftables set that carries the live ban
+// list of a particular ban source. The daemon synthesizes
+// data.bans.by_set from these entries by matching against the sets
+// nft reports back.
+type FirewallBanSet struct {
+	Family string `yaml:"family"`
+	Table  string `yaml:"table"`
+	Name   string `yaml:"name"`
+	Source string `yaml:"source"`
 }
 
 // LoadDaemon reads daemon.yml.

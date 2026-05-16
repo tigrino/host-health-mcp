@@ -114,6 +114,114 @@ func Run(ctx context.Context, name string, args ...string) ([]byte, error) {
 	return stdout.Bytes(), nil
 }
 
+// RunCapped invokes name with args and captures up to maxBytes of
+// stdout into a returned buffer. Unlike Run (fixed 256 KiB cap that
+// returns CodeOutputTruncated as a fault) and RunStreaming (line-
+// oriented, bound by MaxLineLength per line), RunCapped is for
+// subprocesses that emit a single large blob — most prominently
+// `nft -j list ruleset`, whose userspace prints the whole document
+// on one JSON line that can exceed many megabytes on hosts with
+// sizeable ban sets.
+//
+// Returns the captured bytes (always non-nil), a truncated flag
+// (true when stdout exceeded maxBytes; only the leading maxBytes
+// are returned), and any classified subprocess error. Truncation
+// is reported as a flag rather than a structured fault because the
+// caller asked for a budget — hitting it is expected, not a tool
+// failure.
+//
+// Memory ceiling is maxBytes plus the 32 KiB read buffer. When
+// the cap is reached the remainder of stdout is drained to
+// io.Discard so the subprocess does not block on SIGPIPE.
+func RunCapped(ctx context.Context, maxBytes int, name string, args ...string) ([]byte, bool, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Env = safeEnv
+
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, false, fmt.Errorf("helperexec: stdoutpipe: %w", err)
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	var (
+		timerMu   sync.Mutex
+		killTimer *time.Timer
+	)
+	cmd.Cancel = func() error {
+		_ = cmd.Process.Signal(syscall.SIGTERM)
+		timerMu.Lock()
+		killTimer = time.AfterFunc(KillGrace, func() {
+			_ = cmd.Process.Kill()
+		})
+		timerMu.Unlock()
+		return nil
+	}
+
+	if err := cmd.Start(); err != nil {
+		if errors.Is(err, exec.ErrNotFound) {
+			return nil, false, &dispatch.Error{
+				Code:    proto.CodeToolMissing,
+				Message: cmd.Path + ": not found",
+				Argv:    append([]string(nil), cmd.Args...),
+			}
+		}
+		return nil, false, fmt.Errorf("helperexec: start: %w", err)
+	}
+
+	buf := make([]byte, 0, 64*1024)
+	chunk := make([]byte, 32*1024)
+	truncated := false
+	for {
+		n, rerr := stdoutPipe.Read(chunk)
+		if n > 0 {
+			room := maxBytes - len(buf)
+			if room <= 0 {
+				truncated = true
+			} else if n > room {
+				buf = append(buf, chunk[:room]...)
+				truncated = true
+			} else {
+				buf = append(buf, chunk[:n]...)
+			}
+		}
+		if rerr != nil {
+			break
+		}
+		if truncated {
+			// Stop reading; signal the child so we don't sit
+			// here until ctx expires. A runaway producer like
+			// `yes` would otherwise pin the call for the full
+			// outer deadline. SIGTERM lets it exit cleanly; the
+			// kill timer below escalates to SIGKILL after
+			// KillGrace.
+			_ = cmd.Process.Signal(syscall.SIGTERM)
+			timerMu.Lock()
+			killTimer = time.AfterFunc(KillGrace, func() {
+				_ = cmd.Process.Kill()
+			})
+			timerMu.Unlock()
+			// Drain any further bytes so the child can flush
+			// and exit; bounded by the SIGKILL escalation.
+			_, _ = io.Copy(io.Discard, stdoutPipe)
+			break
+		}
+	}
+
+	waitErr := cmd.Wait()
+
+	timerMu.Lock()
+	if killTimer != nil {
+		killTimer.Stop()
+	}
+	timerMu.Unlock()
+
+	if waitErr != nil {
+		return buf, truncated, classify(waitErr, nil, &stderr, cmd)
+	}
+	return buf, truncated, nil
+}
+
 // MaxLineLength caps a single stdout line for RunStreaming. SSH
 // journal entries with full SHA-256 pubkey hashes run ~120 bytes;
 // 1 MiB is far more than any real log line should need and bounds

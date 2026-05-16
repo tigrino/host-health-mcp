@@ -32,4 +32,5 @@ func RegisterAll(r *dispatch.Registry) {
 	r.Register(proto.OpSystemdTimerLastTrigger, SystemdTimerLastTrigger)
 	r.Register(proto.OpRkhunterSummary, RkhunterSummary)
 	r.Register(proto.OpUnattendedUpgradesStatus, UnattendedUpgradesStatus)
+	r.Register(proto.OpFirewallInspect, FirewallInspect)
 }

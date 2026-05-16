@@ -24,6 +24,7 @@ const (
 	OpSystemdTimerLastTrigger   = "systemd_timer_last_trigger"
 	OpRkhunterSummary           = "rkhunter_summary"
 	OpUnattendedUpgradesStatus  = "unattended_upgrades_status"
+	OpFirewallInspect           = "firewall_inspect"
 )
 
 // AllOps lists every op token in a stable order. Used by the helper to
@@ -49,6 +50,7 @@ var AllOps = []string{
 	OpSystemdTimerLastTrigger,
 	OpRkhunterSummary,
 	OpUnattendedUpgradesStatus,
+	OpFirewallInspect,
 }
 
 // IsKnownOp reports whether op is one of the recognised tokens.

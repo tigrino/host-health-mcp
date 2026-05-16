@@ -3,6 +3,90 @@ title: Host Health MCP - Changelog
 author: Albert 'Tigr' Zenkoff <albert@tigr.net>
 ---
 
+# 1.13.0 (2026-05-16)
+
+New tool `host_firewall` for read-only inspection of nftables
+ruleset, sets, and synthesised per-source ban counts. Schema bumps
+to `0.5.0` (additive: one new tool, no field renames or removals).
+
+## Daemon
+
+- **New tool `host_firewall`** (POST `/v1/host_firewall`). Returns
+  backend identification, nft version, sha256 of the raw `nft -j
+  list ruleset` bytes (fleet-diff key), per-table chain/set/rule
+  counts, per-chain metadata (and rule bodies in detail mode),
+  per-set metadata (and inline elements when explicitly requested),
+  and a synthesised `bans` view that maps manifest-declared ban
+  sets onto live element counts.
+- Cache TTL default 30 s, per-call timeout 6 s (cap at REQ 5.1's
+  10 s). If the manifest's `firewall.enabled` is false the
+  response is empty plus a `firewall: disabled in manifest`
+  warning.
+
+## Helper
+
+- **New op `firewall_inspect`** runs `nft -j list ruleset` and
+  optionally `nft -j list set …` per ban-set. Inline element
+  return is capped (defaults: 2000 per set, hard cap 40000) so the
+  helper-to-daemon response stays under `proto.MaxResponseFrame`.
+- **New primitive `helper/exec.RunCapped`**. Captures a single
+  subprocess's stdout up to a caller-supplied byte budget without
+  the line-orientation that `RunStreaming` enforces (bufio.Scanner,
+  1 MiB per line). Required because modern nft userspace prints
+  `-j` output as one JSON line that can run to many megabytes on
+  fleet hosts with sizeable ban sets. Truncation surfaces as a
+  return flag, not a structured fault — the caller asked for a
+  budget. On budget hit the child is SIGTERMed promptly so the
+  call doesn't pin the outer deadline.
+
+## Wire schema (0.5.0)
+
+- Additive: new top-level tool `host_firewall` with data block as
+  described in `tools.md`.
+- `proto.MaxResponseFrame` bumped from 256 KiB to 4 MiB. This
+  changes the helper-daemon protocol invariant; both binaries
+  ship from the same `.deb` and are version-locked, so no
+  forward/backward-compat shim is needed. The bump unblocks tools
+  whose typed result includes caller-tunable per-element lists.
+
+## Manifest
+
+- New `firewall:` block under the host manifest:
+  ```yaml
+  firewall:
+    enabled: true
+    ban_sets:
+      - { family: inet, table: net-ban,  name: banned_v4, source: net-ban }
+      - { family: inet, table: net-ban,  name: banned_v6, source: net-ban }
+      - { family: inet, table: crowdsec, name: crowdsec-blacklists, source: crowdsec }
+    detail_mode_allowed: true
+    max_set_elements_per_set: 2000
+    max_rule_text_bytes: 65536
+  ```
+  Operators with hosts whose ban sets exceed 2000 entries and who
+  want fleet-wide inline element visibility may raise the per-set
+  cap up to 40000; the helper enforces a hard ceiling at that
+  value to bound response framing.
+
+## Caps templating
+
+- `host_firewall` in `manifest.yml`'s `enabled_tools` adds
+  `CAP_NET_ADMIN` to the helper unit's capability union.
+  `nft list ruleset` reads kernel nftables state over a
+  `NFNL_SUBSYS_NFTABLES` netlink socket; unprivileged callers
+  cannot enumerate tables on stock kernels.
+
+## Out of scope (deliberate)
+
+- No iptables-legacy enumeration. The fleet runs nftables; if a
+  host genuinely uses `iptables-legacy` the tool reports
+  `backend: "none"` and a warning. A future op may add
+  iptables-legacy as its own primitive.
+- No connection-tracking dump (`conntrack -L`); separate tool if
+  needed.
+- No mutation paths (unban, flush, reload). The daemon is read-
+  only by construction.
+
 # 1.12.1 (2026-05-15)
 
 ## Helper
