@@ -3,6 +3,71 @@ title: Host Health MCP - Changelog
 author: Albert 'Tigr' Zenkoff <albert@tigr.net>
 ---
 
+# 1.15.0 (2026-05-16)
+
+Breaking surface change: the firewall tools are renamed to match
+the short-name convention every other tool in the registry
+already follows.
+
+## **Operator migration required**
+
+| Old (≤1.14.2)             | New (1.15.0+)        |
+|---------------------------|----------------------|
+| `host_firewall`           | `firewall`           |
+| `host_firewall_lookup`    | `firewall_lookup`    |
+
+What needs updating at the same time as the daemon upgrade:
+
+1. **MCP plugin / operator client call sites** — every
+   `/v1/host_firewall[_lookup]` URL becomes
+   `/v1/firewall[_lookup]`.
+2. **`/etc/host-health-mcp/manifest.yml`** — every
+   `enabled_tools[]` entry that listed `host_firewall` or
+   `host_firewall_lookup` must use the new name. The daemon
+   refuses to register a tool whose name does not appear in
+   `enabled_tools[]`.
+3. **Caps templating** — re-run
+   `/usr/local/share/host-health-mcp/caps-template.sh` after the
+   manifest edit. The generator now matches `firewall` and
+   `firewall_lookup` (short form). Pre-1.15.0 deploys that
+   listed `firewall` in the manifest silently failed to add
+   `CAP_NET_ADMIN` to the helper unit, surfacing as fleet-wide
+   "Operation not permitted" on `nft -j list ruleset`. This is
+   the canary finding that motivated the rename — short names
+   match the operator's natural mental model and remove the
+   footgun.
+4. `systemctl daemon-reload`, restart the helper, restart the
+   daemon.
+
+## Daemon
+
+- `Tool.Name()` for the firewall introspection tool returns
+  `"firewall"`; for the lookup tool, `"firewall_lookup"`. HTTP
+  routes change accordingly.
+
+## Caps templating
+
+- `build/postinst/caps-template.sh` matches short names
+  (`firewall`, `firewall_lookup`) when walking
+  `enabled_tools[]`. Both add `CAP_NET_ADMIN` to the helper
+  unit's capability union; the `add` helper deduplicates, so
+  enabling both costs nothing extra.
+
+## Wire schema (0.7.0)
+
+- Tool name rename is a breaking surface change. Schema bumps
+  `0.6.0` → `0.7.0` per the version-matrix rule that name
+  changes are not field-additive. Major bump (1.0.0) was
+  considered but `host_firewall*` had only been in the wire for
+  ~24 hours of canary deploy; the rename is treated as an
+  early-stage correction.
+
+## Helper
+
+- Helper op tokens (`firewall_inspect`, `firewall_lookup`) are
+  unchanged. The rename only affects the daemon's HTTP tool
+  surface and the manifest's `enabled_tools[]` vocabulary.
+
 # 1.14.2 (2026-05-16)
 
 ## Daemon

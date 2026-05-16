@@ -81,8 +81,11 @@ func New(hc *helperinvoke.Client, mf config.Firewall) *Tool {
 	return &Tool{hc: hc, mf: mf}
 }
 
-// Name returns the tool name.
-func (*Tool) Name() string { return "host_firewall_lookup" }
+// Name returns the tool name. Short form matches the convention
+// every other tool in the registry follows. Pre-1.15.0 builds
+// used "host_firewall_lookup"; the rename is documented in the
+// 1.15.0 changelog.
+func (*Tool) Name() string { return "firewall_lookup" }
 
 // DefaultTTL: matches host_firewall's 30 s. Cache key is the full
 // request body so different queries don't collide.

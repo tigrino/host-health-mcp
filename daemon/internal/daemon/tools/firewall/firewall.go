@@ -134,8 +134,12 @@ func New(hc *helperinvoke.Client, mf config.Firewall) *Tool {
 	return &Tool{hc: hc, mf: mf}
 }
 
-// Name returns the tool name.
-func (*Tool) Name() string { return "host_firewall" }
+// Name returns the tool name. Short form matches the convention
+// every other tool in the registry follows (`system`, `storage`,
+// `network`, `mail`, …). Pre-1.15.0 builds used "host_firewall";
+// the rename is the first breaking surface change since this tool
+// was introduced and is called out in the 1.15.0 changelog.
+func (*Tool) Name() string { return "firewall" }
 
 // DefaultTTL: firewall state moves on operator action (ban
 // propagation, rule pushes). 30 s aligns with the fleet's net-ban

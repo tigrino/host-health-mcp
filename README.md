@@ -38,7 +38,7 @@ without granting the caller shell access.
 The current surface is 19 tools (`system`, `systemd_units`,
 `storage`, `network`, `dns`, `mail`, `certs`, `backup`, `sensors`,
 `security`, `logs`, `updates`, `kernel`, `pressure`, `sockets`,
-`workload`, `manifest`, `host_firewall`, `host_firewall_lookup`).
+`workload`, `manifest`, `firewall`, `firewall_lookup`).
 Each one returns a typed JSON envelope under a stable wire schema.
 
 Per-tool reference: [`doc/tools.md`](doc/tools.md).
@@ -195,8 +195,8 @@ Typical questions the surface answers — see
 | Is the apt lock held? Pending updates? | `updates` |
 | Mail queue depth, deferred count? | `mail` |
 | Live SSH/auth log sample? | `logs` |
-| Which IPs are banned right now? | `host_firewall` |
-| Is `10.0.0.0/24` referenced anywhere in the firewall? | `host_firewall_lookup` |
+| Which IPs are banned right now? | `firewall` |
+| Is `10.0.0.0/24` referenced anywhere in the firewall? | `firewall_lookup` |
 | Which sockets are listening? | `sockets` |
 | Cert expiry on the bundles I care about? | `certs` |
 

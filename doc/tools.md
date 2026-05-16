@@ -223,7 +223,12 @@ speeds (RPM), voltages. Empty `chips` array on hosts without hwmon
 
 Cache TTL default: 15 s. Timeout default: 2 s.
 
-## `host_firewall` (1.13.0+, OPTIONAL)
+## `firewall` (1.13.0+, OPTIONAL)
+
+> Renamed from `host_firewall` in 1.15.0. Pre-1.15.0 builds
+> exposed this tool as `/v1/host_firewall`; from 1.15.0 it is
+> `/v1/firewall`. Update operator clients and `enabled_tools[]`
+> manifests at the same time as the daemon upgrade.
 
 Read-only inspection of the host's nftables ruleset, sets, and a
 synthesised per-source ban view. Source: `nft -j list ruleset`
@@ -295,7 +300,10 @@ ceiling report `elements_truncated: true` plus the live
   printer; operators wanting the text form should call `nft list
   ruleset` directly on the host.
 
-## `host_firewall_lookup` (1.14.0+, OPTIONAL)
+## `firewall_lookup` (1.14.0+, OPTIONAL)
+
+> Renamed from `host_firewall_lookup` in 1.15.0. Same migration
+> note as `firewall` above.
 
 Search the host's nftables ruleset for any reference to a given
 IPv4/IPv6 address or CIDR. Intended for fleet queries of the form
@@ -361,7 +369,7 @@ query produces `*_in_subnet` (literal/prefix/range rhs) or
 
 ### Manifest gating
 
-Shares `firewall.enabled` with `host_firewall`. If the firewall
+Shares `firewall.enabled` with `firewall`. If the firewall
 block is disabled, this tool returns an empty payload plus the
 `firewall: disabled in manifest` warning.
 
@@ -370,7 +378,7 @@ block is disabled, this tool returns an empty payload plus the
 - Only `ip` and `ip6` `saddr` / `daddr` payload matches are
   considered. Layer-4 and link-layer rules are skipped.
 - `rule_text` is JSON, not nft's textual rendering. See
-  `host_firewall` tool docs for the rationale.
+  `firewall` tool docs for the rationale.
 
 # Helper op reference
 
