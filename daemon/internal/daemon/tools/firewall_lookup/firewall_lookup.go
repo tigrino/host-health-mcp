@@ -29,11 +29,14 @@ type Request struct {
 	IncludeSetElements bool   `json:"include_set_elements,omitempty"`
 }
 
-// Data is the response data block.
+// Data is the response data block. Mirrors the helper-side
+// FirewallLookupResult: matches[] carries rule hits, sets[]
+// carries set/map element hits.
 type Data struct {
 	Query          string                 `json:"query"`
 	QueryKind      string                 `json:"query_kind"`
 	Matches        []Match                `json:"matches"`
+	Sets           []SetHit               `json:"sets"`
 	SearchedTables int                    `json:"searched_tables"`
 	SearchedChains int                    `json:"searched_chains"`
 	SearchedRules  int                    `json:"searched_rules"`
@@ -41,22 +44,30 @@ type Data struct {
 	Errors         []schema.HelperOpError `json:"errors,omitempty"`
 }
 
-// Match mirrors the helper-side FirewallLookupMatch. Kind
-// discriminates between rule and set-element hits.
+// Match mirrors the helper-side FirewallRuleMatch. See
+// doc/tools.md for the match_kind taxonomy.
 type Match struct {
-	Kind         string `json:"kind"`
+	MatchKind    string `json:"match_kind"`
 	Family       string `json:"family"`
 	Table        string `json:"table"`
-	Chain        string `json:"chain,omitempty"`
-	Handle       int    `json:"handle,omitempty"`
-	Set          string `json:"set,omitempty"`
-	Field        string `json:"field,omitempty"`
+	Chain        string `json:"chain"`
+	RuleHandle   int    `json:"rule_handle"`
+	RuleText     string `json:"rule_text"`
 	Operator     string `json:"operator,omitempty"`
 	MatchedValue string `json:"matched_value,omitempty"`
-	ElementKey   string `json:"element_key,omitempty"`
-	ExpiresS     *int64 `json:"expires_s,omitempty"`
-	TimeoutS     *int64 `json:"timeout_s,omitempty"`
-	Expr         string `json:"expr,omitempty"`
+	SetName      string `json:"set_name,omitempty"`
+}
+
+// SetHit mirrors the helper-side FirewallSetHit. One entry per
+// matching set/map element.
+type SetHit struct {
+	MatchKind  string `json:"match_kind"`
+	Family     string `json:"family"`
+	Table      string `json:"table"`
+	Set        string `json:"set"`
+	ElementKey string `json:"element_key"`
+	ExpiresS   *int64 `json:"expires_s,omitempty"`
+	TimeoutS   *int64 `json:"timeout_s,omitempty"`
 }
 
 // Tool is the registered tool.
@@ -87,7 +98,7 @@ func (*Tool) DefaultTimeout() time.Duration { return 6 * time.Second }
 // access — operators who don't want firewall introspection at all
 // can disable the whole block in one place.
 func (t *Tool) Handle(ctx context.Context, body []byte) (any, []string, error) {
-	d := Data{Matches: []Match{}}
+	d := Data{Matches: []Match{}, Sets: []SetHit{}}
 	var warnings []string
 
 	if !t.mf.Enabled {
@@ -129,6 +140,7 @@ func (t *Tool) Handle(ctx context.Context, body []byte) (any, []string, error) {
 		Query          string   `json:"query"`
 		QueryKind      string   `json:"query_kind"`
 		Matches        []Match  `json:"matches"`
+		Sets           []SetHit `json:"sets"`
 		SearchedTables int      `json:"searched_tables"`
 		SearchedChains int      `json:"searched_chains"`
 		SearchedRules  int      `json:"searched_rules"`
@@ -143,6 +155,9 @@ func (t *Tool) Handle(ctx context.Context, body []byte) (any, []string, error) {
 	d.QueryKind = helperRes.QueryKind
 	if helperRes.Matches != nil {
 		d.Matches = helperRes.Matches
+	}
+	if helperRes.Sets != nil {
+		d.Sets = helperRes.Sets
 	}
 	d.SearchedTables = helperRes.SearchedTables
 	d.SearchedChains = helperRes.SearchedChains

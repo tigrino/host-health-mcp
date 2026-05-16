@@ -3,6 +3,28 @@ title: Host Health MCP - Changelog
 author: Albert 'Tigr' Zenkoff <albert@tigr.net>
 ---
 
+# 1.14.2 (2026-05-16)
+
+## Daemon
+
+- **`host_firewall_lookup` wire shape fix**. Canary on a public-
+  target host reported every `matches[].match_kind` as empty
+  string and `sets[]` always nil even with
+  `include_set_elements=true`. Root cause was a missed mirror on
+  the daemon side: when the helper-side types were refactored to
+  the fleet-manager spec (`match_kind`, `rule_handle`,
+  `rule_text`, parallel `sets[]`) during 1.14.0, the daemon's
+  `Match` type still carried the pre-refactor JSON tags
+  (`kind`, `handle`, `expr`, no `Sets` field). All renamed
+  fields silently dropped on JSON unmarshal. Rule-level
+  identification still worked because `family`/`table`/`chain`/
+  `matched_value` retained their tags. The daemon-side `Match`
+  now mirrors helper-side `FirewallRuleMatch` exactly, and a new
+  `SetHit` type covers the `sets[]` entries.
+- Regression test `TestData_FullEnvelope` drives a full canned
+  helper response through the unmarshal path and asserts both
+  arrays populate.
+
 # 1.14.1 (2026-05-16)
 
 ## Docs
