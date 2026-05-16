@@ -54,7 +54,13 @@ type nftEntry struct {
 // operator enables it; the cap is templated in only when the network
 // tool is enabled in the manifest.
 func NftTableCounts(ctx context.Context, _ string) (any, error) {
-	stdout, err := helperexec.Run(ctx, "nft", "-j", "list", "ruleset")
+	// RunCapped, not Run: modern nft -j output is one long JSON
+	// line that on public-target hosts with sizeable ban sets runs
+	// far above helperexec.MaxStdout (256 KiB). Run would surface
+	// these as output_truncated and the network tool would report
+	// empty counts. The ruleset cap mirrors the host_firewall op's
+	// 32 MiB ceiling — same data source, same headroom needs.
+	stdout, _, err := helperexec.RunCapped(ctx, firewallRulesetCap, "nft", "-j", "list", "ruleset")
 	if err != nil {
 		// nft genuinely absent (binary not installed): return empty
 		// rather than failing, so the daemon's network tool can

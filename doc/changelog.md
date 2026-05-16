@@ -3,6 +3,19 @@ title: Host Health MCP - Changelog
 author: Albert 'Tigr' Zenkoff <albert@tigr.net>
 ---
 
+# 1.13.1 (2026-05-16)
+
+## Helper
+
+- `nft_table_counts`: swap `helperexec.Run` to `RunCapped` with the
+  same 32 MiB ceiling the new `firewall_inspect` op uses. Modern
+  nft -j prints the whole document on one JSON line; on hosts with
+  large ban sets the prior 256 KiB stdout cap returned
+  output_truncated, which the daemon-side network tool reported as
+  empty per-table counts. Same root cause as the 1.13.0
+  RunCapped introduction; the bug had been latent since the network
+  tool went in.
+
 # 1.13.0 (2026-05-16)
 
 New tool `host_firewall` for read-only inspection of nftables
