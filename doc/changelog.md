@@ -3,6 +3,34 @@ title: Host Health MCP - Changelog
 author: Albert 'Tigr' Zenkoff <albert@tigr.net>
 ---
 
+# 1.15.2 (2026-05-19)
+
+## Daemon
+
+- **`logs` tool now answers MCP-routed calls.** Every fleet host
+  returned `tool_failed` on `host_logs` since the tool was first
+  introduced. Root cause: the MCP plugin's tool inputSchema only
+  exposes the `host` argument, so the call body forwarded to the
+  daemon is always `{}`. The daemon-side `logs` handler validated
+  the request against the REQ 4.10 enum tables (severity,
+  window, source) and rejected the zero-value request before
+  ever reaching the helper. Direct HTTP callers that supplied the
+  fields explicitly were unaffected; only the MCP path was
+  broken.
+- **Fix:** apply documented defaults before validation —
+  `severity=warning`, `window=1h`, `source=journal`. These match
+  the tool's stated purpose ("recent log markers") and the
+  cache-TTL / expensive-tool buckets the rest of the deployment
+  already assumes. Direct HTTP callers can still override any of
+  the three fields explicitly; the enum tables remain the source
+  of truth for accepted values, so an unknown value (e.g.
+  `severity=loud`) still fails validation.
+- Regression test in `daemon/internal/daemon/tools/logs/logs_test.go`
+  covers the empty-body default path, the partial-override path,
+  and that the enum tables still reject unknown values.
+- No wire-schema change; schema stays at 0.7.0. Plugin binary
+  needs no update — only the daemon.
+
 # 1.15.1 (2026-05-16)
 
 ## Plugin

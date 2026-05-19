@@ -92,21 +92,52 @@ type helperSample struct {
 	Message string `json:"message"`
 }
 
+// applyDefaults fills in zero-value fields with their documented
+// defaults. The MCP plugin's tool inputSchema only exposes `host`
+// and forwards `{}` as the body, so without defaults every MCP-
+// routed call would arrive with an empty Request and fail
+// validation before reaching the helper. Direct HTTP callers can
+// still override any field explicitly.
+func (r *Request) applyDefaults() {
+	if r.Severity == "" {
+		r.Severity = "warning"
+	}
+	if r.Window == "" {
+		r.Window = "1h"
+	}
+	if r.Source == "" {
+		r.Source = "journal"
+	}
+}
+
+// validate enforces the REQ 4.10 enum tables. Called after
+// applyDefaults so empty-body MCP calls succeed on the default
+// triple (warning / 1h / journal).
+func (r *Request) validate() error {
+	if !validSeverity[r.Severity] {
+		return fmt.Errorf("logs: severity must be one of emerg/alert/crit/err/warning")
+	}
+	if !validWindow[r.Window] {
+		return fmt.Errorf("logs: window must be one of 15m/1h/6h/24h")
+	}
+	if !validSource[r.Source] {
+		return fmt.Errorf("logs: source must be one of journal/audit")
+	}
+	return nil
+}
+
 // Handle validates the request, calls the helper, applies the
 // redactor to every sample's message.
 func (t *Tool) Handle(ctx context.Context, body []byte) (any, []string, error) {
 	var req Request
-	if err := json.Unmarshal(body, &req); err != nil {
-		return nil, nil, fmt.Errorf("logs: parse request: %w", err)
+	if len(body) > 0 {
+		if err := json.Unmarshal(body, &req); err != nil {
+			return nil, nil, fmt.Errorf("logs: parse request: %w", err)
+		}
 	}
-	if !validSeverity[req.Severity] {
-		return nil, nil, fmt.Errorf("logs: severity must be one of emerg/alert/crit/err/warning")
-	}
-	if !validWindow[req.Window] {
-		return nil, nil, fmt.Errorf("logs: window must be one of 15m/1h/6h/24h")
-	}
-	if !validSource[req.Source] {
-		return nil, nil, fmt.Errorf("logs: source must be one of journal/audit")
+	req.applyDefaults()
+	if err := req.validate(); err != nil {
+		return nil, nil, err
 	}
 
 	param := fmt.Sprintf("severity=%s window=%s source=%s",
