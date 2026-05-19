@@ -3,6 +3,43 @@ title: Host Health MCP - Changelog
 author: Albert 'Tigr' Zenkoff <albert@tigr.net>
 ---
 
+# 1.16.0 (2026-05-19)
+
+## Plugin
+
+- **Per-tool MCP arguments now work.** Before this release the
+  plugin's `tools/list` only declared `host` in every tool's
+  `inputSchema`, and `tools/call` always sent `{}` as the daemon
+  request body. Any tool that needed arguments was unreachable
+  via MCP — `firewall_lookup` rejected calls because `query` was
+  empty, `firewall` could not select `mode`/`table`, and `logs`
+  only worked at all because of the 1.15.2 default-fallback fix.
+- **`mcp.Tool` carries `ArgsProperties` / `ArgsRequired`.** The
+  plugin's `inputSchemaFor` merges the per-tool properties into
+  the schema (alongside the implicit `host`) and `tools/call`
+  marshals every non-`host` argument into the daemon body. The
+  routing argument `host` is always stripped from the body so it
+  cannot collide with a tool's own field.
+- **Tools that gained MCP arguments:**
+  - `logs` — `severity`, `window`, `source` (all optional, enum-
+    typed, defaults match the 1.15.2 daemon-side fallback).
+  - `firewall` — `mode`, `table`, `include_set_elements` (all
+    optional).
+  - `firewall_lookup` — `query` (required), `include_set_elements`
+    (optional).
+- All other tools keep their argument-less surface; the plugin
+  still sends `{}` for them, so the daemon-side handlers do not
+  change.
+- **No daemon change.** Wire schema stays at 0.7.0. Operators
+  only need to upgrade the plugin binary; daemon hosts on 1.15.2
+  remain compatible. Old plugin clients keep working against new
+  daemons (they just continue to send `{}` and miss out on the
+  new arguments).
+- Regression tests in `plugin/internal/mcp/mcp_test.go` cover
+  the `host`-strip wire shape, per-tool `inputSchema` emission,
+  end-to-end argument forwarding into the daemon body, and the
+  unchanged `{}` body for argument-less tools.
+
 # 1.15.2 (2026-05-19)
 
 ## Daemon

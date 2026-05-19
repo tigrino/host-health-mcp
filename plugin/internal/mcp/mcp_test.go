@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -274,6 +275,211 @@ func TestSchemaCompatibleHostCallsThrough(t *testing.T) {
 	}
 	if systemHits != 2 {
 		t.Errorf("expected 2 system hits (both forwarded), got %d", systemHits)
+	}
+}
+
+// TestBuildDaemonBody covers the host-stripping wire-shape promise:
+// the routing argument `host` never reaches the daemon, and a tool
+// called with only `host` still sends `{}` so argument-less daemon
+// handlers see the pre-1.16 wire shape.
+func TestBuildDaemonBody(t *testing.T) {
+	cases := []struct {
+		name string
+		in   map[string]any
+		want string
+	}{
+		{"nil args", nil, "{}"},
+		{"empty args", map[string]any{}, "{}"},
+		{"host only", map[string]any{"host": "h1"}, "{}"},
+		{"forwarded scalar", map[string]any{"host": "h1", "query": "10.0.0.5"}, `{"query":"10.0.0.5"}`},
+		{"multiple args", map[string]any{"severity": "err", "window": "1h"}, ""}, // ordering — compared structurally below
+	}
+	for _, c := range cases {
+		got, err := buildDaemonBody(c.in)
+		if err != nil {
+			t.Fatalf("%s: buildDaemonBody: %v", c.name, err)
+		}
+		if c.want != "" {
+			if string(got) != c.want {
+				t.Errorf("%s: got %s, want %s", c.name, got, c.want)
+			}
+			continue
+		}
+		// Structural equality for multi-key cases — JSON object key
+		// order is not deterministic across Go versions.
+		var gotMap, wantMap map[string]any
+		if err := json.Unmarshal(got, &gotMap); err != nil {
+			t.Fatalf("%s: unmarshal got: %v", c.name, err)
+		}
+		want := map[string]any{}
+		for k, v := range c.in {
+			if k != "host" {
+				want[k] = v
+			}
+		}
+		wantMap = want
+		if len(gotMap) != len(wantMap) {
+			t.Errorf("%s: len(got)=%d, len(want)=%d", c.name, len(gotMap), len(wantMap))
+		}
+		for k, v := range wantMap {
+			if gotMap[k] != v {
+				t.Errorf("%s: %s = %v, want %v", c.name, k, gotMap[k], v)
+			}
+		}
+	}
+}
+
+// TestPerToolInputSchemaSurfacesArgs verifies that tools/list emits
+// the per-tool ArgsProperties (with `host` always present), and
+// flags ArgsRequired in the schema's required[] array.
+func TestPerToolInputSchemaSurfacesArgs(t *testing.T) {
+	tools := []Tool{
+		{
+			Name: "host_logs", DaemonRPC: "logs", Description: "logs",
+			ArgsProperties: map[string]any{
+				"severity": map[string]any{"type": "string"},
+				"window":   map[string]any{"type": "string"},
+			},
+		},
+		{
+			Name: "host_firewall_lookup", DaemonRPC: "firewall_lookup", Description: "lookup",
+			ArgsProperties: map[string]any{
+				"query": map[string]any{"type": "string"},
+			},
+			ArgsRequired: []string{"query"},
+		},
+		{Name: "host_system", DaemonRPC: "system", Description: "system"},
+	}
+	srv := New(newTestClient(t), tools, "", "x", "0")
+	resps := driveSession(t, srv,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`,
+	)
+	result, _ := resps[0]["result"].(map[string]any)
+	descs, _ := result["tools"].([]any)
+	if len(descs) != 3 {
+		t.Fatalf("want 3 tool descriptors, got %d", len(descs))
+	}
+	byName := map[string]map[string]any{}
+	for _, d := range descs {
+		m := d.(map[string]any)
+		byName[m["name"].(string)] = m
+	}
+
+	logs := byName["host_logs"]["inputSchema"].(map[string]any)
+	logsProps := logs["properties"].(map[string]any)
+	for _, key := range []string{"host", "severity", "window"} {
+		if _, ok := logsProps[key]; !ok {
+			t.Errorf("host_logs.inputSchema.properties missing %q: %v", key, logsProps)
+		}
+	}
+	if _, hasReq := logs["required"]; hasReq {
+		t.Errorf("host_logs has no required args; schema should omit `required`")
+	}
+
+	fwlu := byName["host_firewall_lookup"]["inputSchema"].(map[string]any)
+	required, _ := fwlu["required"].([]any)
+	if len(required) != 1 || required[0] != "query" {
+		t.Errorf("host_firewall_lookup required = %v, want [query]", required)
+	}
+
+	sys := byName["host_system"]["inputSchema"].(map[string]any)
+	sysProps := sys["properties"].(map[string]any)
+	if _, ok := sysProps["host"]; !ok {
+		t.Errorf("host_system.inputSchema.properties.host missing")
+	}
+	if len(sysProps) != 1 {
+		t.Errorf("host_system has no extra args; properties should only carry `host`, got %v", sysProps)
+	}
+}
+
+// TestArgsForwardedToDaemon proves the end-to-end forwarding path:
+// a tools/call with arguments lands as a JSON body on the daemon,
+// `host` is stripped, and the wire shape matches what the daemon's
+// per-tool handler expects.
+func TestArgsForwardedToDaemon(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/manifest", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, `{"host":"fake","schema_version":"0.1.0","data":{"daemon_version":"test"}}`)
+	})
+	var sawBody string
+	mux.HandleFunc("/v1/firewall_lookup", func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		sawBody = string(b)
+		_, _ = fmt.Fprint(w, `{"host":"fake","schema_version":"0.1.0","data":{"query":"10.0.0.5","matches":[],"sets":[]}}`)
+	})
+	srv := httptest.NewTLSServer(mux)
+	defer srv.Close()
+	addr := strings.TrimPrefix(srv.URL, "https://")
+
+	cli := newTestClient(t)
+	cli.SetTransport(srv.Client().Transport)
+
+	tools := []Tool{
+		{Name: "host_manifest", DaemonRPC: "manifest", Description: "manifest"},
+		{
+			Name: "host_firewall_lookup", DaemonRPC: "firewall_lookup", Description: "lookup",
+			ArgsProperties: map[string]any{
+				"query":                map[string]any{"type": "string"},
+				"include_set_elements": map[string]any{"type": "boolean"},
+			},
+			ArgsRequired: []string{"query"},
+		},
+	}
+	mcpSrv := New(cli, tools, addr, "x", "0")
+	// defaultHost = addr, so the call selects the test server even
+	// without an explicit `host` arg; we still pass one to prove
+	// the host-stripping path strips the routing argument.
+	req := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"host_firewall_lookup","arguments":{"host":%q,"query":"10.0.0.5","include_set_elements":true}}}`, addr)
+	resps := driveSession(t, mcpSrv, req)
+	if len(resps) != 1 {
+		t.Fatalf("want 1 response, got %d", len(resps))
+	}
+	if _, isErr := resps[0]["result"].(map[string]any)["isError"]; isErr {
+		t.Fatalf("unexpected tool error: %v", resps[0])
+	}
+	var gotMap map[string]any
+	if err := json.Unmarshal([]byte(sawBody), &gotMap); err != nil {
+		t.Fatalf("daemon body is not JSON: %q (%v)", sawBody, err)
+	}
+	if gotMap["query"] != "10.0.0.5" {
+		t.Errorf("forwarded body missing query: %v", gotMap)
+	}
+	if gotMap["include_set_elements"] != true {
+		t.Errorf("forwarded body missing include_set_elements: %v", gotMap)
+	}
+	if _, hasHost := gotMap["host"]; hasHost {
+		t.Errorf("host argument leaked into daemon body: %v", gotMap)
+	}
+}
+
+// TestNoArgsTooStillSendsEmptyBody confirms the wire shape stays
+// `{}` for tools with no ArgsProperties — i.e. that argument-less
+// daemon handlers (system, certs, ...) keep working exactly as
+// before across the 1.15 → 1.16 transition.
+func TestNoArgsToolStillSendsEmptyBody(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/manifest", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, `{"host":"fake","schema_version":"0.1.0","data":{"daemon_version":"test"}}`)
+	})
+	var sawBody string
+	mux.HandleFunc("/v1/system", func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		sawBody = string(b)
+		_, _ = fmt.Fprint(w, `{"host":"fake","schema_version":"0.1.0","data":{"uptime_s":1}}`)
+	})
+	srv := httptest.NewTLSServer(mux)
+	defer srv.Close()
+	addr := strings.TrimPrefix(srv.URL, "https://")
+
+	cli := newTestClient(t)
+	cli.SetTransport(srv.Client().Transport)
+
+	mcpSrv := New(cli, standardTools, addr, "x", "0")
+	driveSession(t, mcpSrv,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"host_system","arguments":{}}}`,
+	)
+	if sawBody != "{}" {
+		t.Errorf("system body = %q, want %q", sawBody, "{}")
 	}
 }
 

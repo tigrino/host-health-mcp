@@ -138,6 +138,13 @@ Request shape: `{ "severity": "<lvl>", "window": "<dur>", "source":
 "<src>" }`. `lvl` in `{emerg, alert, crit, err, warning}`. `dur` in
 `{15m, 1h, 6h, 24h}`. `src` in `{journal, audit}`.
 
+All three fields are optional; empty fields fall back to defaults
+(`severity=warning`, `window=1h`, `source=journal`). This matches the
+MCP-routed wire shape from 1.15.2+ where the plugin forwards `{}` for
+no-arg calls. The MCP plugin (1.16.0+) also surfaces the three fields
+in the tool's `inputSchema`, so MCP clients can override any of them
+per call.
+
 The helper invokes `journalctl --output=json` with bounded args and
 parses the JSON lines into typed entries. The daemon runs each
 sample message through the §6.3 redaction filter before placing it

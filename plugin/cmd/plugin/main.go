@@ -60,6 +60,52 @@ func main() {
 		log.Fatalf("plugin: %v", err)
 	}
 
+	// Argument schemas for the three tools that accept a request
+	// body. Every other tool surfaces only `host` via the implicit
+	// schema that mcp.Server adds in inputSchemaFor.
+	logsArgs := map[string]any{
+		"severity": map[string]any{
+			"type":        "string",
+			"enum":        []any{"emerg", "alert", "crit", "err", "warning"},
+			"description": "Minimum severity to count (REQ 4.10). Default: warning.",
+		},
+		"window": map[string]any{
+			"type":        "string",
+			"enum":        []any{"15m", "1h", "6h", "24h"},
+			"description": "Look-back window. Default: 1h.",
+		},
+		"source": map[string]any{
+			"type":        "string",
+			"enum":        []any{"journal", "audit"},
+			"description": "Log source. Default: journal.",
+		},
+	}
+	firewallArgs := map[string]any{
+		"mode": map[string]any{
+			"type":        "string",
+			"enum":        []any{"summary", "detail"},
+			"description": "Output verbosity; `detail` requires manifest opt-in. Default: summary.",
+		},
+		"table": map[string]any{
+			"type":        "string",
+			"description": "Optional table filter (e.g. \"inet/net-ban\"). Empty = all tables.",
+		},
+		"include_set_elements": map[string]any{
+			"type":        "boolean",
+			"description": "Include per-element listings for sets the manifest classifies as ban sources.",
+		},
+	}
+	firewallLookupArgs := map[string]any{
+		"query": map[string]any{
+			"type":        "string",
+			"description": "IPv4/IPv6 address or CIDR to search for across rules and sets.",
+		},
+		"include_set_elements": map[string]any{
+			"type":        "boolean",
+			"description": "Include matching set/map element entries in sets[].",
+		},
+	}
+
 	tools := []mcp.Tool{
 		{Name: prefix + "manifest", DaemonRPC: "manifest", Description: "host-health-mcp daemon self-description (read-only)", TimeoutS: 3},
 		{Name: prefix + "system", DaemonRPC: "system", Description: "host uptime, load, memory, disk, kernel (read-only)", TimeoutS: 3},
@@ -71,15 +117,31 @@ func main() {
 		{Name: prefix + "mail", DaemonRPC: "mail", Description: "MTA queue depth and recent send/fail state (read-only)", TimeoutS: 5},
 		{Name: prefix + "backup", DaemonRPC: "backup", Description: "last backup run timestamps and backend (read-only)", TimeoutS: 3},
 		{Name: prefix + "workload", DaemonRPC: "workload", Description: "compile-time-enabled workload plugin output (read-only)", TimeoutS: 5},
-		{Name: prefix + "logs", DaemonRPC: "logs", Description: "journald or audit summary by severity/window/source (read-only)", TimeoutS: 8},
+		{
+			Name: prefix + "logs", DaemonRPC: "logs",
+			Description:    "journald or audit summary by severity/window/source (read-only)",
+			TimeoutS:       8,
+			ArgsProperties: logsArgs,
+		},
 		{Name: prefix + "pressure", DaemonRPC: "pressure", Description: "PSI averages cpu/io/memory (read-only)", TimeoutS: 3},
 		{Name: prefix + "kernel", DaemonRPC: "kernel", Description: "kernel taint, MCE/EDAC, OOM, cmdline keys (read-only)", TimeoutS: 3},
 		{Name: prefix + "sockets", DaemonRPC: "sockets", Description: "listening socket inventory (read-only)", TimeoutS: 3},
 		{Name: prefix + "updates", DaemonRPC: "updates", Description: "pending APT updates and needrestart services (read-only)", TimeoutS: 10},
 		{Name: prefix + "storage", DaemonRPC: "storage", Description: "mdraid, LVM, SMART, btrfs, zfs (read-only)", TimeoutS: 10},
 		{Name: prefix + "sensors", DaemonRPC: "sensors", Description: "hwmon temperatures, fans, voltages (read-only)", TimeoutS: 3},
-		{Name: prefix + "firewall", DaemonRPC: "firewall", Description: "nftables ruleset, sets, and per-source ban summary (read-only)", TimeoutS: 6},
-		{Name: prefix + "firewall_lookup", DaemonRPC: "firewall_lookup", Description: "search the host's nftables ruleset and sets for any reference to an IPv4/IPv6 address or CIDR (read-only)", TimeoutS: 6},
+		{
+			Name: prefix + "firewall", DaemonRPC: "firewall",
+			Description:    "nftables ruleset, sets, and per-source ban summary (read-only)",
+			TimeoutS:       6,
+			ArgsProperties: firewallArgs,
+		},
+		{
+			Name: prefix + "firewall_lookup", DaemonRPC: "firewall_lookup",
+			Description:    "search the host's nftables ruleset and sets for any reference to an IPv4/IPv6 address or CIDR (read-only)",
+			TimeoutS:       6,
+			ArgsProperties: firewallLookupArgs,
+			ArgsRequired:   []string{"query"},
+		},
 	}
 
 	srv := mcp.New(cli, tools, defaultHost, "host-health-mcp", buildID)

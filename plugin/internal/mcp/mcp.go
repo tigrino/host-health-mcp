@@ -48,6 +48,23 @@ type Tool struct {
 	DaemonRPC   string // the daemon's /v1/<rpc> endpoint
 	Description string
 	TimeoutS    int
+
+	// ArgsProperties is the JSON-Schema `properties` map for the
+	// tool's per-call arguments, beyond the implicit `host`. Keys
+	// are argument names; values are the JSON-Schema fragments
+	// (type/description/enum/etc.) for each. Nil or empty means
+	// the tool takes no body arguments.
+	//
+	// MCP clients see these in tools/list and may forward matching
+	// values in tools/call.arguments; the server strips `host` and
+	// marshals the remaining map as the daemon-request body. The
+	// daemon's per-tool validator is the source of truth — values
+	// pass through verbatim.
+	ArgsProperties map[string]any
+
+	// ArgsRequired lists ArgsProperties keys that are required.
+	// Mirrors JSON-Schema's `required` array.
+	ArgsRequired []string
 }
 
 // Server runs over stdio.
@@ -162,31 +179,48 @@ type toolDescriptor struct {
 
 func (s *Server) list() any {
 	out := make([]toolDescriptor, 0, len(s.tools))
-	for _, t := range s.tools {
+	for i := range s.tools {
 		out = append(out, toolDescriptor{
-			Name:        t.Name,
-			Description: t.Description,
-			InputSchema: s.inputSchema(),
+			Name:        s.tools[i].Name,
+			Description: s.tools[i].Description,
+			InputSchema: s.inputSchemaFor(&s.tools[i]),
 		})
 	}
 	return map[string]any{"tools": out}
 }
 
-func (s *Server) inputSchema() map[string]any {
+// inputSchemaFor builds the per-tool JSON-Schema. The implicit
+// `host` property is always present; `ArgsProperties`/`ArgsRequired`
+// are merged in. `additionalProperties` stays false so strict MCP
+// clients reject typos at their layer.
+func (s *Server) inputSchemaFor(t *Tool) map[string]any {
 	hostDesc := "Target host. Optional if the plugin has HOSTHEALTH_TARGET_HOST set."
 	if s.defaultHost != "" {
 		hostDesc += fmt.Sprintf(" Default: %q.", s.defaultHost)
 	}
-	return map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"host": map[string]any{
-				"type":        "string",
-				"description": hostDesc,
-			},
+	props := map[string]any{
+		"host": map[string]any{
+			"type":        "string",
+			"description": hostDesc,
 		},
+	}
+	for k, v := range t.ArgsProperties {
+		if k == "host" {
+			// host is reserved for the target selector; an args-side
+			// `host` would collide with the routing argument. Skip.
+			continue
+		}
+		props[k] = v
+	}
+	sch := map[string]any{
+		"type":                 "object",
+		"properties":           props,
 		"additionalProperties": false,
 	}
+	if len(t.ArgsRequired) > 0 {
+		sch["required"] = append([]string(nil), t.ArgsRequired...)
+	}
+	return sch
 }
 
 type callContent struct {
@@ -254,7 +288,17 @@ func (s *Server) call(ctx context.Context, req *jsonRPCRequest) jsonRPCResponse 
 	callCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	raw, errResp, err := s.cli.Call(callCtx, resolved, found.DaemonRPC, []byte("{}"))
+	// Forward every non-`host` argument as the daemon request
+	// body. The daemon's per-tool Request struct is the schema
+	// authority; values pass through verbatim. Empty argument
+	// maps marshal to `{}`, matching the pre-1.16 wire shape so
+	// argument-less tools keep working unchanged.
+	body, err := buildDaemonBody(params.Arguments)
+	if err != nil {
+		return s.toolError(req.ID, "marshal arguments: "+err.Error())
+	}
+
+	raw, errResp, err := s.cli.Call(callCtx, resolved, found.DaemonRPC, body)
 	if err != nil {
 		return s.toolError(req.ID, "transport: "+err.Error())
 	}
@@ -272,6 +316,28 @@ func (s *Server) call(ctx context.Context, req *jsonRPCRequest) jsonRPCResponse 
 	return jsonRPCResult(req.ID, callResult{
 		Content: []callContent{{Type: "text", Text: string(raw)}},
 	})
+}
+
+// buildDaemonBody strips the routing argument `host` from the MCP
+// arguments map and marshals the remainder into the daemon's
+// request body. An empty / nil / host-only map produces `{}` so
+// existing argument-less tools and the pre-1.16 wire shape stay
+// compatible.
+func buildDaemonBody(args map[string]any) ([]byte, error) {
+	if len(args) == 0 {
+		return []byte("{}"), nil
+	}
+	forward := make(map[string]any, len(args))
+	for k, v := range args {
+		if k == "host" {
+			continue
+		}
+		forward[k] = v
+	}
+	if len(forward) == 0 {
+		return []byte("{}"), nil
+	}
+	return json.Marshal(forward)
 }
 
 func (s *Server) toolError(id json.RawMessage, msg string) jsonRPCResponse {
