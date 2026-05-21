@@ -3,7 +3,9 @@ package security
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 // TestIsSSHDLine covers the Bug 2 regression: Debian 13 / OpenSSH 9.8+
@@ -100,5 +102,57 @@ func TestReadAuthLogCountersEndToEnd(t *testing.T) {
 	}
 	if failed != 5 {
 		t.Errorf("failed = %d, want 5 (Failed + 2x Disconnected + Connection closed + kex_exchange_identification; Received-disconnect must be skipped)", failed)
+	}
+}
+
+// TestFormatSshJournalTruncationWarning covers the 1.16.2 warning
+// emitted when the helper detects journal truncation. The shape
+// matches what the bug report's example produces: it carries the
+// oldest entry timestamp, the boot timestamp, and a human-readable
+// retained-vs-total summary.
+func TestFormatSshJournalTruncationWarning(t *testing.T) {
+	// Pick two unambiguous unix seconds and let time.Unix render
+	// the expected RFC3339 strings so the assertions stay locked
+	// to the formatter's actual output instead of hand-computed
+	// timestamps.
+	boot := int64(1716000000)
+	oldest := boot + 4*24*3600 // +4 days
+	got := formatSshJournalTruncationWarning(boot, oldest)
+
+	bootStr := time.Unix(boot, 0).UTC().Format(time.RFC3339)
+	oldestStr := time.Unix(oldest, 0).UTC().Format(time.RFC3339)
+	checks := []string{
+		"ssh_logins:",
+		"journal truncated",
+		bootStr,
+		oldestStr,
+		"volatile journald",
+	}
+	for _, want := range checks {
+		if !strings.Contains(got, want) {
+			t.Errorf("warning missing %q\nfull: %s", want, got)
+		}
+	}
+}
+
+// TestShortDuration verifies the human-readable unit selection used
+// inside the truncation warning. Boundaries: under 1h → minutes,
+// under 1d → hours, otherwise days.
+func TestShortDuration(t *testing.T) {
+	cases := []struct {
+		d    time.Duration
+		want string
+	}{
+		{30 * time.Second, "0m"},
+		{1 * time.Minute, "1m"},
+		{1 * time.Hour, "1h"},
+		{2 * time.Hour, "2h"},
+		{24 * time.Hour, "1d"},
+		{4 * 24 * time.Hour, "4d"},
+	}
+	for _, c := range cases {
+		if got := shortDuration(c.d); got != c.want {
+			t.Errorf("shortDuration(%s) = %q, want %q", c.d, got, c.want)
+		}
 	}
 }

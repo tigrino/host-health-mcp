@@ -92,6 +92,16 @@ paths now recognise the broader set. The file path also handles
 the OpenSSH 9.8+ split daemon (`sshd[PID]` and `sshd-session[PID]`)
 that landed in Debian 13.
 
+The journal path (1.16.2+) detects volatile-journal truncation:
+if the journal's oldest retained entry for the current boot is
+more than 10 minutes after the kernel `btime`, the daemon emits
+an envelope warning `ssh_logins: journal truncated — oldest entry
+... vs boot ...`. Counters still ship — but the operator sees
+that they cover only the retained window rather than the full
+boot. Volatile journald (`Storage=volatile` in `journald.conf`)
+and aggressive `SystemMaxUse` / `RuntimeMaxUse` are the typical
+triggers.
+
   - `aide_or_equivalent`: presence by binary; deep fields from the
     helper's `read_aide_summary` op (last-run timestamp from
     `/var/lib/aide/aide.db` mtime; change count from

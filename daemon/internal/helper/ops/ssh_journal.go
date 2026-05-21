@@ -3,7 +3,11 @@ package ops
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"os"
+	"strconv"
 
 	"host-health-mcp/daemon/internal/helper/dispatch"
 	helperexec "host-health-mcp/daemon/internal/helper/exec"
@@ -11,11 +15,27 @@ import (
 )
 
 // SshJournalCountsResult is the typed result for op ssh_journal_counts.
+//
+// The Truncated / OldestEntryUnixS / BootUnixS fields are additive
+// (added in 1.16.2). Pre-1.16.2 daemons unmarshal them with
+// omitempty defaults; pre-1.16.2 plugins are agnostic to helper
+// proto extensions.
 type SshJournalCountsResult struct {
-	Present           bool `json:"present"`
-	AcceptedSinceBoot int  `json:"accepted_since_boot"`
-	FailedSinceBoot   int  `json:"failed_since_boot"`
+	Present           bool  `json:"present"`
+	AcceptedSinceBoot int   `json:"accepted_since_boot"`
+	FailedSinceBoot   int   `json:"failed_since_boot"`
+	Truncated         bool  `json:"truncated,omitempty"`
+	OldestEntryUnixS  int64 `json:"oldest_entry_unix_s,omitempty"`
+	BootUnixS         int64 `json:"boot_unix_s,omitempty"`
 }
+
+// sshJournalTruncationThresholdS is how far the journal's oldest
+// retained entry can sit after the kernel boot before we flag the
+// window as truncated. Ten minutes accommodates the typical
+// service-start gap on hosts with delayed mount/network units
+// (encrypted disks, late nss-resolve, etc.) without missing the
+// volatile-journal case where the gap is hours-to-days.
+const sshJournalTruncationThresholdS = int64(600)
 
 // SshJournalCounts counts since-boot Accepted/Failed SSH login lines
 // emitted to the systemd journal by ssh.service. Used as a fallback
@@ -117,5 +137,85 @@ func SshJournalCounts(ctx context.Context, _ string) (any, error) {
 		return nil, err
 	}
 	out.Present = true
+
+	// Truncation probe: if the journal's oldest retained entry for
+	// the current boot is significantly newer than the kernel boot
+	// time, the counters above only cover the retained window
+	// (typical on volatile-journal hosts where the ring buffer
+	// rotates within hours of a 4-day boot). Failures here are
+	// non-fatal — counters still ship, just without the truncation
+	// flag. The daemon turns Truncated=true into an envelope
+	// warning.
+	if btime, oldest, ok := probeSshJournalTruncation(ctx); ok {
+		out.BootUnixS = btime
+		out.OldestEntryUnixS = oldest
+		if oldest-btime > sshJournalTruncationThresholdS {
+			out.Truncated = true
+		}
+	}
+
 	return out, nil
+}
+
+// probeSshJournalTruncation returns (btime, oldestEntryUnixS, ok)
+// where ok=false means we couldn't determine either timestamp and
+// the caller should ship without truncation metadata. The journal
+// uses microseconds; we normalise to whole seconds matching
+// /proc/stat's btime field.
+func probeSshJournalTruncation(ctx context.Context) (btime, oldest int64, ok bool) {
+	btime, err := readSystemBootTime()
+	if err != nil {
+		return 0, 0, false
+	}
+	oldestUsec, err := readOldestJournalEntryForCurrentBoot(ctx)
+	if err != nil {
+		return 0, 0, false
+	}
+	return btime, oldestUsec / 1_000_000, true
+}
+
+// readSystemBootTime reads the kernel boot time (unix seconds) from
+// /proc/stat. Layout: a line `btime <unix_seconds>` near the top.
+func readSystemBootTime() (int64, error) {
+	data, err := os.ReadFile("/proc/stat")
+	if err != nil {
+		return 0, err
+	}
+	return parseBtimeFromProcStat(data)
+}
+
+// parseBtimeFromProcStat extracts the btime field from a /proc/stat
+// payload. Kept separate from the file read so it can be unit-tested
+// against synthetic inputs.
+func parseBtimeFromProcStat(data []byte) (int64, error) {
+	for _, line := range bytes.Split(data, []byte("\n")) {
+		if bytes.HasPrefix(line, []byte("btime ")) {
+			return strconv.ParseInt(string(bytes.TrimSpace(line[len("btime "):])), 10, 64)
+		}
+	}
+	return 0, errors.New("btime not found in /proc/stat")
+}
+
+// readOldestJournalEntryForCurrentBoot asks journalctl for the
+// per-boot timestamp index and returns the first_entry of the
+// current boot (index 0) in unix microseconds. systemd v247+
+// (Debian 12+ ships v252) supports `--list-boots --output=json`.
+func readOldestJournalEntryForCurrentBoot(ctx context.Context) (int64, error) {
+	out, err := helperexec.Run(ctx, "journalctl", "--list-boots", "--output=json", "--no-pager")
+	if err != nil {
+		return 0, err
+	}
+	var boots []struct {
+		Index      int   `json:"index"`
+		FirstEntry int64 `json:"first_entry"`
+	}
+	if err := json.Unmarshal(out, &boots); err != nil {
+		return 0, fmt.Errorf("parse list-boots: %w", err)
+	}
+	for _, b := range boots {
+		if b.Index == 0 {
+			return b.FirstEntry, nil
+		}
+	}
+	return 0, errors.New("current boot (index=0) absent from list-boots")
 }

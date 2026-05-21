@@ -3,6 +3,40 @@ title: Host Health MCP - Changelog
 author: Albert 'Tigr' Zenkoff <albert@tigr.net>
 ---
 
+# 1.16.2 (2026-05-21)
+
+## Daemon
+
+- **`ssh_logins` no longer silently undercounts on volatile-journal
+  hosts.** On hosts with `Storage=volatile` (ring buffer in
+  `/run/log/journal/`), `journalctl --boot` returns whatever fits
+  in the buffer and gives no signal that the data is partial. On
+  one host (4d16h boot, ~100 MB ring) only ~13 h of the boot was
+  retained, so the counter reported ~10 % of the true value.
+- **Truncation probe.** The helper now reads `btime` from
+  `/proc/stat` and asks `journalctl --list-boots --output=json`
+  for the first retained entry of boot index 0. If the gap
+  exceeds 10 minutes, the response carries `truncated=true`,
+  `oldest_entry_unix_s`, and `boot_unix_s`.
+- **Envelope warning.** When `truncated=true` the daemon appends
+  a warning like `ssh_logins: journal truncated — oldest entry
+  2026-05-20T11:40:00Z vs boot 2026-05-16T08:39:00Z; counters
+  reflect ~13h of 4d boot (volatile journald or aggressive
+  rotation)`. Counters still ship — the operator just sees that
+  they cover only the retained window.
+- Probe failures are non-fatal. If `/proc/stat` is unreadable or
+  `journalctl --list-boots` errors out, the counters ship without
+  the truncation metadata rather than dropping the whole call.
+- Helper proto extension is additive (`truncated`,
+  `oldest_entry_unix_s`, `boot_unix_s` with `omitempty`). Wire
+  schema stays at 0.7.0; plugin unchanged; daemon-only redeploy.
+  Mixed-version helper / daemon stays compatible — an old daemon
+  ignores the new helper fields, a new daemon sees zero values
+  from an old helper and emits no warning.
+- Regression tests cover `parseBtimeFromProcStat`, the
+  `--list-boots --output=json` shape assumption, and the
+  daemon-side warning formatter.
+
 # 1.16.1 (2026-05-21)
 
 ## Daemon

@@ -8,6 +8,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"regexp"
 	"strconv"
@@ -293,17 +294,60 @@ func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 		} else if jc.Present {
 			d.SSHLogins.AcceptedSinceBoot = jc.AcceptedSinceBoot
 			d.SSHLogins.FailedSinceBoot = jc.FailedSinceBoot
+			if jc.Truncated && jc.OldestEntryUnixS > 0 && jc.BootUnixS > 0 {
+				warnings = append(warnings, formatSshJournalTruncationWarning(jc.BootUnixS, jc.OldestEntryUnixS))
+			}
 		}
 	}
 
 	return d, warnings, nil
 }
 
-// helperSshJournalCounts mirrors the helper op's response.
+// helperSshJournalCounts mirrors the helper op's response. The
+// Truncated / OldestEntryUnixS / BootUnixS fields land from 1.16.2+
+// helpers; older helpers leave them at zero.
 type helperSshJournalCounts struct {
-	Present           bool `json:"present"`
-	AcceptedSinceBoot int  `json:"accepted_since_boot"`
-	FailedSinceBoot   int  `json:"failed_since_boot"`
+	Present           bool  `json:"present"`
+	AcceptedSinceBoot int   `json:"accepted_since_boot"`
+	FailedSinceBoot   int   `json:"failed_since_boot"`
+	Truncated         bool  `json:"truncated,omitempty"`
+	OldestEntryUnixS  int64 `json:"oldest_entry_unix_s,omitempty"`
+	BootUnixS         int64 `json:"boot_unix_s,omitempty"`
+}
+
+// formatSshJournalTruncationWarning composes the envelope warning
+// emitted when the helper detects that the journal's oldest
+// retained entry is significantly later than boot. The window the
+// counters reflect is the gap between oldest_entry and now; the
+// gap between boot and oldest_entry is what was lost.
+func formatSshJournalTruncationWarning(bootUnixS, oldestEntryUnixS int64) string {
+	boot := time.Unix(bootUnixS, 0).UTC().Format(time.RFC3339)
+	oldest := time.Unix(oldestEntryUnixS, 0).UTC().Format(time.RFC3339)
+	lostS := oldestEntryUnixS - bootUnixS
+	retainedS := time.Now().UTC().Unix() - oldestEntryUnixS
+	if retainedS < 0 {
+		retainedS = 0
+	}
+	return fmt.Sprintf(
+		"ssh_logins: journal truncated — oldest entry %s vs boot %s; counters reflect ~%s of %s boot (volatile journald or aggressive rotation)",
+		oldest, boot,
+		shortDuration(time.Duration(retainedS)*time.Second),
+		shortDuration(time.Duration(retainedS+lostS)*time.Second),
+	)
+}
+
+// shortDuration renders a duration as "Xd", "Xh", or "Xm" — the
+// shortest unit that keeps the magnitude legible. Used only in
+// human-facing warning strings.
+func shortDuration(d time.Duration) string {
+	switch {
+	case d >= 24*time.Hour:
+		return fmt.Sprintf("%dd", int(d/(24*time.Hour)))
+	case d >= time.Hour:
+		return fmt.Sprintf("%dh", int(d/time.Hour))
+	default:
+		return fmt.Sprintf("%dm", int(d/time.Minute))
+	}
 }
 
 // helperSystemdTimer mirrors the helper op's response.
