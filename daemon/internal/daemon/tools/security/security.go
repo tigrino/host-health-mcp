@@ -519,6 +519,43 @@ var authLogPaths = []string{
 	"/var/log/secure",
 }
 
+// isSSHDLine reports whether the auth.log line was emitted by an
+// OpenSSH daemon process. Matches both pre-9.8 `sshd[PID]` and
+// post-9.8 `sshd-session[PID]` (Debian 13 / trixie split the
+// daemon into a listener and a per-connection handler — auth-
+// related messages now come from `sshd-session`). Without the
+// second branch the auth-log path silently returned zero on every
+// post-trixie host.
+func isSSHDLine(line string) bool {
+	return strings.Contains(line, "sshd[") || strings.Contains(line, "sshd-session[")
+}
+
+// isSSHFailedLine reports whether a sshd-emitted line is a failed
+// connection attempt. The pre-1.16.1 implementation only matched
+// `Failed `; on key-only fleets that pattern never fires because
+// scanners disconnect during key exchange before reaching the
+// publickey-auth stage, so the counter was permanently zero. The
+// preauth-disconnect and kex-error branches capture the actual
+// rejection signal.
+//
+// We deliberately do NOT count "Received disconnect from" — it
+// pairs with "Disconnected from" on every client-initiated
+// SSH_MSG_DISCONNECT and would double-count the same probe.
+func isSSHFailedLine(line string) bool {
+	if strings.Contains(line, "Failed ") {
+		return true
+	}
+	if strings.Contains(line, "[preauth]") &&
+		(strings.Contains(line, "Disconnected from ") ||
+			strings.Contains(line, "Connection closed by ")) {
+		return true
+	}
+	if strings.Contains(line, "kex_exchange_identification") {
+		return true
+	}
+	return false
+}
+
 // readAuthLogCounters returns (accepted, failed, found) counts from
 // the first existing path in authLogPaths. found=false means no
 // file-based source exists and the caller should fall back to the
@@ -544,10 +581,13 @@ func readAuthLogCounters() (accepted, failed int, found bool) {
 	scanner.Buffer(make([]byte, 64*1024), 1<<20)
 	for scanner.Scan() {
 		line := scanner.Text()
+		if !isSSHDLine(line) {
+			continue
+		}
 		switch {
-		case strings.Contains(line, "sshd[") && strings.Contains(line, "Accepted "):
+		case strings.Contains(line, "Accepted "):
 			accepted++
-		case strings.Contains(line, "sshd[") && strings.Contains(line, "Failed "):
+		case isSSHFailedLine(line):
 			failed++
 		}
 	}

@@ -80,6 +80,18 @@ Presence and (where the helper ops have run) deep state of AIDE,
 auditd, rkhunter, debsums; intrusion-prevention backend in use;
 SSH login counters from `/var/log/auth.log`.
 
+`ssh_logins.failed_since_boot` includes any of: post-auth `Failed`
+lines (password/publickey), preauth disconnects
+(`Disconnected from ... [preauth]`), preauth connection closes
+(`Connection closed by ... [preauth]`), and
+`kex_exchange_identification` errors. The pre-1.16.1 counter only
+matched `Failed `; on key-only fleets that pattern never fires
+because scanners disconnect during key exchange, so the counter
+was permanently zero. Both file (`/var/log/auth.log`) and journal
+paths now recognise the broader set. The file path also handles
+the OpenSSH 9.8+ split daemon (`sshd[PID]` and `sshd-session[PID]`)
+that landed in Debian 13.
+
   - `aide_or_equivalent`: presence by binary; deep fields from the
     helper's `read_aide_summary` op (last-run timestamp from
     `/var/lib/aide/aide.db` mtime; change count from

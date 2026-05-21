@@ -3,6 +3,44 @@ title: Host Health MCP - Changelog
 author: Albert 'Tigr' Zenkoff <albert@tigr.net>
 ---
 
+# 1.16.1 (2026-05-21)
+
+## Daemon
+
+- **`security.ssh_logins.failed_since_boot` now reflects reality.**
+  Two compounding bugs left the counter permanently at zero across
+  the entire fleet despite thousands of probe attempts per host.
+- **Bug 1 — wrong failure pattern on key-only fleets.** The pre-fix
+  counter only matched `Failed `. With password auth disabled fleet-
+  wide, scanners disconnect during key exchange before reaching the
+  publickey-auth stage, so no `Failed ...` line is ever emitted.
+  Both the file path (`readAuthLogCounters`) and the journal helper
+  (`ssh_journal_counts`) now additionally count preauth disconnects
+  (`Disconnected from ... [preauth]`), preauth connection closes
+  (`Connection closed by ... [preauth]`), and
+  `kex_exchange_identification` errors. `Received disconnect from`
+  is deliberately skipped because it pairs with `Disconnected from`
+  on the same event and would double-count.
+- **Bug 2 — OpenSSH 9.8 split daemon on Debian 13.** OpenSSH 9.8+
+  splits sshd into a listener (`sshd[PID]`) and a per-connection
+  handler (`sshd-session[PID]`); auth-related messages now come
+  from the latter. The pre-fix `strings.Contains(line, "sshd[")`
+  test missed every `sshd-session[` line, so on Debian 13 hosts the
+  file path returned zero for both accepted and failed. The new
+  `isSSHDLine` helper accepts both forms. The journal path is
+  unaffected because `--output=cat` strips the process-name prefix.
+- **Hosts that were affected.** Debian 13
+  hosts hit both bugs;
+  Debian 12 and Ubuntu 24.04 hosts hit only Bug 1.
+- Regression tests in
+  `daemon/internal/daemon/tools/security/security_test.go` and
+  `daemon/internal/helper/ops/ssh_journal_test.go` cover both
+  process-name formats, all four failure patterns, the
+  double-count guard against `Received disconnect from`, and the
+  end-to-end auth.log read path.
+- Wire schema unchanged (stays at 0.7.0). Plugin unchanged.
+  Daemon-only redeploy.
+
 # 1.16.0 (2026-05-19)
 
 ## Plugin

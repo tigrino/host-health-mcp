@@ -41,18 +41,59 @@ type SshJournalCountsResult struct {
 // "Accepted publickey for ..." starts at byte 0 and prefix-matching
 // on "Accepted " / "Failed " is unambiguous (matches every flavour
 // including "Failed password for invalid user").
+//
+// On a key-only-SSH fleet the bare "Failed " pattern never fires —
+// scanners disconnect during key exchange before reaching the
+// publickey-auth stage. The preauth-disconnect and kex-error
+// patterns below capture the actual rejection signal that
+// `failed_since_boot` is supposed to represent. We deliberately
+// skip "Received disconnect from" because it pairs with
+// "Disconnected from" on every client-initiated SSH_MSG_DISCONNECT
+// and would double-count the same probe.
+// classifySshJournalLine maps one journalctl --output=cat line into
+// one of {accepted, failed, other} for the SSH counter. Extracted
+// so it can be unit-tested without spinning up journalctl.
+type sshJournalClass int
+
+const (
+	sshJournalOther sshJournalClass = iota
+	sshJournalAccepted
+	sshJournalFailed
+)
+
+var (
+	sshAcceptedPrefix      = []byte("Accepted ")
+	sshFailedPrefix        = []byte("Failed ")
+	sshDisconnectedPrefix  = []byte("Disconnected from ")
+	sshConnClosedPrefix    = []byte("Connection closed by ")
+	sshPreauthSuffix       = []byte("[preauth]")
+	sshKexExchangeIDSubstr = []byte("kex_exchange_identification")
+)
+
+func classifySshJournalLine(line []byte) sshJournalClass {
+	switch {
+	case bytes.HasPrefix(line, sshAcceptedPrefix):
+		return sshJournalAccepted
+	case bytes.HasPrefix(line, sshFailedPrefix):
+		return sshJournalFailed
+	case bytes.HasSuffix(line, sshPreauthSuffix) &&
+		(bytes.HasPrefix(line, sshDisconnectedPrefix) ||
+			bytes.HasPrefix(line, sshConnClosedPrefix)):
+		return sshJournalFailed
+	case bytes.Contains(line, sshKexExchangeIDSubstr):
+		return sshJournalFailed
+	}
+	return sshJournalOther
+}
+
 func SshJournalCounts(ctx context.Context, _ string) (any, error) {
 	out := SshJournalCountsResult{}
 
-	var (
-		acceptedPrefix = []byte("Accepted ")
-		failedPrefix   = []byte("Failed ")
-	)
 	_, err := helperexec.RunStreaming(ctx, func(line []byte) {
-		switch {
-		case bytes.HasPrefix(line, acceptedPrefix):
+		switch classifySshJournalLine(line) {
+		case sshJournalAccepted:
 			out.AcceptedSinceBoot++
-		case bytes.HasPrefix(line, failedPrefix):
+		case sshJournalFailed:
 			out.FailedSinceBoot++
 		}
 	},
@@ -61,7 +102,11 @@ func SshJournalCounts(ctx context.Context, _ string) (any, error) {
 		"-u", "ssh.service",
 		"--output=cat",
 		"--no-pager",
-		"--grep=^(Accepted|Failed) ",
+		// Pre-filter is a perf optimisation only — the streaming
+		// closure does the strict classification. Pattern is a
+		// conservative superset of what we count so we don't have
+		// to micromanage the journalctl regex flavour.
+		"--grep=^(Accepted|Failed|Disconnected|Connection closed)|kex_exchange_identification",
 	)
 	if err != nil {
 		var de *dispatch.Error

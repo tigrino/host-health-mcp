@@ -1,0 +1,104 @@
+package security
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+// TestIsSSHDLine covers the Bug 2 regression: Debian 13 / OpenSSH 9.8+
+// split the daemon into sshd[PID] (listener) and sshd-session[PID]
+// (per-connection handler). The pre-1.16.1 implementation only
+// matched `sshd[`, so every auth-related line on trixie was ignored
+// and the counter was permanently zero.
+func TestIsSSHDLine(t *testing.T) {
+	cases := []struct {
+		line string
+		want bool
+	}{
+		{"Apr 18 12:34:56 host1 sshd[12345]: Accepted publickey for operator from 10.0.0.5", true},
+		{"Apr 18 12:34:56 host1 sshd-session[12345]: Disconnected from 1.2.3.4 port 54321 [preauth]", true},
+		{"Apr 18 12:34:56 host1 CRON[99]: pam_unix(cron:session): session opened", false},
+		{"Apr 18 12:34:56 host1 sshd-keygen[1]: regenerating host keys", false},
+	}
+	for _, c := range cases {
+		if got := isSSHDLine(c.line); got != c.want {
+			t.Errorf("isSSHDLine(%q) = %v, want %v", c.line, got, c.want)
+		}
+	}
+}
+
+// TestIsSSHFailedLine covers the Bug 1 regression: on key-only SSH
+// fleets the bare `Failed ` pattern never fires because scanners
+// disconnect during key exchange. The preauth-disconnect, connection-
+// close, and kex-error branches capture the real rejection signal.
+// Each branch is exercised once positive, and the "Received
+// disconnect from" line is asserted negative so we don't double-count
+// against "Disconnected from".
+func TestIsSSHFailedLine(t *testing.T) {
+	cases := []struct {
+		line string
+		want bool
+	}{
+		{"Failed password for invalid user root from 1.2.3.4 port 12345 ssh2", true},
+		{"Disconnected from 1.2.3.4 port 54321 [preauth]", true},
+		{"Connection closed by 1.2.3.4 port 54321 [preauth]", true},
+		{"error: kex_exchange_identification: read: Connection reset by peer", true},
+		{"Received disconnect from 1.2.3.4 port 54321:11: Bye Bye [preauth]", false}, // double-count guard
+		{"Accepted publickey for operator from 10.0.0.5 port 12345 ssh2", false},
+		{"Disconnected from user operator 10.0.0.5 port 12345", false}, // post-auth normal logout, no [preauth]
+	}
+	for _, c := range cases {
+		if got := isSSHFailedLine(c.line); got != c.want {
+			t.Errorf("isSSHFailedLine(%q) = %v, want %v", c.line, got, c.want)
+		}
+	}
+}
+
+// TestReadAuthLogCountersEndToEnd writes a synthetic auth.log with
+// mixed sshd / sshd-session lines and asserts the counts the bug
+// report's fleet data implies.
+func TestReadAuthLogCountersEndToEnd(t *testing.T) {
+	// Build a representative slice: 2 accepted lines (one of each
+	// process-name format) + 6 failed-attempt lines across all
+	// four rejection patterns + 1 "Received disconnect" line that
+	// MUST be ignored to avoid double-counting.
+	lines := []string{
+		"Apr 18 12:34:56 host1 sshd[10]: Accepted publickey for operator from 10.0.0.5 port 1 ssh2",
+		"Apr 18 12:34:57 host1 sshd-session[11]: Accepted publickey for operator from 10.0.0.5 port 2 ssh2",
+		"Apr 18 12:35:00 host1 sshd-session[20]: Failed password for invalid user root from 1.2.3.4 port 12345 ssh2",
+		"Apr 18 12:35:01 host1 sshd-session[21]: Disconnected from 1.2.3.4 port 54321 [preauth]",
+		"Apr 18 12:35:01 host1 sshd-session[21]: Received disconnect from 1.2.3.4 port 54321:11: Bye Bye [preauth]",
+		"Apr 18 12:35:02 host1 sshd-session[22]: Connection closed by 5.6.7.8 port 41234 [preauth]",
+		"Apr 18 12:35:03 host1 sshd-session[23]: error: kex_exchange_identification: read: Connection reset by peer",
+		"Apr 18 12:35:04 host1 sshd[24]: Disconnected from 9.8.7.6 port 30303 [preauth]",
+		"Apr 18 12:35:05 host1 CRON[99]: pam_unix(cron:session): session opened for user root",
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "auth.log")
+	body := ""
+	for _, l := range lines {
+		body += l + "\n"
+	}
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Inject the temp path at the head of authLogPaths so the
+	// real /var/log/auth.log on the test host doesn't shadow it.
+	orig := authLogPaths
+	authLogPaths = []string{path}
+	t.Cleanup(func() { authLogPaths = orig })
+
+	accepted, failed, found := readAuthLogCounters()
+	if !found {
+		t.Fatal("found=false on a present file")
+	}
+	if accepted != 2 {
+		t.Errorf("accepted = %d, want 2", accepted)
+	}
+	if failed != 5 {
+		t.Errorf("failed = %d, want 5 (Failed + 2x Disconnected + Connection closed + kex_exchange_identification; Received-disconnect must be skipped)", failed)
+	}
+}
