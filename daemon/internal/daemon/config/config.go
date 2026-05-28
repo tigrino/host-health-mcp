@@ -35,10 +35,15 @@ type Daemon struct {
 	HelperSocketPath         string                   `yaml:"helper_socket_path"`
 }
 
-// BucketLimit configures a token bucket per REQ 6.6.
+// BucketLimit configures a token bucket per REQ 6.6. Enabled is a
+// pointer so we can distinguish "absent" (default: enabled) from
+// "explicitly false" (operator opt-out); without the pointer, a
+// zero-value (0,0) bucket would conflict with the M-9 fail-closed
+// load-time check.
 type BucketLimit struct {
-	SustainedPerMin int `yaml:"sustained_per_min"`
-	Burst           int `yaml:"burst"`
+	SustainedPerMin int   `yaml:"sustained_per_min"`
+	Burst           int   `yaml:"burst"`
+	Enabled         *bool `yaml:"enabled,omitempty"`
 }
 
 // Manifest is the typed shape of /etc/host-health-mcp/manifest.yml.
@@ -136,6 +141,15 @@ func (d Daemon) Validate() error {
 	}
 	if d.TLSCertPath == "" || d.TLSKeyPath == "" || d.ClientCAPath == "" {
 		return errors.New("config: tls_cert_path, tls_key_path, client_ca_path are all required")
+	}
+	for tool, b := range d.ExpensiveToolBuckets {
+		// REQ 6.6: an expensive_tool_bucket with sustained_per_min=0 AND
+		// burst=0 silently disabled the per-tool limit pre-1.17. The
+		// daemon now requires an explicit `enabled: false` for opt-out.
+		disabled := b.Enabled != nil && !*b.Enabled
+		if b.SustainedPerMin == 0 && b.Burst == 0 && !disabled {
+			return fmt.Errorf("config: rate limit for tool %q has sustained_per_min=0 and burst=0; set enabled: false to disable bucketing explicitly, or set positive values", tool)
+		}
 	}
 	for i, r := range d.IPv4AllowlistRanges {
 		if _, err := netip.ParsePrefix(r); err != nil {

@@ -17,12 +17,16 @@ func mustPrefix(t *testing.T, s string) netip.Prefix {
 func TestRedactIdentifiers(t *testing.T) {
 	f := New(Rules{})
 	cases := map[string]string{
-		"":                          "",
-		"nginx":                     "nginx",
-		"sshd@123-456.service":      "sshd@123-456.service",
-		"AAAAA":                     "AAAAA",
-		"this is bare text":         "this is bare text",
-		"abcde fghij klmno":         "abcde fghij klmno",
+		"":                       "",
+		"nginx":                  "nginx",
+		"sshd@123-456.service":   "sshd@123-456.service",
+		"AAAAA":                  "AAAAA",
+		"this is bare text":      "this is bare text",
+		"abcde fghij klmno":      "abcde fghij klmno",
+		"albert@tigr.net":        "albert@tigr.net",
+		"operator":                   "operator",
+		"host-health-mcp":        "host-health-mcp",
+		"12345678-1234-1234-1234-123456789abc": "12345678-1234-1234-1234-123456789abc",
 	}
 	for in, want := range cases {
 		got := f.Redact(in)
@@ -34,12 +38,34 @@ func TestRedactIdentifiers(t *testing.T) {
 
 func TestRedactSuppressesUnknown(t *testing.T) {
 	f := New(Rules{})
-	// Tokens starting with non-letter, embedded special chars, or
-	// too-long opaque strings should be replaced.
 	cases := map[string]string{
-		"!@#$%^":                                        "<redacted>",
-		"AKIA0123456789ABCDEF":                          "AKIA0123456789ABCDEF",                // ASCII id within 64 chars passes
-		"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA": "<redacted>", // >64 char token fails safe pattern
+		"!@#$%^": "<redacted>",
+		// AWS access key IDs must now scrub (H-2).
+		"AKIA0123456789ABCDEF": "<redacted>",
+		"ASIA0123456789ABCDEF": "<redacted>",
+		// JWT triple.
+		"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c": "<redacted>",
+		// 33+ char base64-style blob without '@' or '.'.
+		"dGhpcyBpcyBhIHRlc3Qgc3RyaW5nIGZvciByZWRhY3Q": "<redacted>",
+		// >64 char token fails safe pattern.
+		"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA": "<redacted>",
+	}
+	for in, want := range cases {
+		got := f.Redact(in)
+		if got != want {
+			t.Errorf("Redact(%q) = %q want %q", in, got, want)
+		}
+	}
+}
+
+func TestRedactSensitiveDirs(t *testing.T) {
+	f := New(Rules{SensitiveDirs: []string{"/etc/host-health-mcp/secrets", "/var/lib/foo"}})
+	cases := map[string]string{
+		"/etc/host-health-mcp/secrets/key.pem": "<redacted>",
+		"/var/lib/foo/db":                      "<redacted>",
+		"path=/etc/host-health-mcp/secrets/x":  "<redacted>",
+		"/etc/hosts":                           "<redacted>", // not in safe-token allow, has '.'
+		"/usr/bin/nginx":                       "<redacted>", // path token outside whitelist
 	}
 	for in, want := range cases {
 		got := f.Redact(in)
@@ -61,6 +87,18 @@ func TestRedactIPv4Allowlist(t *testing.T) {
 	}
 	if got := f.Redact("8.8.8.8"); got != "<redacted>" {
 		t.Errorf("IPv4 outside allowlist passed: %q", got)
+	}
+	if got := f.Redact("192.168.1.1"); got != "<redacted>" {
+		t.Errorf("IPv4 outside allowlist passed: %q", got)
+	}
+}
+
+func TestRedactIPv4AllowlistWithPrivateRange(t *testing.T) {
+	f := New(Rules{
+		IPv4Allow: []netip.Prefix{mustPrefix(t, "192.168.0.0/16")},
+	})
+	if got := f.Redact("192.168.1.1"); got != "192.168.1.1" {
+		t.Errorf("IPv4 in allowlist redacted: %q", got)
 	}
 }
 

@@ -50,7 +50,7 @@ const sshJournalTruncationThresholdS = int64(600)
 // journal is dominated by long pubkey-hash lines (~120 bytes per
 // "Accepted publickey ... SHA256:..." entry) used to overflow the
 // cap even after pre-filtering. With streaming, the per-call memory
-// ceiling is just one line (1 MiB max per MaxLineLength).
+// ceiling is just one line (64 KiB max per MaxLineLength).
 //
 // The pre-filter is kept because it halves the bytes the journalctl
 // process emits, which matters on busy hosts even though it no

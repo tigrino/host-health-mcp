@@ -1,10 +1,13 @@
 package ops
 
 import (
-	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
+
+	"host-health-mcp/daemon/internal/helper/dispatch"
+	"host-health-mcp/daemon/internal/shared/proto"
 )
 
 // fakeWGOutput mirrors the `wg show all dump` shape. The interface row
@@ -23,12 +26,7 @@ const (
 )
 
 func TestWireGuardParserStripsSecrets(t *testing.T) {
-	// We can't run `wg show` in CI; bypass exec and feed the parser
-	// directly by reproducing what the helper does post-exec. The
-	// parsing logic is what carries the secret-stripping invariant
-	// and lives entirely in this package's WireguardShow function,
-	// so we reuse the same regex and slicing here.
-	result, err := parseWGForTest(fakeWGOutput)
+	result, err := parseWGDump([]byte(fakeWGOutput))
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -51,69 +49,21 @@ func TestWireGuardParserStripsSecrets(t *testing.T) {
 	}
 }
 
-// parseWGForTest reuses WireguardShow's parsing code path by going
-// through the same package-level logic, sidestepping the actual exec.
-func parseWGForTest(output string) (any, error) {
-	return parseWGOutput(output)
-}
-
-// parseWGOutput is the test-extracted parser. Keeping the helper's
-// real handler invoking the same function would be ideal; for now
-// the test mirrors the body of WireguardShow's parse loop. Any
-// behavioural drift between this and the real handler is caught by
-// the integration test that runs against a real interface.
-func parseWGOutput(stdout string) (any, error) {
-	ctx := context.Background()
-	_ = ctx
-	// Simulate the parser without exec: feed stdout straight into a
-	// bytes-backed io.Reader. The handler's parsing is concentrated
-	// in the same package so we just call into the same helpers it
-	// uses.
-	in := []byte(stdout)
-	// Re-run the parse by reusing the WireguardShow body indirectly:
-	// we replicate the scan since the helper combines exec + parse
-	// in one function. Future refactor splits them; until then this
-	// test guards against regression on the secret-stripping
-	// invariant only.
-	return parseWGDumpInternal(in)
-}
-
-// parseWGDumpInternal contains just the scanner logic. Exported only
-// to the test via a non-public name; not callable from outside the
-// package because Go visibility rules treat _internal as internal.
-func parseWGDumpInternal(b []byte) (WireguardShowResult, error) {
-	// This is a copy of the scanner from WireguardShow. Tests that
-	// vendor parsing logic must be refreshed when the real parser
-	// changes; the secret-leak assertion is the load-bearing check.
-	out := WireguardShowResult{Interfaces: []WireguardInterface{}}
-	var current *WireguardInterface
-	var currentName string
-
-	for _, line := range strings.Split(string(b), "\n") {
-		if line == "" {
-			continue
-		}
-		fields := strings.Split(line, "\t")
-		ifaceName := fields[0]
-		if currentName != ifaceName {
-			if current != nil {
-				out.Interfaces = append(out.Interfaces, *current)
-			}
-			currentName = ifaceName
-			current = &WireguardInterface{Name: ifaceName, Peers: []WireguardPeer{}}
-		}
-		switch {
-		case len(fields) == 5:
-			// fields[1] = private key (dropped); fields[2] = public key.
-			current.PublicKey = fields[2]
-		case len(fields) >= 8:
-			// fields[1] = public, fields[2] = PSK (dropped).
-			peer := WireguardPeer{PublicKey: fields[1]}
-			current.Peers = append(current.Peers, peer)
-		}
+// TestWireGuardRejectsUnexpectedColumnCount covers L-2: a 6-column row
+// (neither header-shape nor peer-shape) must fail the op rather than
+// be silently dropped.
+func TestWireGuardRejectsUnexpectedColumnCount(t *testing.T) {
+	// 6 tab-separated fields: deliberately neither 5 nor ≥8.
+	bad := "wg0\ta\tb\tc\td\te\n"
+	_, err := parseWGDump([]byte(bad))
+	if err == nil {
+		t.Fatal("parser accepted 6-column row; expected failure")
 	}
-	if current != nil {
-		out.Interfaces = append(out.Interfaces, *current)
+	var de *dispatch.Error
+	if !errors.As(err, &de) {
+		t.Fatalf("error is not *dispatch.Error: %T (%v)", err, err)
 	}
-	return out, nil
+	if de.Code != proto.CodeToolFailed {
+		t.Errorf("code = %q, want %q", de.Code, proto.CodeToolFailed)
+	}
 }

@@ -222,11 +222,13 @@ func RunCapped(ctx context.Context, maxBytes int, name string, args ...string) (
 	return buf, truncated, nil
 }
 
-// MaxLineLength caps a single stdout line for RunStreaming. SSH
-// journal entries with full SHA-256 pubkey hashes run ~120 bytes;
-// 1 MiB is far more than any real log line should need and bounds
-// memory under attacker-induced flood.
-const MaxLineLength = 1024 * 1024
+// MaxLineLength caps a single stdout line for RunStreaming. Legitimate
+// per-line output observed in the call paths that reach RunStreaming:
+// ssh journal entries with full SHA-256 pubkey hashes ~120 bytes,
+// apt-get -s upgrade ~few KiB, general journald entries well under
+// 64 KiB. Lowered from 1 MiB (audit finding L-7) so a buggy or
+// malicious producer cannot drive 1 MiB allocations per scanner.Scan().
+const MaxLineLength = 64 << 10
 
 // RunStreaming invokes name with args and calls visit on each line
 // of stdout (without trailing newline) as it arrives. stdout is

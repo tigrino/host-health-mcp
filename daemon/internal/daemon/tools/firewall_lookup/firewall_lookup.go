@@ -18,6 +18,7 @@ import (
 
 	"host-health-mcp/daemon/internal/daemon/config"
 	"host-health-mcp/daemon/internal/daemon/helperinvoke"
+	"host-health-mcp/daemon/internal/daemon/tools"
 	"host-health-mcp/daemon/internal/shared/proto"
 	"host-health-mcp/daemon/internal/shared/schema"
 )
@@ -96,6 +97,36 @@ func (*Tool) DefaultTTL() time.Duration { return 30 * time.Second }
 // match logic in Go; 6 s is generous on realistic fleet sizes.
 func (*Tool) DefaultTimeout() time.Duration { return 6 * time.Second }
 
+// AuditArgs returns the caller-supplied query, rune-truncated to
+// 64 characters so an attacker cannot pad the audit line. Empty
+// when the body is missing or the query is blank. Used by the
+// httpserver to populate audit Entry.Args (REQ 6.5).
+func (*Tool) AuditArgs(body []byte) map[string]string {
+	var r Request
+	if len(body) > 0 {
+		_ = json.Unmarshal(body, &r)
+	}
+	q := truncateRunes(strings.TrimSpace(r.Query), 64)
+	if q == "" {
+		return nil
+	}
+	return map[string]string{"query": q}
+}
+
+func truncateRunes(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	n := 0
+	for i := range s {
+		if n == max {
+			return s[:i]
+		}
+		n++
+	}
+	return s
+}
+
 // Handle parses the request body, validates the query, and forwards
 // a single helper call. The manifest's firewall.enabled flag gates
 // access — operators who don't want firewall introspection at all
@@ -111,12 +142,12 @@ func (t *Tool) Handle(ctx context.Context, body []byte) (any, []string, error) {
 
 	var req Request
 	if len(body) > 0 {
-		if err := json.Unmarshal(body, &req); err != nil {
-			return nil, nil, fmt.Errorf("firewall_lookup: bad request body: %w", err)
+		if err := schema.DecodeStrict(body, &req); err != nil {
+			return nil, nil, &tools.Error{Code: schema.ErrCodeBadArgument, Message: "firewall_lookup: " + err.Error()}
 		}
 	}
 	if strings.TrimSpace(req.Query) == "" {
-		return nil, nil, fmt.Errorf("firewall_lookup: query is required")
+		return nil, nil, &tools.Error{Code: schema.ErrCodeBadArgument, Message: "firewall_lookup: query is required"}
 	}
 
 	param, err := json.Marshal(struct {

@@ -11,10 +11,14 @@ import (
 	"time"
 )
 
-// BucketCfg configures one token bucket.
+// BucketCfg configures one token bucket. Disabled short-circuits
+// Allow() for the per-tool case, which means "operator explicitly
+// opted this tool out of per-tool bucketing" — distinct from
+// "tool is not in the expensive set" (no per-tool config at all).
 type BucketCfg struct {
 	SustainedPerMin int
 	Burst           int
+	Disabled        bool
 }
 
 // Limiter is the two-level limiter.
@@ -92,10 +96,16 @@ func (l *Limiter) Allow(caller, tool string) (ok bool, reason string) {
 	}
 
 	if l.expensive[tool] {
+		cfg := l.perTool[tool]
+		if cfg.Disabled {
+			// Operator explicitly opted out of per-tool bucketing for
+			// this tool. The global bucket still applies above.
+			return true, ""
+		}
 		key := caller + ":" + tool
 		tb := l.toolBkts[key]
 		if tb == nil {
-			tb = newBucket(l.perTool[tool], now)
+			tb = newBucket(cfg, now)
 			l.toolBkts[key] = tb
 		}
 		if !tb.tryTake(now) {

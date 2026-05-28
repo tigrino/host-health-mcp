@@ -45,6 +45,7 @@ func BtrfsScrub(ctx context.Context, param string) (any, error) {
 			Message: "mountpoint failed whitelist",
 		}
 	}
+	// TOCTOU between statfs and exec is acknowledged; local-root attacker is out of scope per threat model.
 	var st unix.Statfs_t
 	if err := unix.Statfs(param, &st); err != nil {
 		return nil, &dispatch.Error{

@@ -21,7 +21,6 @@ type Entry struct {
 	Duration       time.Duration
 	Result         string // "ok" or one of the error codes from schema/errors.go
 	RejectReason   string // populated for non-ok results
-	HelperOps      []string // ops the helper performed for this call (sha-256 fingerprints of stderr where applicable)
 }
 
 // Logger writes audit entries. Implementations are expected to push to

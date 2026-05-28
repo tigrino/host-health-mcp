@@ -17,6 +17,7 @@ import (
 
 	"host-health-mcp/daemon/internal/daemon/config"
 	"host-health-mcp/daemon/internal/daemon/helperinvoke"
+	"host-health-mcp/daemon/internal/daemon/tools"
 	"host-health-mcp/daemon/internal/shared/proto"
 	"host-health-mcp/daemon/internal/shared/schema"
 )
@@ -151,6 +152,30 @@ func (*Tool) DefaultTTL() time.Duration { return 30 * time.Second }
 // 6 s; the REQ 5.1 ceiling is 10 s.
 func (*Tool) DefaultTimeout() time.Duration { return 6 * time.Second }
 
+// AuditArgs returns the caller-supplied enum fields for inclusion in
+// the audit Entry (REQ 6.5). Empty when the body is missing or no
+// fields are set. Used by the httpserver.
+func (*Tool) AuditArgs(body []byte) map[string]string {
+	var r Request
+	if len(body) > 0 {
+		_ = json.Unmarshal(body, &r)
+	}
+	out := map[string]string{}
+	if r.Mode != "" {
+		out["mode"] = r.Mode
+	}
+	if r.Table != "" {
+		out["table"] = r.Table
+	}
+	if r.IncludeSetElements {
+		out["include_set_elements"] = "true"
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 // Handle composes the firewall envelope. Reads the manifest config
 // snapshot for caps and ban_sets, parses the request body (which is
 // optional), and forwards a single op call to the helper.
@@ -171,9 +196,10 @@ func (t *Tool) Handle(ctx context.Context, body []byte) (any, []string, error) {
 
 	var req Request
 	if len(body) > 0 {
-		// Tolerate empty body or "{}"; reject malformed JSON.
-		if err := json.Unmarshal(body, &req); err != nil {
-			return nil, nil, fmt.Errorf("firewall: bad request body: %w", err)
+		// Tolerate empty body or "{}"; reject malformed JSON or unknown
+		// fields (REQ 8 / schema additionalProperties:false).
+		if err := schema.DecodeStrict(body, &req); err != nil {
+			return nil, nil, &tools.Error{Code: schema.ErrCodeBadArgument, Message: "firewall: " + err.Error()}
 		}
 	}
 

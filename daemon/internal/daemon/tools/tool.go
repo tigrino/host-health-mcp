@@ -20,6 +20,15 @@ type Tool interface {
 	Handle(ctx context.Context, reqBody []byte) (data any, warnings []string, err error)
 }
 
+// AuditArgsExtractor is an optional Tool extension: tools whose
+// Request type carries enum-valued caller-influenced fields (REQ 6.5)
+// implement this to surface those values to the audit log. The
+// httpserver type-asserts each Tool to this interface before logging
+// the accepted call.
+type AuditArgsExtractor interface {
+	AuditArgs(reqBody []byte) map[string]string
+}
+
 // Registry is the compile-time-populated table of tools.
 type Registry struct {
 	mu    sync.RWMutex

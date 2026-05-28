@@ -149,9 +149,18 @@ The daemon refuses unknown keys at startup (REQ 8.1).
 Per-host enablement plus tool-specific operator data. The most
 operationally significant fields:
 
-  - `enabled_tools` — subset of the 17 tools in REQ §4. Every tool
-    listed must be compiled into this daemon's build (REQ 8.2;
-    architect refuses to start otherwise).
+  - `enabled_tools` — subset of the 17 tools in REQ §4. The daemon
+    enforces this list at HTTP routing: a tool not on the list
+    returns 404/`unknown_tool` even when the binary is compiled in
+    (REQ 8.2). Every name on the list must be compiled into the
+    build, or the daemon refuses to start. An empty list emits a
+    single startup warning and exposes every compiled-in tool
+    (legacy behaviour for hosts that have not yet pinned the
+    surface). The `caps-template.sh` post-install script emits a
+    `host-health-mcp: warning: enabled_tools contains unknown name
+    '<name>'` line on stderr for any name the script does not
+    recognise — typically a typo or a script that pre-dates the
+    name's introduction.
   - `whitelisted_units` — the systemd units the `systemd_units` tool
     is permitted to report on. The caller cannot supply unit names.
   - `workload_plugins` — must intersect the build's
@@ -199,6 +208,17 @@ The drop-in adds caps only for ops the manifest enables. Operators
 not running ZFS do not pay `CAP_SYS_ADMIN`; not running WireGuard
 do not pay `CAP_NET_ADMIN`.
 
+The same generator writes a second drop-in at
+`/etc/systemd/system/host-health-mcp.service.d/10-ip-egress.conf`
+with `IPAddressDeny=any` plus `IPAddressAllow=localhost` and one
+`IPAddressAllow=<resolver>` line for each address listed under
+`dns.resolvers[]` in `daemon.yml`. This implements REQ 6.8 (egress
+enumerable from config) at the kernel layer. If an operator's
+deployment legitimately needs to reach an additional destination
+(e.g. a recursive resolver on a non-loopback IP), add a manual
+drop-in with the extra `IPAddressAllow=` lines; the generated file
+is overwritten on every re-run.
+
 # 5. First start
 
 ```
@@ -220,6 +240,18 @@ curl --cacert /path/to/ca.pem \
 
 You should see a JSON envelope with `schema_version`, `host`, `as_of`,
 and a `data` object listing the daemon's `enabled_tools`.
+
+## 5.1 Plugin CA bundle (fail-closed)
+
+The MCP plugin client refuses to start if `HOSTHEALTH_TLS_CA` (and the
+corresponding `Config.CAPath`) is empty. The deployment model is an
+internal operator PKI; falling back to the system root store would
+let any publicly-trusted CA issue a certificate the plugin would
+accept. An operator who genuinely needs the system root store — for
+example, a one-off test against a host whose certificate is issued
+by a public CA — can set `HOSTHEALTH_TRUST_SYSTEM_ROOTS=1` in the
+plugin environment. The plugin logs a single warning at startup when
+the override is active.
 
 # 6. Audit-log consumption
 

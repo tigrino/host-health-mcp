@@ -21,6 +21,13 @@ func FuzzRedact(f *testing.F) {
 		"8.8.8.8",
 		"10.0.0.1",
 		"AKIA0123456789ABCDEF",
+		"ASIA0123456789ABCDEF",
+		"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
+		"12345678-1234-1234-1234-123456789abc",
+		"/etc/sensitive/key.pem",
+		"path=/etc/sensitive/key.pem",
+		"albert@tigr.net",
+		"dGhpcyBpcyBhIHRlc3Qgc3RyaW5nIGZvciByZWRhY3Q=",
 		strings.Repeat("x", 4096),
 		"path=/etc/secret",
 		"\x00\x01\x02",
@@ -33,7 +40,10 @@ func FuzzRedact(f *testing.F) {
 	allow := []netip.Prefix{
 		netip.MustParsePrefix("10.0.0.0/8"),
 	}
-	r := New(Rules{IPv4Allow: allow})
+	r := New(Rules{
+		IPv4Allow:     allow,
+		SensitiveDirs: []string{"/etc/sensitive"},
+	})
 
 	f.Fuzz(func(t *testing.T, in string) {
 		defer func() {

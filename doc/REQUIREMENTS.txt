@@ -319,9 +319,10 @@ enabled in the manifest. Core tools must always be available.
      listening[] (proto in {tcp,udp}, family in {inet,inet6}, addr,
             port).
      No PIDs, no process names, no command lines. Source: kernel netlink
-     diag socket (sock_diag(7)). The output is the set of (addr, port,
-     proto) tuples the kernel is accepting connections on; the daemon
-     does not correlate sockets to processes.
+     diag socket (sock_diag(7)) or /proc/net/<proto>. The output is the
+     set of (addr, port, proto) tuples the kernel is accepting
+     connections on; the daemon does not correlate sockets to
+     processes.
 
 4.17 sensors                                                     (OPTIONAL)
      chips[] (name, sensors[] (label, kind in {temp_c, fan_rpm,
@@ -407,8 +408,10 @@ host state, or to pivot to other systems.
 
 6.4 Authentication and authorisation
     - Listener bound to a single configurable address. Public-Internet
-      bind is not forbidden by the daemon but must produce a startup
-      warning unless the operator explicitly acknowledges it in config.
+      bind is not forbidden by the daemon but must refuse to start
+      unless the operator explicitly acknowledges it in config
+      (public_bind_acknowledged: true in daemon.yml). This brings the
+      code in line with the threat model.
     - Transport: TLS only. Client authentication: mTLS client cert OR a
       per-caller bearer token. No shared secret usable by more than one
       caller. Credentials must be rotatable by reloading the config and

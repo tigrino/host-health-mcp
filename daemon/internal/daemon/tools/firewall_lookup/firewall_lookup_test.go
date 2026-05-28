@@ -2,8 +2,39 @@ package firewall_lookup
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
+	"unicode/utf8"
 )
+
+// TestAuditArgsTruncates asserts the audit-args path runeshapes the
+// caller-supplied query to 64 runes so an attacker cannot pad the
+// audit line via an oversize query.
+func TestAuditArgsTruncates(t *testing.T) {
+	tool := &Tool{}
+	long := strings.Repeat("a", 200)
+	body, err := json.Marshal(Request{Query: long})
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := tool.AuditArgs(body)
+	if got := args["query"]; utf8.RuneCountInString(got) != 64 {
+		t.Errorf("rune count = %d, want 64; got %q", utf8.RuneCountInString(got), got)
+	}
+}
+
+// TestAuditArgsEmptyOnBlank asserts a blank or whitespace-only query
+// produces no audit args at all (avoids logging an empty value).
+func TestAuditArgsEmptyOnBlank(t *testing.T) {
+	tool := &Tool{}
+	if got := tool.AuditArgs(nil); got != nil {
+		t.Errorf("nil body: got %v, want nil", got)
+	}
+	body, _ := json.Marshal(Request{Query: "   "})
+	if got := tool.AuditArgs(body); got != nil {
+		t.Errorf("whitespace query: got %v, want nil", got)
+	}
+}
 
 // TestMatch_WireRoundTrip is the regression test for the
 // post-1.14.0 canary finding: the daemon's Match type carried

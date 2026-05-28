@@ -36,6 +36,7 @@ type Server struct {
 	cfg      config.Daemon
 	host     string
 	registry *tools.Registry
+	enabled  map[string]bool
 	cache    *cache.Cache
 	limiter  *ratelimit.Limiter
 	auditor  audit.Logger
@@ -44,9 +45,12 @@ type Server struct {
 	srv      *http.Server
 }
 
-// New constructs a Server. The TLS configuration is built in Start.
-func New(cfg config.Daemon, host string, reg *tools.Registry, c *cache.Cache, l *ratelimit.Limiter, a audit.Logger) *Server {
-	return &Server{cfg: cfg, host: host, registry: reg, cache: c, limiter: l, auditor: a}
+// New constructs a Server. enabled is the set of tool names that
+// actually accept requests (REQ 8.2, manifest.enabled_tools). A nil or
+// empty map means "accept every registered tool" (legacy behaviour);
+// callers that wish to enforce a manifest must pre-intersect.
+func New(cfg config.Daemon, host string, reg *tools.Registry, enabled map[string]bool, c *cache.Cache, l *ratelimit.Limiter, a audit.Logger) *Server {
+	return &Server{cfg: cfg, host: host, registry: reg, enabled: enabled, cache: c, limiter: l, auditor: a}
 }
 
 // Start begins serving until ctx is cancelled. Blocks until shutdown
@@ -133,6 +137,14 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 			schema.ErrCodeUnknownTool, schema.MsgUnknownTool, start, "unknown_tool")
 		return
 	}
+	// REQ 8.2: a tool the operator did not enable in manifest.yml is
+	// not part of this deployment's attack surface, regardless of
+	// what is compiled in.
+	if len(s.enabled) > 0 && !s.enabled[toolName] {
+		s.writeError(w, r, toolName, http.StatusNotFound,
+			schema.ErrCodeUnknownTool, schema.MsgUnknownTool, start, "tool_disabled")
+		return
+	}
 
 	s.handleToolBody(w, r, tool, toolName, caller, start)
 }
@@ -175,11 +187,14 @@ func (s *Server) handleToolBody(w http.ResponseWriter, r *http.Request, tool too
 	ttl := s.cfg.CacheTTL(toolName, tool.DefaultTTL())
 	key := cache.Key(toolName, body)
 
+	args := extractAuditArgs(tool, body)
+
 	if entry, ok := s.cache.Lookup(key); ok {
 		s.writeEnvelope(w, entry.Data, int(entry.Age().Seconds()), entry.Warnings)
 		s.auditor.Log(audit.Entry{
 			CallerIdentity: caller,
 			Tool:           toolName,
+			Args:           args,
 			ResponseSize:   len(entry.Data),
 			Duration:       time.Since(start),
 			Result:         "ok",
@@ -218,10 +233,22 @@ func (s *Server) handleToolBody(w http.ResponseWriter, r *http.Request, tool too
 	s.auditor.Log(audit.Entry{
 		CallerIdentity: caller,
 		Tool:           toolName,
+		Args:           args,
 		ResponseSize:   len(entry.Data),
 		Duration:       time.Since(start),
 		Result:         "ok",
 	})
+}
+
+// extractAuditArgs runs the tool's optional AuditArgs hook (REQ 6.5).
+// Tools without caller-controlled enum arguments do not implement the
+// interface and contribute no args.
+func extractAuditArgs(tool tools.Tool, body []byte) map[string]string {
+	ex, ok := tool.(tools.AuditArgsExtractor)
+	if !ok {
+		return nil
+	}
+	return ex.AuditArgs(body)
 }
 
 func (s *Server) writeEnvelope(w http.ResponseWriter, data json.RawMessage, cacheAgeS int, warnings []string) {
@@ -260,7 +287,14 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, toolName str
 func (s *Server) handleToolError(w http.ResponseWriter, r *http.Request, toolName string, err error, start time.Time) {
 	var te *tools.Error
 	if errors.As(err, &te) {
-		s.writeError(w, r, toolName, http.StatusBadGateway, te.Code, te.Message, start, te.Code)
+		// bad_argument maps to HTTP 400 — the caller did something
+		// wrong; the upstream (helper) is healthy. Every other typed
+		// tool error is treated as upstream-side and surfaces 502.
+		status := http.StatusBadGateway
+		if te.Code == schema.ErrCodeBadArgument {
+			status = http.StatusBadRequest
+		}
+		s.writeError(w, r, toolName, status, te.Code, te.Message, start, te.Code)
 		return
 	}
 	if errors.Is(err, context.DeadlineExceeded) {

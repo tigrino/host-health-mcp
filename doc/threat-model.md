@@ -335,11 +335,19 @@ Properties relied on:
   daemon. This applies REQ 6.2's "no opaque passthrough" to the
   helper→daemon boundary as well as to the daemon→network
   boundary.
-- **Stderr is fingerprinted, not forwarded.** The helper's
-  response includes `stderr_bytes` and `stderr_sha256` only. Raw
-  stderr from invoked tools — which can carry drive serial
-  numbers, peer identifiers, VG/LV UUIDs — never enters the
-  daemon's audit log.
+- **Stderr is fingerprinted, and a length-capped prefix is
+  forwarded through the daemon-side redactor.** The helper's
+  response includes `stderr_bytes` and `stderr_sha256` for forensic
+  correlation, plus a sanitised, length-capped (≤200 bytes)
+  `stderr_prefix` for operator diagnostics on per-source error
+  blocks. The prefix is processed through the daemon-side
+  positive-list redactor (§6.3) before it leaves the daemon, so any
+  content not on the safe set (drive serial numbers, peer
+  identifiers, VG/LV UUIDs that fall outside the allowlist regexes)
+  collapses to `<redacted>`. Subprocess argv is also forwarded as
+  part of the helper-op-error structure for operator diagnostics
+  (binary path plus operator-validated parameter); argv is treated
+  as structural identifiers per R5.
 - **Sanitised environment.** The helper sets `PATH`, `LANG`,
   `LC_ALL` only. `LD_PRELOAD`, `LD_LIBRARY_PATH`, and similar
   env-driven escalation paths are closed off.
@@ -439,9 +447,11 @@ R5. **Operator-authored structural identifiers cross the wire.**
     structural identifiers verbatim: nft counter names
     (`nft_table_counts.hit_counters[].name`), systemd unit names,
     interface names, mountpoints, certificate subjects, mdraid
-    array names, LVM VG/LV names, ZFS pool names. These are in
-    scope for the read surface by design — they are the very
-    identifiers an operator needs to interpret a health report.
+    array names, LVM VG/LV names, ZFS pool names, and subprocess
+    argv (including operator-validated path/device parameters)
+    surfaced in per-source `HelperOpError.argv`. These are in scope
+    for the read surface by design — they are the very identifiers
+    an operator needs to interpret a health report.
     The §6.3 redactor applies to unbounded application-emitted log
     content (`samples[].message` from journald and audit) and to
     free-form failure-reason strings, not to structural

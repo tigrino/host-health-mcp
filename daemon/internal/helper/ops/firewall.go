@@ -19,7 +19,7 @@ import (
 // firewallRulesetCap bounds the bytes the helper will accumulate
 // from `nft -j list ruleset`. Modern nft userspace prints the
 // whole document as one JSON line, so RunStreaming's line scanner
-// (MaxLineLength = 1 MiB) cannot read it — we use RunCapped
+// (MaxLineLength = 64 KiB) cannot read it — we use RunCapped
 // instead. Sized for fleets with 70k-element ban sets:
 //
 //	70 000 elements * ~110 bytes (val + timeout + expires) ≈ 7.7 MiB

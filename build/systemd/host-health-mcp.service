@@ -32,6 +32,7 @@ ProtectHostname=yes
 RestrictNamespaces=yes
 RestrictRealtime=yes
 LockPersonality=yes
+# Tripwire: stdlib Go does not JIT; this line catches any future FFI/JIT code path that would attempt W^X violations.
 MemoryDenyWriteExecute=yes
 RestrictSUIDSGID=yes
 RemoveIPC=yes

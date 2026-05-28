@@ -14,10 +14,15 @@ type NeedrestartResult struct {
 	PendingServices []string `json:"pending_services"`
 }
 
-// Needrestart invokes `needrestart -b -p` and parses the
-// NEEDRESTART-SVC: lines from its batch output.
+// Needrestart invokes `needrestart -r l -b -p` and parses the
+// NEEDRESTART-SVC: lines from its batch output. The explicit `-r l`
+// (list-only) overrides any `$nrconf{restart}` value the operator may
+// have set in /etc/needrestart/needrestart.conf; without it, a host
+// configured with `$nrconf{restart} = 'a';` would let the batch run
+// restart services. REQ 6.1 makes read-only an unconditional
+// guarantee, not a property contingent on operator config.
 func Needrestart(ctx context.Context, _ string) (any, error) {
-	stdout, err := helperexec.Run(ctx, "needrestart", "-b", "-p")
+	stdout, err := helperexec.Run(ctx, "needrestart", "-r", "l", "-b", "-p")
 	if err != nil {
 		// needrestart can exit non-zero when there is pending work,
 		// per its --help. Surface the failure if there's no parseable

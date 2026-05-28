@@ -104,6 +104,7 @@ func ReadFrameWithCap(r io.Reader, v any, cap int) error {
 	if int(n) > cap {
 		return fmt.Errorf("%w: declared %d > cap %d", ErrFrameTooLarge, n, cap)
 	}
+	// Up-front allocation is intentional: the 4 MiB cap was raised in schema 0.5.0 to fit legitimate firewall ban-set responses, and the deployment target's memory budget tolerates the worst-case fan-out alloc.
 	body := make([]byte, n)
 	if _, err := io.ReadFull(r, body); err != nil {
 		return err

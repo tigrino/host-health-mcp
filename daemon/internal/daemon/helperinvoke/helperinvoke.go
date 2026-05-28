@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"host-health-mcp/daemon/internal/daemon/redact"
 	"host-health-mcp/daemon/internal/shared/proto"
 	"host-health-mcp/daemon/internal/shared/schema"
 )
@@ -36,12 +37,20 @@ type Client struct {
 	// concurrency cap (design §7.4): bound the number of in-flight
 	// helper calls so a single storm cannot overrun the helper.
 	sem chan struct{}
+
+	// redactor applied to forwarded subprocess stderr_prefix before it
+	// leaves the daemon. The helper does not know the operator's
+	// allowlists; redaction is a daemon-side concern by REQ 6.3. May be
+	// nil only in unit tests that never surface a helper error.
+	redactor *redact.Filter
 }
 
 // NewClient returns a Client. maxInFlight bounds the simultaneous
-// helper calls; 0 disables the cap.
-func NewClient(socketPath string, maxInFlight int) *Client {
-	c := &Client{socketPath: socketPath}
+// helper calls; 0 disables the cap. redactor processes the subprocess
+// stderr_prefix field of any HelperOpError before it leaves the daemon
+// (threat-model §6.7, design §7.2).
+func NewClient(socketPath string, maxInFlight int, redactor *redact.Filter) *Client {
+	c := &Client{socketPath: socketPath, redactor: redactor}
 	if maxInFlight > 0 {
 		c.sem = make(chan struct{}, maxInFlight)
 	}
@@ -125,6 +134,7 @@ func (c *Client) Call(ctx context.Context, op string, param string) (json.RawMes
 			StderrPrefix: resp.StderrPrefix,
 			ToolExit:     resp.ToolExit,
 			Argv:         resp.Argv,
+			redactor:     c.redactor,
 		}
 	}
 	return resp.Data, nil
@@ -132,7 +142,9 @@ func (c *Client) Call(ctx context.Context, op string, param string) (json.RawMes
 
 // HelperError is the typed error a helper call returns on Status=err.
 // Argv and StderrPrefix carry actionable diagnostics for per-source
-// error blocks (schema 0.2.0).
+// error blocks (schema 0.2.0). StderrPrefix is sanitised inside the
+// helper and routed through the daemon-side positive-list redactor
+// (threat-model §6.7) at AsOpError() time before it leaves the daemon.
 type HelperError struct {
 	Code         string
 	Message      string
@@ -141,6 +153,12 @@ type HelperError struct {
 	StderrPrefix string
 	ToolExit     *int
 	Argv         []string
+
+	// redactor is the daemon-configured positive-list filter. Captured
+	// from the originating Client; nil-safe (an unconfigured client
+	// leaves the prefix unredacted, matching pre-1.17 behaviour for
+	// test-only call sites).
+	redactor *redact.Filter
 }
 
 // Error returns a short, code-only summary. Argv, exit code, and
@@ -158,15 +176,22 @@ func (e *HelperError) Error() string {
 
 // AsOpError returns the wire-schema HelperOpError shape carrying the
 // full structured diagnostics. Used by tools that surface a
-// per-source error block in their response.
+// per-source error block in their response. The subprocess
+// stderr_prefix passes through the daemon-side redactor so any
+// content not on the positive-list collapses to <redacted> before it
+// crosses the daemon's outbound boundary (REQ 6.3, threat-model §6.7).
 func (e *HelperError) AsOpError() *schema.HelperOpError {
+	prefix := e.StderrPrefix
+	if e.redactor != nil {
+		prefix = e.redactor.Redact(prefix)
+	}
 	return &schema.HelperOpError{
 		Code:         e.Code,
 		Message:      e.Message,
 		Argv:         e.Argv,
 		ExitCode:     e.ToolExit,
 		StderrSHA256: e.StderrSHA256,
-		StderrPrefix: e.StderrPrefix,
+		StderrPrefix: prefix,
 	}
 }
 

@@ -13,11 +13,19 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"strings"
 	"time"
 )
+
+// EnvTrustSystemRoots, when set to "1", lets New() fall back to the
+// system root CA pool if Config.CAPath is empty. Without the opt-in,
+// an empty CAPath is a startup error: the production deployment model
+// is an internal operator PKI, and trusting public CAs by default
+// turns a missing config into an authentication-bypass foot-gun.
+const EnvTrustSystemRoots = "HOSTHEALTH_TRUST_SYSTEM_ROOTS"
 
 // Config configures a Client.
 type Config struct {
@@ -58,6 +66,10 @@ func New(cfg Config) (*Client, error) {
 			return nil, fmt.Errorf("client: CA bundle has no certs")
 		}
 		tlsCfg.RootCAs = pool
+	} else if os.Getenv(EnvTrustSystemRoots) == "1" {
+		log.Printf("client: WARNING CAPath is empty and %s=1; trusting system root CAs (override active)", EnvTrustSystemRoots)
+	} else {
+		return nil, fmt.Errorf("client: CAPath is empty; set HOSTHEALTH_CA_PATH to an internal CA bundle (recommended) or %s=1 to use system roots", EnvTrustSystemRoots)
 	}
 
 	timeout := cfg.HTTPTimeout

@@ -33,6 +33,7 @@ func (e Entry) Age() time.Duration { return time.Since(e.Builtat) }
 func (e Entry) Expired() bool { return e.Age() > e.TTL }
 
 // Cache is the global cache keyed by (tool, args_hash).
+// Per-tool entry-count cap deliberately not enforced; on the deployment target the memory budget headroom is ample and the singleflight+TTL design bounds memory growth in practice.
 type Cache struct {
 	mu sync.RWMutex
 	m  map[string]Entry

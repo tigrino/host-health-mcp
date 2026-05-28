@@ -300,6 +300,91 @@ func TestServerUnknownToolErrors(t *testing.T) {
 	}
 }
 
+// argsTool is a stub Tool that also implements AuditArgsExtractor.
+// Used by TestAuditArgsPopulated to assert the httpserver hooks the
+// optional interface up correctly.
+type argsTool struct {
+	name string
+}
+
+func (t *argsTool) Name() string                { return t.name }
+func (*argsTool) DefaultTTL() time.Duration     { return time.Second }
+func (*argsTool) DefaultTimeout() time.Duration { return time.Second }
+func (*argsTool) Handle(ctx context.Context, body []byte) (any, []string, error) {
+	return map[string]string{"ok": "yes"}, nil, nil
+}
+func (*argsTool) AuditArgs(body []byte) map[string]string {
+	return map[string]string{"window": "1h", "severity": "warning"}
+}
+
+// captureAuditor records each Entry the server emits.
+type captureAuditor struct {
+	entries []audit.Entry
+}
+
+func (c *captureAuditor) Log(e audit.Entry) { c.entries = append(c.entries, e) }
+
+func TestAuditArgsPopulated(t *testing.T) {
+	dir := t.TempDir()
+	caPath, srvCert, srvKey, ctls := generateTestPKI(t, dir)
+	cfg := config.Daemon{
+		BindAddr:                "127.0.0.1:0",
+		TLSCertPath:             srvCert,
+		TLSKeyPath:              srvKey,
+		ClientCAPath:            caPath,
+		MaxConcurrentHandshakes: 4,
+	}
+	reg := tools.New()
+	reg.Register(&argsTool{name: "logs"})
+	cap := &captureAuditor{}
+	srv := &Server{
+		cfg:      cfg,
+		host:     "testhost",
+		registry: reg,
+		cache:    cache.New(),
+		limiter:  ratelimit.New(ratelimit.BucketCfg{SustainedPerMin: 600, Burst: 100}, nil),
+		auditor:  cap,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() { errCh <- srv.Start(ctx) }()
+	deadline := time.Now().Add(2 * time.Second)
+	for srv.listener == nil && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if srv.listener == nil {
+		cancel()
+		t.Fatal("listener did not bind in time")
+	}
+	defer func() { cancel(); <-errCh }()
+	addr := srv.listener.Addr().String()
+	c := &http.Client{Transport: &http.Transport{TLSClientConfig: ctls}}
+	// First call — fresh, exercises the cache-miss branch of the
+	// audit-args plumbing.
+	resp, err := c.Post("https://"+addr+"/v1/logs", "application/json", bytes.NewReader([]byte(`{}`)))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	_ = resp.Body.Close()
+	// Second call with the same body — hits the cache. REQ 6.5
+	// requires the audit entry on the cache-hit path to carry args
+	// too; this assertion catches a regression where Args is set
+	// only on the fresh-call branch.
+	resp2, err := c.Post("https://"+addr+"/v1/logs", "application/json", bytes.NewReader([]byte(`{}`)))
+	if err != nil {
+		t.Fatalf("post (cached): %v", err)
+	}
+	_ = resp2.Body.Close()
+	if len(cap.entries) < 2 {
+		t.Fatalf("expected at least 2 audit entries, got %d", len(cap.entries))
+	}
+	for i, e := range cap.entries {
+		if e.Args["window"] != "1h" || e.Args["severity"] != "warning" {
+			t.Errorf("audit Args not populated on entry %d: %+v", i, e.Args)
+		}
+	}
+}
+
 func TestServerRejectsOversizeBody(t *testing.T) {
 	srv, addr, ctls, stop := startTestServer(t)
 	defer stop()

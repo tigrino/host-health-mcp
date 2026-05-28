@@ -61,6 +61,13 @@ func newTestClient(t *testing.T) *client.Client {
 	if err := os.WriteFile(keyPath, key, 0600); err != nil {
 		t.Fatal(err)
 	}
+	// The plugin client requires an explicit CA bundle or the
+	// HOSTHEALTH_TRUST_SYSTEM_ROOTS=1 opt-in (M-6 fail-closed). These
+	// tests never actually open a TLS connection to a daemon — the
+	// transport is replaced by SetTransport with a roundtripper that
+	// returns canned bodies — so the system-roots opt-in is the
+	// minimum-surface way to keep the test scaffolding intact.
+	t.Setenv(client.EnvTrustSystemRoots, "1")
 	cli, err := client.New(client.Config{
 		Port:     8443,
 		CertPath: certPath,

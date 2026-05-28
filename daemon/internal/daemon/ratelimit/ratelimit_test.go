@@ -40,6 +40,21 @@ func TestPerToolBucket(t *testing.T) {
 	}
 }
 
+// TestPerToolBucketExplicitDisable covers M-9: an operator-supplied
+// Disabled=true short-circuits the per-tool bucket regardless of
+// numeric values. Global bucket still applies.
+func TestPerToolBucketExplicitDisable(t *testing.T) {
+	l := New(
+		BucketCfg{SustainedPerMin: 600, Burst: 100},
+		map[string]BucketCfg{"logs": {Disabled: true}},
+	)
+	for i := 0; i < 50; i++ {
+		if ok, _ := l.Allow("alice", "logs"); !ok {
+			t.Fatalf("explicit-disable logs call %d should pass", i)
+		}
+	}
+}
+
 func TestPerCallerIsolation(t *testing.T) {
 	l := New(BucketCfg{SustainedPerMin: 60, Burst: 1}, nil)
 	if ok, _ := l.Allow("alice", "system"); !ok {

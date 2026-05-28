@@ -59,7 +59,14 @@ func WireguardShow(ctx context.Context, _ string) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	return parseWGDump(stdout)
+}
 
+// parseWGDump turns `wg show all dump` output into the typed result.
+// Extracted from WireguardShow so the parser is unit-testable without
+// invoking wg(8). The L-2 fix (fail on unexpected column count) lives
+// here.
+func parseWGDump(stdout []byte) (WireguardShowResult, error) {
 	out := WireguardShowResult{Interfaces: []WireguardInterface{}}
 	var current *WireguardInterface
 	var currentName string
@@ -95,7 +102,7 @@ func WireguardShow(ctx context.Context, _ string) (any, error) {
 			// We DELIBERATELY do not touch fields[1] (private key).
 			pub := fields[2]
 			if !wgPublicKeyRE.MatchString(pub) {
-				return nil, &dispatch.Error{
+				return out, &dispatch.Error{
 					Code:    proto.CodeToolFailed,
 					Message: "wg dump: interface public key failed pattern",
 				}
@@ -115,7 +122,7 @@ func WireguardShow(ctx context.Context, _ string) (any, error) {
 			//         persistent-keepalive
 			pub := fields[1]
 			if !wgPublicKeyRE.MatchString(pub) {
-				return nil, &dispatch.Error{
+				return out, &dispatch.Error{
 					Code:    proto.CodeToolFailed,
 					Message: "wg dump: peer public key failed pattern",
 				}
@@ -143,13 +150,22 @@ func WireguardShow(ctx context.Context, _ string) (any, error) {
 				}
 			}
 			current.Peers = append(current.Peers, peer)
+			continue
+		}
+		// Any column count other than the two known shapes (5 for the
+		// interface header, ≥8 for a peer row) means the upstream
+		// `wg show all dump` format changed. Fail the op so a real
+		// drift is loud rather than silently masking peer rows.
+		return out, &dispatch.Error{
+			Code:    proto.CodeToolFailed,
+			Message: "wg dump: row has unexpected column count " + strconv.Itoa(len(fields)),
 		}
 	}
 	if current != nil {
 		out.Interfaces = append(out.Interfaces, *current)
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, &dispatch.Error{
+		return out, &dispatch.Error{
 			Code:    proto.CodeToolFailed,
 			Message: "wg dump scanner: " + err.Error(),
 		}

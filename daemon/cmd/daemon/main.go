@@ -67,7 +67,7 @@ func main() {
 	}
 
 	if cfg.BindAddrIsPublic() && !cfg.PublicBindAcknowledged {
-		log.Printf("daemon: WARNING bind_addr %s appears public and public_bind_acknowledged is not set (REQ 6.4)", cfg.BindAddr)
+		log.Fatalf("daemon: bind_addr %q is on a public interface; refusing to start. Set public_bind_acknowledged: true in daemon.yml to override.", cfg.BindAddr)
 	}
 
 	manifestCfg, err := config.LoadManifest(cfg.ManifestPath)
@@ -80,11 +80,28 @@ func main() {
 		host = "unknown"
 	}
 
+	// Build the redactor from operator-configured allowlists. Used by
+	// the logs tool to scrub sample messages (REQ 6.3) and by the
+	// helperinvoke layer to redact subprocess stderr_prefix before it
+	// leaves the daemon (threat-model §6.7).
+	rules := redact.Rules{SensitiveDirs: cfg.SensitiveDirs}
+	for _, c := range cfg.IPv4AllowlistRanges {
+		if p, err := netip.ParsePrefix(c); err == nil {
+			rules.IPv4Allow = append(rules.IPv4Allow, p)
+		}
+	}
+	for _, c := range cfg.IPv6AllowlistRanges {
+		if p, err := netip.ParsePrefix(c); err == nil {
+			rules.IPv6Allow = append(rules.IPv6Allow, p)
+		}
+	}
+	redactor := redact.New(rules)
+
 	// Helper client. The in-flight cap (8) matches design §7.4; the
 	// per-tool fan-out caps inside each helper-invoking tool (e.g.
 	// storage caps its per-call SMART fan-out at 8) bound parallelism
 	// further.
-	hc := helperinvoke.NewClient(cfg.HelperSocketPath, 8)
+	hc := helperinvoke.NewClient(cfg.HelperSocketPath, 8, redactor)
 
 	// Tool registry. Local-only tools register without the helper
 	// client; helper-invoking tools take it as a constructor arg.
@@ -109,20 +126,7 @@ func main() {
 	reg.Register(firewall.New(hc, manifestCfg.Firewall))
 	reg.Register(firewall_lookup.New(hc, manifestCfg.Firewall))
 
-	// Build the redactor from operator-configured allowlists. Used by
-	// the logs tool to scrub sample messages (REQ 6.3).
-	rules := redact.Rules{}
-	for _, c := range cfg.IPv4AllowlistRanges {
-		if p, err := netip.ParsePrefix(c); err == nil {
-			rules.IPv4Allow = append(rules.IPv4Allow, p)
-		}
-	}
-	for _, c := range cfg.IPv6AllowlistRanges {
-		if p, err := netip.ParsePrefix(c); err == nil {
-			rules.IPv6Allow = append(rules.IPv6Allow, p)
-		}
-	}
-	reg.Register(logs.New(hc, redact.New(rules)))
+	reg.Register(logs.New(hc, redactor))
 
 	// Refuse to start if the manifest references a workload plugin
 	// that was not compiled into this binary (REQ 8.2).
@@ -137,11 +141,48 @@ func main() {
 	}
 	reg.Register(workload.New(hc, manifestCfg.WorkloadPlugins))
 
+	// Resolve manifest.enabled_tools against the compiled-in registry
+	// (REQ 8.2). The `manifest` tool itself is always reachable so
+	// callers can introspect the deployment even when enabled_tools is
+	// configured tightly.
+	registered := map[string]bool{"manifest": true}
+	for _, n := range reg.Names() {
+		registered[n] = true
+	}
+	var enforcedTools []string
+	enabledSet := map[string]bool{}
+	if len(manifestCfg.EnabledTools) > 0 {
+		var unknown []string
+		for _, n := range manifestCfg.EnabledTools {
+			if !registered[n] {
+				unknown = append(unknown, n)
+			} else {
+				enabledSet[n] = true
+				enforcedTools = append(enforcedTools, n)
+			}
+		}
+		if len(unknown) > 0 {
+			log.Fatalf("daemon: manifest.enabled_tools names %d tool(s) not compiled in: %v (REQ 8.2)", len(unknown), unknown)
+		}
+		// manifest tool is always exposed so introspection cannot be
+		// turned off accidentally.
+		if !enabledSet["manifest"] {
+			enabledSet["manifest"] = true
+			enforcedTools = append(enforcedTools, "manifest")
+		}
+	} else {
+		log.Printf("daemon: WARNING manifest.enabled_tools is empty; exposing all %d compiled-in tools", len(registered))
+		for n := range registered {
+			enabledSet[n] = true
+			enforcedTools = append(enforcedTools, n)
+		}
+	}
+
 	reg.Register(manifest.New(manifest.Snapshot{
 		DaemonVersion:          buildID,
 		BuildID:                buildID,
 		StartedAt:              time.Now().UTC(),
-		EnabledTools:           reg.Names(),
+		EnabledTools:           enforcedTools,
 		EnabledWorkloadPlugins: manifestCfg.WorkloadPlugins,
 		WhitelistedUnits:       manifestCfg.WhitelistedUnits,
 	}))
@@ -150,15 +191,17 @@ func main() {
 
 	global := ratelimit.BucketCfg{SustainedPerMin: 30, Burst: 10}
 	perTool := map[string]ratelimit.BucketCfg{}
-	for tool, cfg := range cfg.ExpensiveToolBuckets {
+	for tool, bcfg := range cfg.ExpensiveToolBuckets {
+		disabled := bcfg.Enabled != nil && !*bcfg.Enabled
 		perTool[tool] = ratelimit.BucketCfg{
-			SustainedPerMin: cfg.SustainedPerMin,
-			Burst:           cfg.Burst,
+			SustainedPerMin: bcfg.SustainedPerMin,
+			Burst:           bcfg.Burst,
+			Disabled:        disabled,
 		}
 	}
 	limiter := ratelimit.New(global, perTool)
 
-	srv := httpserver.New(cfg, host, reg, cch, limiter, audit.New())
+	srv := httpserver.New(cfg, host, reg, enabledSet, cch, limiter, audit.New())
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()

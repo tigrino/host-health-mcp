@@ -3,6 +3,86 @@ title: Host Health MCP - Changelog
 author: Albert 'Tigr' Zenkoff <albert@tigr.net>
 ---
 
+# 1.17.0 — security audit follow-up (2026-05-28)
+
+Closes the 18 findings recorded in `doc/security-audit-2026-05-24.md`.
+New minor because two changes affect the operator-visible contract
+(plugin-side fail-closed on empty `CAPath`; daemon-side fail-closed on
+public bind) and one tightens the request-body parser
+(`additionalProperties: false` actually enforced). No wire-schema
+change; daemon and plugin both rebuild with no migration.
+
+## High
+
+- **H-1 / M-2 / M-8 / I-3.** Document the helper-op-error
+  `stderr_prefix` and `argv` fields as part of the surface in
+  `doc/threat-model.md` §6.7 and `doc/design-overview.md` §7.2.
+  Daemon-side: `helperinvoke.HelperError.AsOpError()` routes
+  `stderr_prefix` through the configured `redact.Filter` before the
+  field leaves the daemon. Threat-model R5 now lists subprocess argv
+  in the structural-identifier carve-out.
+- **H-2.** Redactor adds explicit scrub classes (AWS key, JWT triple,
+  high-entropy base64 blob ≥33 chars, sensitive-dir prefix) ahead of
+  the safe-token check. Safe-token regex tightened to drop `:`; UUIDs
+  pass through anchored. New positive- and negative-keep tests plus
+  expanded fuzz seed corpus.
+- **H-3.** `manifest.enabled_tools` now enforced. Unknown names in
+  the list are fatal at startup; the `httpserver` returns 404 for
+  tools not on the list; `manifest` tool reports the post-intersect
+  set. `caps-template.sh` warns on stderr for unrecognised names.
+
+## Medium
+
+- **M-1.** Audit `Entry.Args` populated via a new optional
+  `AuditArgsExtractor` interface on `tools.Tool`; implemented by
+  `logs` (post-default severity/window/source) and `firewall_lookup`
+  (rune-truncated query). Dead `HelperOps` field dropped from
+  `audit.Entry`.
+- **M-3.** Daemon refuses to start when `bind_addr` is on a public
+  interface unless `public_bind_acknowledged: true`. REQ 6.4 wording
+  aligned to match.
+- **M-4.** `needrestart` invocation now `-r l -b -p`; the explicit
+  list-mode override makes the op deterministically read-only
+  regardless of operator `$nrconf{restart}` config.
+- **M-5.** No code change; cache size cap deliberately not enforced
+  (rationale recorded inline).
+- **M-6.** Plugin `client.New()` refuses to start with empty
+  `CAPath` unless `HOSTHEALTH_TRUST_SYSTEM_ROOTS=1`; warning logged
+  when the override is active. Documented in `doc/install.md` §5.1.
+- **M-7.** No code change; up-front 4 MiB allocation rationale
+  recorded inline.
+- **M-9.** `expensive_tool_buckets` with `(sustained_per_min=0,
+  burst=0)` and no explicit `enabled: false` now fails config-load.
+  `BucketLimit.Enabled` is a pointer so absence keeps the default.
+
+## Low
+
+- **L-1.** Request-body decoders use new `schema.DecodeStrict`
+  (`DisallowUnknownFields`). `logs`, `firewall`, `firewall_lookup`
+  now surface a 400 with `bad_argument` naming the offending field.
+- **L-2.** `wireguard_show` parser fails the op on unexpected column
+  counts instead of silently dropping the row. Parser extracted to
+  `parseWGDump` and unit-tested.
+- **L-3.** `fail2ban-client status <jail>` jail names filtered
+  through a positive regex; malformed names are dropped with no op
+  failure.
+- **L-4.** No code change; btrfs statfs→exec TOCTOU acknowledged
+  inline (local root out of scope per threat model).
+- **L-5.** `caps-template.sh` emits a second drop-in
+  `/etc/systemd/system/host-health-mcp.service.d/10-ip-egress.conf`
+  with `IPAddressDeny=any` plus `IPAddressAllow=localhost` and any
+  `dns.resolvers[]` from `daemon.yml`.
+- **L-6.** REQ 4.16 wording relaxed to accept `/proc/net/<proto>` in
+  addition to `sock_diag(7)` to match the implementation.
+- **L-7.** `MaxLineLength` lowered from 1 MiB to 64 KiB; legitimate
+  per-line output sits well below this.
+
+## Informational
+
+- **I-4.** One-line tripwire comment added above
+  `MemoryDenyWriteExecute=yes` in
+  `build/systemd/host-health-mcp.service`.
+
 # 1.16.2 (2026-05-21)
 
 ## Daemon

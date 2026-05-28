@@ -124,7 +124,7 @@ func TestRunStreaming_ToolMissing(t *testing.T) {
 // asserts RunCapped captures it whole. This is the regression path
 // for `nft -j list ruleset` on fleet hosts where the entire JSON
 // document arrives on one line and bufio.Scanner-based readers
-// (RunStreaming, MaxLineLength = 1 MiB) would fail or truncate.
+// (RunStreaming, MaxLineLength = 64 KiB) would fail or truncate.
 func TestRunCapped_AcceptsLargeSingleLineBlob(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

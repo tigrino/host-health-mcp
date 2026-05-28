@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -12,6 +13,12 @@ import (
 	helperexec "host-health-mcp/daemon/internal/helper/exec"
 	"host-health-mcp/daemon/internal/shared/proto"
 )
+
+// jailNameRE constrains the names re-passed to `fail2ban-client status
+// <jail>`. Defence-in-depth: the upstream's own validators reject most
+// flag-like names, but a positive regex at the helper layer matches
+// the smart_summary / mdraid_detail discipline (audit finding L-3).
+var jailNameRE = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9._-]{0,63}$`)
 
 // Fail2banStatusResult is the typed result for op fail2ban_status.
 type Fail2banStatusResult struct {
@@ -42,7 +49,16 @@ func Fail2banStatus(ctx context.Context, _ string) (any, error) {
 	}
 	out.Present = true
 
-	jails := parseFail2banJailList(stdout)
+	all := parseFail2banJailList(stdout)
+	jails := make([]string, 0, len(all))
+	for _, j := range all {
+		if jailNameRE.MatchString(j) {
+			jails = append(jails, j)
+		}
+	}
+	// out.JailCount reports the count of valid (re-querable) jails.
+	// Names that failed the regex are silently dropped — one malformed
+	// jail on a host with many should not blank the whole counter.
 	out.JailCount = len(jails)
 
 	for _, jail := range jails {

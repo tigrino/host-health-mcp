@@ -300,13 +300,21 @@ The daemon maps these codes onto its own structured tool errors via
   environment-variable substitution.
 - Captured stdout is bounded to a per-op maximum (default 256 KiB).
   Exceeding the bound returns `output_truncated`.
-- Stderr from each tool is **not** forwarded to the daemon. The
-  helper records only `stderr_bytes` and `stderr_sha256` in its
-  response and the audit-log entry; operators investigating a real
-  failure re-run the helper manually with a debug flag (out of the
-  shipped surface). This keeps subprocess stderr — which can carry
-  drive serial numbers, peer identifiers, VG/LV UUIDs — out of the
-  shipped audit log.
+- Stderr from each tool is fingerprinted, and a sanitised
+  length-capped prefix is forwarded for operator diagnostics. The
+  helper records `stderr_bytes` and `stderr_sha256` for forensic
+  correlation; a sanitised `stderr_prefix` (≤200 bytes, non-printable
+  bytes remapped) accompanies it on per-source error blocks. Before
+  this prefix leaves the daemon it is routed through the daemon-side
+  positive-list redactor (§6, REQ 6.3) inside
+  `helperinvoke.HelperError.AsOpError()`, so any token not on the
+  safe set collapses to `<redacted>`. This places the redaction
+  responsibility on the daemon — which holds the operator's
+  allowlists — rather than on the helper, which does not. Subprocess
+  argv is forwarded under the same per-source error structure for
+  operator diagnostics; its parameter is constrained by the helper's
+  op-specific whitelist and is treated as a structural identifier
+  (threat-model R5).
 - Each op has a deadline. The helper enforces it via
   `context.WithTimeout` and `Cmd.Cancel`-then-`SIGKILL` 500 ms
   later. The op-side deadline is `(daemon's per-tool timeout) -

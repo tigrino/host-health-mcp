@@ -12,7 +12,9 @@ import (
 
 	"host-health-mcp/daemon/internal/daemon/helperinvoke"
 	"host-health-mcp/daemon/internal/daemon/redact"
+	"host-health-mcp/daemon/internal/daemon/tools"
 	"host-health-mcp/daemon/internal/shared/proto"
+	"host-health-mcp/daemon/internal/shared/schema"
 )
 
 // Request is the typed argument shape for tool logs.
@@ -126,18 +128,34 @@ func (r *Request) validate() error {
 	return nil
 }
 
+// AuditArgs surfaces the post-default request enum triple to the
+// audit log (REQ 6.5). Called by the httpserver after the same defaults
+// the tool would apply.
+func (*Tool) AuditArgs(body []byte) map[string]string {
+	var r Request
+	if len(body) > 0 {
+		_ = json.Unmarshal(body, &r)
+	}
+	r.applyDefaults()
+	return map[string]string{
+		"severity": r.Severity,
+		"window":   r.Window,
+		"source":   r.Source,
+	}
+}
+
 // Handle validates the request, calls the helper, applies the
 // redactor to every sample's message.
 func (t *Tool) Handle(ctx context.Context, body []byte) (any, []string, error) {
 	var req Request
 	if len(body) > 0 {
-		if err := json.Unmarshal(body, &req); err != nil {
-			return nil, nil, fmt.Errorf("logs: parse request: %w", err)
+		if err := schema.DecodeStrict(body, &req); err != nil {
+			return nil, nil, &tools.Error{Code: schema.ErrCodeBadArgument, Message: "logs: " + err.Error()}
 		}
 	}
 	req.applyDefaults()
 	if err := req.validate(); err != nil {
-		return nil, nil, err
+		return nil, nil, &tools.Error{Code: schema.ErrCodeBadArgument, Message: err.Error()}
 	}
 
 	param := fmt.Sprintf("severity=%s window=%s source=%s",
