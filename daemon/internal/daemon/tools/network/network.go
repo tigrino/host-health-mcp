@@ -1,7 +1,9 @@
 // Package network implements tool 4.3: interfaces, default routes,
 // nft table+counter view, resolver-as-configured, IPv6-policy
-// compliance. The daemon reads /sys/class/net and /proc/net/{route,
-// ipv6_route,dev} in its own process; nft counts come from helper op
+// compliance. The daemon reads /sys/class/net for interface metadata,
+// /proc/net/{route,ipv6_route} for default routes, and netlink
+// (via net.Interface.Addrs) for per-interface v4+v6 addresses, all
+// in its own process. Nft counts come from helper op
 // `nft_table_counts` and are absent (empty map) when nft itself is
 // not installed.
 package network
@@ -12,6 +14,7 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -166,11 +169,6 @@ func readInterfaces() ([]NetworkInterface, error) {
 	var out []NetworkInterface
 	for _, e := range entries {
 		name := e.Name()
-		// Skip the loopback - operators rarely need it in routine
-		// inspection and it carries no diagnostic value here.
-		if name == "lo" {
-			continue
-		}
 		dir := filepath.Join("/sys/class/net", name)
 		mac := readTrim(filepath.Join(dir, "address"))
 		mtuStr := readTrim(filepath.Join(dir, "mtu"))
@@ -190,38 +188,39 @@ func readInterfaces() ([]NetworkInterface, error) {
 	return out, nil
 }
 
-// readInterfaceAddrs returns the configured addresses on iface. Uses
-// /proc/net/if_inet6 for v6; for v4 we parse /proc/net/fib_trie (best-
-// effort) - sufficient for the routine inspection MVP.
-func readInterfaceAddrs(iface string) []InterfaceAddr {
-	var out []InterfaceAddr
-
-	// IPv6 from /proc/net/if_inet6: per line:
-	//   "<addr-hex> <ifindex> <prefixlen-hex> <scope-hex> <flags-hex> <iface>"
-	if b, err := os.ReadFile("/proc/net/if_inet6"); err == nil {
-		scanner := bufio.NewScanner(bytes.NewReader(b))
-		for scanner.Scan() {
-			fields := strings.Fields(scanner.Text())
-			if len(fields) != 6 || fields[5] != iface {
-				continue
-			}
-			if len(fields[0]) != 32 {
-				continue
-			}
-			b16, err := hex.DecodeString(fields[0])
-			if err != nil {
-				continue
-			}
-			var arr [16]byte
-			copy(arr[:], b16)
-			a := netip.AddrFrom16(arr)
-			plen, _ := strconv.ParseInt(fields[2], 16, 32)
-			out = append(out, InterfaceAddr{
-				Family: "inet6", Addr: a.String(), PrefixLen: int(plen),
-			})
-		}
+// readInterfaceAddrs returns the configured addresses on iface for
+// both v4 and v6. Uses net.Interface.Addrs() which is backed by
+// netlink RTM_GETADDR — read-only, no os/exec, and one code path
+// covers both families. Returns a non-nil empty slice when the
+// interface has no addresses so the JSON serialises as `[]` rather
+// than `null` (REQ 6.5 wire-shape contract).
+func readInterfaceAddrs(name string) []InterfaceAddr {
+	out := []InterfaceAddr{}
+	ifc, err := net.InterfaceByName(name)
+	if err != nil {
+		return out
 	}
-
+	addrs, err := ifc.Addrs()
+	if err != nil {
+		return out
+	}
+	for _, a := range addrs {
+		ipn, ok := a.(*net.IPNet)
+		if !ok {
+			continue
+		}
+		plen, _ := ipn.Mask.Size()
+		family := "inet"
+		ip := ipn.IP
+		if v4 := ip.To4(); v4 != nil {
+			ip = v4
+		} else {
+			family = "inet6"
+		}
+		out = append(out, InterfaceAddr{
+			Family: family, Addr: ip.String(), PrefixLen: plen,
+		})
+	}
 	return out
 }
 

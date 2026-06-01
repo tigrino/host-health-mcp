@@ -53,8 +53,10 @@ Cache TTL default: 15 s. Timeout default: 3 s.
 Interfaces, default routes, nft table+counter view, resolver,
 IPv6-policy compliance.
 
-  - Interfaces from `/sys/class/net`; IPv6 addresses from
-    `/proc/net/if_inet6`.
+  - Interface metadata from `/sys/class/net`; per-interface IPv4
+    and IPv6 addresses via netlink (`RTM_GETADDR`). The loopback
+    interface is included so callers see `lo`'s `127.0.0.1/8` and
+    `::1/128`.
   - Default routes from `/proc/net/route` and
     `/proc/net/ipv6_route`.
   - `nft_table_counts` populated via the helper's `nft_table_counts`

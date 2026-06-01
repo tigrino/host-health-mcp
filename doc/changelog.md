@@ -3,6 +3,19 @@ title: Host Health MCP - Changelog
 author: Albert 'Tigr' Zenkoff <albert@tigr.net>
 ---
 
+# 1.17.1 (2026-06-01)
+
+- **`network` tool now returns populated `addrs[]` per interface.**
+  The pre-1.17.1 implementation parsed `/proc/net/if_inet6` for IPv6
+  only and never wired up IPv4 — every interface across the fleet
+  reported `addrs: null`. Replaced with `net.Interface.Addrs()`
+  (netlink `RTM_GETADDR`) which covers both families in one pass and
+  returns `[]` rather than `null` when an interface has no addresses.
+- **Loopback interface (`lo`) now included** in
+  `network.interfaces[]`. The pre-1.17.1 skip was unmotivated; `lo`
+  carries diagnostic value (confirms host-local addressing) and the
+  fleet manager expects to see it.
+
 # 1.17.0 — security audit follow-up (2026-05-28)
 
 Closes the 18 findings recorded in `doc/security-audit-2026-05-24.md`.
