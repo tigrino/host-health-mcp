@@ -48,19 +48,20 @@ type BucketLimit struct {
 
 // Manifest is the typed shape of /etc/host-health-mcp/manifest.yml.
 type Manifest struct {
-	EnabledTools           []string `yaml:"enabled_tools"`
-	WhitelistedUnits       []string `yaml:"whitelisted_units"`
-	WorkloadPlugins        []string `yaml:"workload_plugins"`
-	CertPaths              []string `yaml:"cert_paths"`
-	CertRenewalUnits       []string `yaml:"cert_renewal_units"`
-	BackupLogPath          string   `yaml:"backup_log_path"`
-	BackupBackend          string   `yaml:"backup_backend"`
-	BackupStatePath        string   `yaml:"backup_state_path"`
-	DebsumsLogPath         string   `yaml:"debsums_log_path"`
-	AideLogPath            string   `yaml:"aide_log_path"`
-	IPv6Policy             string   `yaml:"ipv6_policy"`
-	BtrfsMountpoints       []string `yaml:"btrfs_mountpoints"`
-	Firewall               Firewall `yaml:"firewall"`
+	EnabledTools           []string                     `yaml:"enabled_tools"`
+	WhitelistedUnits       []string                     `yaml:"whitelisted_units"`
+	WorkloadPlugins        []string                     `yaml:"workload_plugins"`
+	WorkloadPluginConfig   map[string]map[string]string `yaml:"workload_plugin_config"`
+	CertPaths              []string                     `yaml:"cert_paths"`
+	CertRenewalUnits       []string                     `yaml:"cert_renewal_units"`
+	BackupLogPath          string                       `yaml:"backup_log_path"`
+	BackupBackend          string                       `yaml:"backup_backend"`
+	BackupStatePath        string                       `yaml:"backup_state_path"`
+	DebsumsLogPath         string                       `yaml:"debsums_log_path"`
+	AideLogPath            string                       `yaml:"aide_log_path"`
+	IPv6Policy             string                       `yaml:"ipv6_policy"`
+	BtrfsMountpoints       []string                     `yaml:"btrfs_mountpoints"`
+	Firewall               Firewall                     `yaml:"firewall"`
 }
 
 // Firewall is the manifest's host_firewall block. Empty (zero-value)
@@ -107,6 +108,42 @@ func LoadManifest(path string) (Manifest, error) {
 		return cfg, err
 	}
 	return cfg, nil
+}
+
+// knownWorkloadPluginKeys enumerates the per-plugin config keys
+// recognised by each compile-time workload plugin. Plugins absent
+// from this map accept no keys today; an entry with an empty map
+// means the plugin is known but accepts no keys. Used by
+// CheckWorkloadPluginConfig to surface operator typos at startup
+// without making them fatal (a strict yaml decode would not catch
+// these because the outer schema is map[string]map[string]string).
+var knownWorkloadPluginKeys = map[string]map[string]bool{
+	"nginx_apache": {"access_log_summary_path": true},
+	"wireguard":    {},
+	"postfix":      {},
+	"dovecot":      {},
+}
+
+// CheckWorkloadPluginConfig returns one warning per unrecognised key
+// in WorkloadPluginConfig. Plugin names not listed in the known
+// table are silently allowed (a plugin may be compiled in but not
+// yet have a key registered here); only known plugins' key sets are
+// enforced. The caller logs the returned warnings — the function
+// itself has no side effects.
+func (m Manifest) CheckWorkloadPluginConfig() []string {
+	var warnings []string
+	for plugin, kv := range m.WorkloadPluginConfig {
+		allowed, known := knownWorkloadPluginKeys[plugin]
+		if !known {
+			continue
+		}
+		for k := range kv {
+			if !allowed[k] {
+				warnings = append(warnings, fmt.Sprintf("manifest: workload_plugin_config.%s: unknown key %q — ignored", plugin, k))
+			}
+		}
+	}
+	return warnings
 }
 
 func defaultDaemon() Daemon {

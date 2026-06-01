@@ -16,16 +16,18 @@ type Data map[string]any
 type Tool struct {
 	hc      *helperinvoke.Client
 	enabled []string // names from manifest.yml workload_plugins[]
+	cfg     map[string]map[string]string
 }
 
 // New returns a new tool instance. enabled is the manifest-declared
 // plugin set; only plugins both compiled-in AND in this list are
-// invoked.
-func New(hc *helperinvoke.Client, enabled []string) *Tool {
+// invoked. cfg maps plugin name to that plugin's manifest-supplied
+// configuration; plugins not present in cfg receive a nil/empty map.
+func New(hc *helperinvoke.Client, enabled []string, cfg map[string]map[string]string) *Tool {
 	e := make([]string, len(enabled))
 	copy(e, enabled)
 	sort.Strings(e)
-	return &Tool{hc: hc, enabled: e}
+	return &Tool{hc: hc, enabled: e, cfg: cfg}
 }
 
 // Name returns the tool name.
@@ -56,10 +58,14 @@ func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 			warnings = append(warnings, "workload: plugin not compiled in: "+name)
 			continue
 		}
-		result, err := p.Collect(ctx, t.hc)
+		pcfg := t.cfg[name]
+		result, pwarns, err := p.Collect(ctx, t.hc, pcfg)
 		if err != nil {
 			warnings = append(warnings, "workload: "+name+": "+err.Error())
 			continue
+		}
+		for _, w := range pwarns {
+			warnings = append(warnings, "workload: "+name+": "+w)
 		}
 		d[name] = result
 	}

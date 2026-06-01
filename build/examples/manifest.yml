@@ -34,6 +34,12 @@ whitelisted_units:
 # a plugin here that is not compiled in is a startup error (REQ 8.2).
 workload_plugins: []
 
+# Per-plugin configuration. Only the keys recognised by each plugin
+# are consumed; unknown keys produce a startup warning.
+# workload_plugin_config:
+#   nginx_apache:
+#     access_log_summary_path: /var/log/nginx/health-summary.json
+
 # Tool 4.6 - certificate paths and their renewal units.
 cert_paths: []
 cert_renewal_units: []

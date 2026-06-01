@@ -943,7 +943,7 @@ components:
       required: [server, worker_count, recent_4xx, recent_5xx]
       additionalProperties: false
       properties:
-        server:        { type: string, enum: [nginx, apache] }
+        server:        { type: string, enum: [nginx, apache, none] }
         worker_count:  { type: integer, minimum: 0 }
         recent_4xx:    { type: integer, minimum: 0 }
         recent_5xx:    { type: integer, minimum: 0 }

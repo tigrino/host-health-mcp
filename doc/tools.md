@@ -149,10 +149,42 @@ cause the daemon to refuse to start (REQ 8.2).
   - `wireguard`: delegates to the helper's `wireguard_show` op.
     The helper strips private and preshared keys before any byte
     crosses to the daemon (design §7.3.1).
-  - `postfix`: wraps the `postqueue` op for queue depth.
-  - `dovecot`, `nginx_apache`: registered placeholders today;
-    `Collect` returns "not yet implemented" until the operator-
-    facing data sources are pinned.
+  - `postfix`: wraps the `postqueue` op. Reports both `queue_depth`
+    (from the `postqueue -p` trailer summary) and `deferred_count`
+    (from per-message header lines whose queue-id indicator suffix
+    is neither `*` for active nor `!` for hold). Envelope addresses
+    and queue identifiers are not retained on either side of the
+    socket.
+  - `dovecot`: delegates to the helper's `dovecot_status` op.
+    `process_state` derives from `systemctl is-active
+    dovecot.service` and is one of `active`, `inactive`, `failed`,
+    `activating`, `deactivating`, `unknown`, or the synthetic
+    `not_installed` when the unit cannot be found.
+    `connection_count` is a line count of `doveadm who -1`; per-
+    session columns (username, remote address) are not retained.
+  - `nginx_apache`: delegates to the helper's `nginx_apache_status`
+    op. `server` is `nginx`, `apache`, or `none`. `worker_count`
+    is derived from `/proc/<pid>/comm` counts using the master-
+    minus-one heuristic (a known limitation: edge cases with
+    multiple master-like processes round low). `recent_4xx` /
+    `recent_5xx` come from an operator-supplied bounded summary
+    JSON file whose path is read from
+    `manifest.workload_plugin_config.nginx_apache.access_log_summary_path`;
+    the daemon never reads raw access logs (REQ 6.2). When the
+    path is absent or the file cannot be read, the counts default
+    to zero.
+
+`workload_plugin_config` is a top-level manifest map keyed by
+plugin name; the value is a string-to-string map specific to that
+plugin. Today only `nginx_apache` consumes a config:
+
+```yaml
+workload_plugin_config:
+  nginx_apache:
+    access_log_summary_path: /var/log/nginx/health-summary.json
+```
+
+The summary file format is documented in `doc/install.md`.
 
 Cache TTL default: 30 s. Timeout default: 5 s.
 

@@ -3,6 +3,89 @@ title: Host Health MCP - Changelog
 author: Albert 'Tigr' Zenkoff <albert@tigr.net>
 ---
 
+# 1.18.0 — workload plugins fleshed out + small fixes (2026-06-01)
+
+## Workload plugins
+
+- **#108 — postfix `deferred_count` now populated.** The helper's
+  `postqueue` op parses per-message header lines from `postqueue -p`
+  alongside the existing trailer-derived `queue_depth`. The
+  `*`-suffixed (active) and `!`-suffixed (hold) entries are excluded;
+  un-suffixed entries are counted as deferred. Envelope addresses and
+  queue identifiers are still not retained — only the suffix and
+  size-column position are read.
+- **#109 — dovecot workload fully implemented.** New helper op
+  `dovecot_status`: derives `process_state` from `systemctl is-active
+  dovecot.service` (mapping the recognised systemd tokens, plus a
+  synthetic `not_installed` when the unit cannot be found) and
+  `connection_count` from a line count of `doveadm who -1`. No
+  per-session columns (username, remote address) leave the helper.
+- **#110 — nginx/apache workload fully implemented.** New helper op
+  `nginx_apache_status`: scans `/proc/<pid>/comm` for `nginx` or
+  `apache2`/`httpd`, returns worker count via the master-minus-one
+  heuristic, and reads recent 4xx/5xx counts from an operator-supplied
+  bounded summary JSON file (path comes from
+  `manifest.workload_plugin_config.nginx_apache.access_log_summary_path`).
+  The daemon never reads raw access logs (REQ 6.2). The schema's
+  `server` enum gains `none` for the no-process-found case.
+
+## Fixes
+
+- **#111 — mdraid `sync_progress_pct` fallback.** When mdadm's
+  `--detail --export` form omits `MD_RESYNC_PCT` (older mdadm
+  versions), the helper now reads `/proc/mdstat` for the array's
+  recovery/resync progress line and extracts the percentage. The
+  previous behaviour reported `0.0` for any non-idle action,
+  regardless of actual progress.
+- **#112 — `NftTable` comment in `daemon/internal/daemon/tools/network/network.go`.**
+  Replaced a stale "hit_counters is always empty today" comment that
+  has not been accurate since `nft_table_counts` shipped.
+
+## Rectification
+
+Pre-tag review (#113) closed the following deficiencies on top of the
+1.18.0 work above.
+
+- **D1 / D7 / D8 — `Plugin.Collect` returns warnings.** The workload
+  plugin interface signature gains a `warnings []string` return next
+  to `(data any, err error)`. The orchestrator merges plugin
+  warnings into the tool-level envelope prefixed with `workload:
+  <plugin>: `. `postfix` emits its deferred-greater-than-depth clamp
+  as a structured warning instead of `log.Printf`; `nginx_apache`
+  surfaces the helper's existing `warning` field (previously
+  discarded); `dovecot` carries a new helper-side warning that fires
+  when `doveadm who` fails but systemd reports the unit active
+  (zero-count is no longer indistinguishable from a real idle
+  server). The helper-side `warning` field is stripped from the
+  caller-facing data map (schema is `additionalProperties: false`).
+- **D2 — proper mdraid fallback test.** `MdraidDetail` is refactored
+  to expose a pure `mdraidDetailFromExport(name, stdout)` helper.
+  The new tests in `mdraid_test.go` cover the trigger condition
+  (synthetic `--export` without `MD_RESYNC_PCT` plus a non-idle
+  `MD_RESYNC_ACTION` consults the `mdstatPathForTest`-controlled
+  fixture) and the no-fallback paths.
+- **D3 — gofmt `mdraid.go`.** Single-file format pass.
+- **D4 — `summary_window_minutes` removed from docs.** The key was
+  documented but unused. `doc/install.md` and `doc/tools.md` lose
+  the references; the cron snippet's operator-side `WIN` variable
+  remains.
+- **D5 — dead fields removed from `accessLogSummary`.** The struct
+  decodes only `count_4xx` / `count_5xx`. `encoding/json` continues
+  to ignore unknown keys (`generated_at`, `window_minutes`) the
+  operator-side tooling writes.
+- **D6 — example manifest gains `workload_plugin_config`.** A
+  commented block under `workload_plugins:` shows the
+  `nginx_apache.access_log_summary_path` shape.
+- **D9 — tighten dovecot header detection.** `parseDoveadmWho` now
+  requires both `username` and `#` as the first two whitespace-
+  delimited tokens before treating a line as a header. A user
+  literally named `username` is no longer dropped.
+- **D10 — warn on unknown `workload_plugin_config` keys.**
+  `Manifest.CheckWorkloadPluginConfig` walks the post-decode map
+  against a known-key table and returns one warning string per
+  unrecognised key on a known plugin. The daemon's `main` logs
+  these at startup; not fatal.
+
 # 1.17.1 (2026-06-01)
 
 - **`network` tool now returns populated `addrs[]` per interface.**

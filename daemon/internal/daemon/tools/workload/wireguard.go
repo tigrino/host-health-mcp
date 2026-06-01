@@ -21,10 +21,10 @@ type wireguardPlugin struct{}
 
 func (*wireguardPlugin) Name() string { return "wireguard" }
 
-func (*wireguardPlugin) Collect(ctx context.Context, hc *helperinvoke.Client) (any, error) {
+func (*wireguardPlugin) Collect(ctx context.Context, hc *helperinvoke.Client, _ map[string]string) (any, []string, error) {
 	var result map[string]any
 	if err := hc.CallJSON(ctx, proto.OpWireguardShow, "", &result); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return result, nil
+	return result, nil, nil
 }

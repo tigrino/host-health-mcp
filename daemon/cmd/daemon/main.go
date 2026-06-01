@@ -74,6 +74,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("daemon: manifest: %v", err)
 	}
+	for _, w := range manifestCfg.CheckWorkloadPluginConfig() {
+		log.Printf("daemon: %s", w)
+	}
 
 	host, err := os.Hostname()
 	if err != nil {
@@ -139,7 +142,7 @@ func main() {
 			log.Fatalf("daemon: manifest references workload plugin %q not compiled in (REQ 8.2). compiled-in set: %v", n, workload.CompiledIn())
 		}
 	}
-	reg.Register(workload.New(hc, manifestCfg.WorkloadPlugins))
+	reg.Register(workload.New(hc, manifestCfg.WorkloadPlugins, manifestCfg.WorkloadPluginConfig))
 
 	// Resolve manifest.enabled_tools against the compiled-in registry
 	// (REQ 8.2). The `manifest` tool itself is always reachable so

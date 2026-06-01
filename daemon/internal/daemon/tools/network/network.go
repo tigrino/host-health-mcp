@@ -63,8 +63,10 @@ type DefaultRoute struct {
 	Metric  int    `json:"metric"`
 }
 
-// NftTable mirrors the schema's per-table block. hit_counters is
-// always empty today; a follow-up helper op fills it.
+// NftTable mirrors the schema's per-table block. HitCounters is
+// populated by the helper's nft_table_counts op from the in-table
+// named counters; empty when the table has no named counters or
+// when nft is not installed.
 type NftTable struct {
 	RuleCount   int          `json:"rule_count"`
 	HitCounters []NftCounter `json:"hit_counters,omitempty"`

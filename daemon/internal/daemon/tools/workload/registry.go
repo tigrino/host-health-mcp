@@ -20,8 +20,14 @@ type Plugin interface {
 
 	// Collect produces the plugin's typed result. The helperinvoke
 	// client is passed in so plugins that need privileged data can
-	// reach the helper without owning their own client.
-	Collect(ctx context.Context, hc *helperinvoke.Client) (any, error)
+	// reach the helper without owning their own client. cfg is the
+	// plugin's slice of manifest.workload_plugin_config keyed by
+	// plugin Name(); empty when the operator did not configure this
+	// plugin. Plugin-level warnings (non-fatal partial-data
+	// conditions) are returned in the warnings slice; the
+	// orchestrator prefixes each entry and merges into the tool-
+	// level warnings envelope.
+	Collect(ctx context.Context, hc *helperinvoke.Client, cfg map[string]string) (data any, warnings []string, err error)
 }
 
 var (

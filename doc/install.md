@@ -165,6 +165,10 @@ operationally significant fields:
     is permitted to report on. The caller cannot supply unit names.
   - `workload_plugins` — must intersect the build's
     `WORKLOAD_TAGS=` set (default ships all four named plugins).
+  - `workload_plugin_config` — a string-to-(string-to-string) map
+    keyed by plugin name, carrying plugin-specific configuration.
+    Today only the `nginx_apache` plugin consumes a config (see
+    section 3.4 below).
   - `btrfs_mountpoints` — paths the helper's `btrfs_scrub` op may
     operate against. The helper also verifies via `statfs(2)` that
     each path is a btrfs filesystem (BTRFS_SUPER_MAGIC) before
@@ -182,6 +186,79 @@ Tiny by design:
   - `socket_path` — must match the daemon's `helper_socket_path`.
   - `op_deadline_ms` — per-op overrides if the defaults are tight on
     a particular host.
+
+## 3.4 `nginx_apache` access-log summary file
+
+The `nginx_apache` workload plugin reports `recent_4xx` /
+`recent_5xx` counts derived from an operator-supplied summary file.
+The daemon never reads raw access logs (REQ 6.2). The operator runs
+a logrotate `postrotate` hook or a periodic cron job that
+summarises the access log and writes a single JSON document at
+`workload_plugin_config.nginx_apache.access_log_summary_path`.
+
+File format:
+
+```json
+{
+  "generated_at": "2026-06-01T12:00:00Z",
+  "window_minutes": 60,
+  "count_4xx": 12,
+  "count_5xx": 3
+}
+```
+
+Fields:
+
+  - `generated_at` — RFC 3339 timestamp; informational, not
+    consumed by the daemon.
+  - `window_minutes` — observation window the counts cover;
+    informational. Operator-side concern only.
+  - `count_4xx`, `count_5xx` — non-negative integers. Negative
+    values cause the helper to mark the read as failed (warning
+    emitted; counts default to zero).
+
+Example cron snippet (run every minute, summarise the prior 60):
+
+```
+* * * * * root /usr/local/sbin/access-log-summary \
+    /var/log/nginx/access.log 60 \
+    > /var/log/nginx/health-summary.json.tmp \
+    && mv /var/log/nginx/health-summary.json.tmp \
+          /var/log/nginx/health-summary.json
+```
+
+Equivalent logrotate `postrotate` snippet:
+
+```
+postrotate
+    /usr/local/sbin/access-log-summary \
+        /var/log/nginx/access.log.1 60 \
+        > /var/log/nginx/health-summary.json.tmp \
+        && mv /var/log/nginx/health-summary.json.tmp \
+              /var/log/nginx/health-summary.json
+endscript
+```
+
+The `access-log-summary` helper is operator-supplied. A minimal
+awk implementation:
+
+```
+#!/bin/sh
+LOG=$1
+WIN=$2
+NOW=$(date -u +%FT%TZ)
+awk -v win="$WIN" '
+    BEGIN { c4=0; c5=0 }
+    { code=$9; if (code ~ /^4/) c4++; else if (code ~ /^5/) c5++ }
+    END {
+      printf "{\"generated_at\":\"%s\",\"window_minutes\":%d,\"count_4xx\":%d,\"count_5xx\":%d}\n",
+             ENVIRON["NOW"], win, c4, c5
+    }
+' NOW="$NOW" "$LOG"
+```
+
+Adapt the field index to the configured `log_format`; the example
+above assumes Combined Log Format with the status code at field 9.
 
 # 4. Capability templating
 

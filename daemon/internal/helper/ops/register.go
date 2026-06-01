@@ -34,4 +34,6 @@ func RegisterAll(r *dispatch.Registry) {
 	r.Register(proto.OpUnattendedUpgradesStatus, UnattendedUpgradesStatus)
 	r.Register(proto.OpFirewallInspect, FirewallInspect)
 	r.Register(proto.OpFirewallLookup, FirewallLookup)
+	r.Register(proto.OpDovecotStatus, DovecotStatus)
+	r.Register(proto.OpNginxApacheStatus, NginxApacheStatus)
 }

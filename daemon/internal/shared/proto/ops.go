@@ -26,6 +26,8 @@ const (
 	OpUnattendedUpgradesStatus  = "unattended_upgrades_status"
 	OpFirewallInspect           = "firewall_inspect"
 	OpFirewallLookup            = "firewall_lookup"
+	OpDovecotStatus             = "dovecot_status"
+	OpNginxApacheStatus         = "nginx_apache_status"
 )
 
 // AllOps lists every op token in a stable order. Used by the helper to
@@ -53,6 +55,8 @@ var AllOps = []string{
 	OpUnattendedUpgradesStatus,
 	OpFirewallInspect,
 	OpFirewallLookup,
+	OpDovecotStatus,
+	OpNginxApacheStatus,
 }
 
 // IsKnownOp reports whether op is one of the recognised tokens.
