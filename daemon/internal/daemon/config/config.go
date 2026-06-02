@@ -118,7 +118,11 @@ func LoadManifest(path string) (Manifest, error) {
 // without making them fatal (a strict yaml decode would not catch
 // these because the outer schema is map[string]map[string]string).
 var knownWorkloadPluginKeys = map[string]map[string]bool{
-	"nginx_apache": {"access_log_summary_path": true},
+	"nginx_apache": {
+		"access_log_path":           true,
+		"access_log_window_minutes": true,
+		"access_log_tail_bytes":     true,
+	},
 	"wireguard":    {},
 	"postfix":      {},
 	"dovecot":      {},

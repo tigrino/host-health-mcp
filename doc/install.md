@@ -187,78 +187,40 @@ Tiny by design:
   - `op_deadline_ms` — per-op overrides if the defaults are tight on
     a particular host.
 
-## 3.4 `nginx_apache` access-log summary file
+## 3.4 `nginx_apache` workload plugin
 
-The `nginx_apache` workload plugin reports `recent_4xx` /
-`recent_5xx` counts derived from an operator-supplied summary file.
-The daemon never reads raw access logs (REQ 6.2). The operator runs
-a logrotate `postrotate` hook or a periodic cron job that
-summarises the access log and writes a single JSON document at
-`workload_plugin_config.nginx_apache.access_log_summary_path`.
+The plugin reads the access log directly via a bounded tail-read
+(default 256 KiB). No operator scripting is required — point
+`access_log_path` at the existing access log file and the helper
+does the rest.
 
-File format:
+`manifest.yml`:
 
-```json
-{
-  "generated_at": "2026-06-01T12:00:00Z",
-  "window_minutes": 60,
-  "count_4xx": 12,
-  "count_5xx": 3
-}
+```yaml
+workload_plugin_config:
+  nginx_apache:
+    access_log_path: /var/log/nginx/access.log
+    # optional knobs:
+    # access_log_window_minutes: 60   (default; 1..1440)
+    # access_log_tail_bytes: 262144   (default 256 KiB; max 4 MiB)
 ```
 
-Fields:
+The access log must be in combined or common log format
+(timestamp in `[DD/Mon/YYYY:HH:MM:SS +ZZZZ]` form, status code
+following the quoted request field). Custom `log_format` values
+that omit one or both will cause `recent_4xx` / `recent_5xx` to
+come back null with `recent_coverage="unavailable"` and a plugin
+warning.
 
-  - `generated_at` — RFC 3339 timestamp; informational, not
-    consumed by the daemon.
-  - `window_minutes` — observation window the counts cover;
-    informational. Operator-side concern only.
-  - `count_4xx`, `count_5xx` — non-negative integers. Negative
-    values cause the helper to mark the read as failed (warning
-    emitted; counts default to zero).
+If `access_log_path` is unset or unreadable, `recent_4xx` and
+`recent_5xx` are null (NOT zero), `recent_coverage` is
+`"unavailable"`, and the response carries an envelope warning. A
+null value means "can't measure", not "no errors" — fleet sweeps
+should treat the two cases distinctly.
 
-Example cron snippet (run every minute, summarise the prior 60):
-
-```
-* * * * * root /usr/local/sbin/access-log-summary \
-    /var/log/nginx/access.log 60 \
-    > /var/log/nginx/health-summary.json.tmp \
-    && mv /var/log/nginx/health-summary.json.tmp \
-          /var/log/nginx/health-summary.json
-```
-
-Equivalent logrotate `postrotate` snippet:
-
-```
-postrotate
-    /usr/local/sbin/access-log-summary \
-        /var/log/nginx/access.log.1 60 \
-        > /var/log/nginx/health-summary.json.tmp \
-        && mv /var/log/nginx/health-summary.json.tmp \
-              /var/log/nginx/health-summary.json
-endscript
-```
-
-The `access-log-summary` helper is operator-supplied. A minimal
-awk implementation:
-
-```
-#!/bin/sh
-LOG=$1
-WIN=$2
-NOW=$(date -u +%FT%TZ)
-awk -v win="$WIN" '
-    BEGIN { c4=0; c5=0 }
-    { code=$9; if (code ~ /^4/) c4++; else if (code ~ /^5/) c5++ }
-    END {
-      printf "{\"generated_at\":\"%s\",\"window_minutes\":%d,\"count_4xx\":%d,\"count_5xx\":%d}\n",
-             ENVIRON["NOW"], win, c4, c5
-    }
-' NOW="$NOW" "$LOG"
-```
-
-Adapt the field index to the configured `log_format`; the example
-above assumes Combined Log Format with the status code at field 9.
+The helper parses the tail inside its own process and returns
+typed integer counts to the daemon. Raw log bytes never cross the
+helper-to-daemon socket boundary (REQ 6.2).
 
 # 4. Capability templating
 

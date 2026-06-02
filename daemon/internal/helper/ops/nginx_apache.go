@@ -1,36 +1,59 @@
 package ops
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
+// NginxApacheStatusParam is the typed parameter for op
+// nginx_apache_status. The daemon-side plugin marshals this from
+// manifest.workload_plugin_config.nginx_apache before invoking the
+// helper.
+type NginxApacheStatusParam struct {
+	AccessLogPath      string `json:"access_log_path"`
+	AccessLogWindowMin int    `json:"access_log_window_minutes"`
+	AccessLogTailBytes int    `json:"access_log_tail_bytes"`
+}
+
 // NginxApacheStatusResult is the typed result for op
-// nginx_apache_status. Worker count comes from /proc, the recent
-// 4xx/5xx counts from an operator-supplied bounded summary JSON
-// file (REQ 6.2 — the daemon never reads raw access logs).
+// nginx_apache_status. Recent4xx / Recent5xx are *int so JSON null is
+// distinct from a measured zero on the wire (1.19.0+).
 type NginxApacheStatusResult struct {
-	Server      string `json:"server"`
-	WorkerCount int    `json:"worker_count"`
-	Recent4xx   int    `json:"recent_4xx"`
-	Recent5xx   int    `json:"recent_5xx"`
-	Warning     string `json:"warning,omitempty"`
+	Server              string `json:"server"`
+	WorkerCount         int    `json:"worker_count"`
+	Recent4xx           *int   `json:"recent_4xx"`
+	Recent5xx           *int   `json:"recent_5xx"`
+	RecentWindowMinutes int    `json:"recent_window_minutes"`
+	RecentCoverage      string `json:"recent_coverage"`
+	Warning             string `json:"warning,omitempty"`
 }
 
 // procRootForTest lets the test fixture point /proc at a temporary
 // tree. The empty-string default means real /proc.
 var procRootForTest = ""
 
+const (
+	defaultAccessLogWindowMin = 60
+	defaultAccessLogTailBytes = 256 * 1024
+	maxAccessLogTailBytes     = 4 * 1024 * 1024
+	maxAccessLogLineBytes     = 64 * 1024
+)
+
 // NginxApacheStatus produces the workload-nginx-apache typed result.
-// Parameter is the access-log summary path; empty means counts
-// default to zero. Server detection scans /proc/*/comm; the
-// minus-one heuristic for worker count is documented inline as a
-// known limitation that suffices for 1.18.0.
+// Server detection scans /proc/<pid>/comm. Recent 4xx / 5xx counts
+// come from a bounded tail-read of the configured access log; the
+// helper parses combined/common log format inside its own process
+// so raw log bytes never cross the helper-to-daemon socket boundary
+// (REQ 6.2).
 func NginxApacheStatus(ctx context.Context, param string) (any, error) {
 	root := procRootForTest
 	if root == "" {
@@ -49,16 +72,240 @@ func NginxApacheStatus(ctx context.Context, param string) (any, error) {
 		out.WorkerCount = 0
 	}
 
+	var p NginxApacheStatusParam
 	if param != "" {
-		x4, x5, err := readAccessLogSummary(param)
-		if err != nil {
-			out.Warning = "summary: " + err.Error()
+		if err := json.Unmarshal([]byte(param), &p); err != nil {
+			out.RecentCoverage = "unavailable"
+			out.Warning = "param: " + err.Error()
+			return out, nil
+		}
+	}
+	if p.AccessLogWindowMin == 0 {
+		p.AccessLogWindowMin = defaultAccessLogWindowMin
+	}
+	if p.AccessLogTailBytes == 0 {
+		p.AccessLogTailBytes = defaultAccessLogTailBytes
+	}
+	var capWarning string
+	if p.AccessLogTailBytes > maxAccessLogTailBytes {
+		capWarning = fmt.Sprintf("access_log_tail_bytes capped: requested %d, using %d", p.AccessLogTailBytes, maxAccessLogTailBytes)
+		p.AccessLogTailBytes = maxAccessLogTailBytes
+	}
+
+	if server == "none" {
+		out.RecentCoverage = "unavailable"
+		out.Warning = "no nginx/apache process detected"
+		return out, nil
+	}
+	if p.AccessLogPath == "" {
+		out.RecentCoverage = "unavailable"
+		out.Warning = "access_log_path not configured"
+		return out, nil
+	}
+
+	tail, statErr := readAccessLogTail(p.AccessLogPath, p.AccessLogTailBytes)
+	if statErr != nil {
+		out.RecentCoverage = "unavailable"
+		out.Warning = "access_log_path: " + statErr.Error()
+		if capWarning != "" {
+			out.Warning = capWarning + "; " + out.Warning
+		}
+		return out, nil
+	}
+
+	now := time.Now()
+	window := time.Duration(p.AccessLogWindowMin) * time.Minute
+	r4, r5, oldest, anyParsed := parseAccessLogTail(tail, now, window)
+
+	switch {
+	case !anyParsed:
+		out.Recent4xx = nil
+		out.Recent5xx = nil
+		out.RecentCoverage = "unavailable"
+		out.RecentWindowMinutes = 0
+		out.Warning = "no parseable timestamps in tail"
+	case !oldest.After(now.Add(-window)):
+		out.Recent4xx = r4
+		out.Recent5xx = r5
+		out.RecentCoverage = "full"
+		out.RecentWindowMinutes = p.AccessLogWindowMin
+	default:
+		out.Recent4xx = r4
+		out.Recent5xx = r5
+		out.RecentCoverage = "partial"
+		mins := int(now.Sub(oldest).Minutes())
+		if mins < 0 {
+			mins = 0
+		}
+		out.RecentWindowMinutes = mins
+	}
+
+	if capWarning != "" {
+		if out.Warning == "" {
+			out.Warning = capWarning
 		} else {
-			out.Recent4xx = x4
-			out.Recent5xx = x5
+			out.Warning = capWarning + "; " + out.Warning
 		}
 	}
 	return out, nil
+}
+
+// readAccessLogTail opens path, seeks to max(0, size-tailBytes), and
+// returns up to tailBytes of trailing content. When the seek skipped
+// past the start of the file, the first (necessarily partial) line is
+// discarded so the caller sees only well-formed lines.
+func readAccessLogTail(path string, tailBytes int) ([]byte, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, errors.New("not a regular file")
+	}
+	size := info.Size()
+	if size == 0 {
+		return nil, nil
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	var (
+		off       int64
+		truncated bool
+	)
+	if int64(tailBytes) < size {
+		off = size - int64(tailBytes)
+		truncated = true
+	}
+	if off > 0 {
+		if _, err := f.Seek(off, io.SeekStart); err != nil {
+			return nil, err
+		}
+	}
+	buf := make([]byte, tailBytes)
+	n, err := io.ReadFull(f, buf)
+	if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
+		return nil, err
+	}
+	buf = buf[:n]
+	if truncated {
+		if i := bytes.IndexByte(buf, '\n'); i >= 0 {
+			buf = buf[i+1:]
+		} else {
+			// Whole tail is one (likely partial) line - discard.
+			return nil, nil
+		}
+	}
+	return buf, nil
+}
+
+// parseAccessLogTail walks tail line-by-line, extracting the bracketed
+// timestamp and the HTTP status code in combined/common log format,
+// and counts 4xx / 5xx within [now-window, now]. The fourth return is
+// the oldest successfully parsed timestamp across every line whose
+// timestamp parsed cleanly (whether or not the status bucketed) and
+// anyParsed reports whether any timestamp parsed at all. The caller
+// uses oldest + anyParsed to classify the coverage as full / partial
+// / unavailable.
+func parseAccessLogTail(tail []byte, now time.Time, window time.Duration) (recent4xx, recent5xx *int, oldestParsed time.Time, anyParsed bool) {
+	if len(tail) == 0 {
+		return nil, nil, time.Time{}, false
+	}
+	cutoff := now.Add(-window)
+	var c4, c5 int
+
+	scanner := bufio.NewScanner(bytes.NewReader(tail))
+	scanner.Buffer(make([]byte, maxAccessLogLineBytes), maxAccessLogLineBytes)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		ts, ok := extractLogTimestamp(line)
+		if !ok {
+			continue
+		}
+		if !anyParsed || ts.Before(oldestParsed) {
+			oldestParsed = ts
+			anyParsed = true
+		}
+		if ts.Before(cutoff) {
+			continue
+		}
+		code, ok := extractLogStatus(line)
+		if !ok {
+			continue
+		}
+		switch {
+		case code >= 400 && code < 500:
+			c4++
+		case code >= 500 && code < 600:
+			c5++
+		}
+	}
+	// bufio.Scanner returns bufio.ErrTooLong for over-long lines and
+	// io errors for malformed reads; counts gathered before the failure
+	// are still valid, so the err is intentionally ignored.
+	_ = scanner.Err()
+	if !anyParsed {
+		return nil, nil, time.Time{}, false
+	}
+	return &c4, &c5, oldestParsed, true
+}
+
+// extractLogTimestamp finds the first `[...]` pair on the line and
+// parses its contents in combined/common log format. Returns (zero,
+// false) if no bracket pair is found or the contents do not parse.
+func extractLogTimestamp(line []byte) (time.Time, bool) {
+	lb := bytes.IndexByte(line, '[')
+	if lb < 0 {
+		return time.Time{}, false
+	}
+	rest := line[lb+1:]
+	rb := bytes.IndexByte(rest, ']')
+	if rb < 0 {
+		return time.Time{}, false
+	}
+	ts, err := time.Parse("02/Jan/2006:15:04:05 -0700", string(rest[:rb]))
+	if err != nil {
+		return time.Time{}, false
+	}
+	return ts, true
+}
+
+// extractLogStatus finds the first ` NNN ` triple following a `"`
+// (the closing quote of the request field in combined/common log
+// format), returns the integer status. Returns (0, false) if the
+// pattern is not present.
+func extractLogStatus(line []byte) (int, bool) {
+	q := bytes.IndexByte(line, '"')
+	if q < 0 {
+		return 0, false
+	}
+	rest := line[q+1:]
+	q2 := bytes.IndexByte(rest, '"')
+	if q2 < 0 {
+		return 0, false
+	}
+	after := rest[q2+1:]
+	// Skip exactly one space, expect three digits, then a non-digit.
+	if len(after) < 5 || after[0] != ' ' {
+		return 0, false
+	}
+	d := after[1:]
+	if len(d) < 4 {
+		return 0, false
+	}
+	for i := 0; i < 3; i++ {
+		if d[i] < '0' || d[i] > '9' {
+			return 0, false
+		}
+	}
+	if d[3] != ' ' && d[3] != '\t' {
+		return 0, false
+	}
+	code := int(d[0]-'0')*100 + int(d[1]-'0')*10 + int(d[2]-'0')
+	return code, true
 }
 
 // detectServer counts nginx and apache2 processes by scanning
@@ -114,49 +361,4 @@ func allDigits(s string) bool {
 		}
 	}
 	return true
-}
-
-// accessLogSummary is the operator-supplied bounded summary file
-// shape. The daemon never reads raw access logs (REQ 6.2); an
-// operator-supplied cron or logrotate job writes this file. Only
-// the two count fields are consumed; generated_at and window_minutes
-// remain in the file format for operator-side tooling but are
-// ignored on decode (encoding/json silently drops unknown keys).
-type accessLogSummary struct {
-	Count4xx int `json:"count_4xx"`
-	Count5xx int `json:"count_5xx"`
-}
-
-// readAccessLogSummary reads and parses the operator-supplied
-// summary JSON. Returns (count_4xx, count_5xx, err). Missing or
-// malformed file returns a non-nil error; the op surfaces this as a
-// warning rather than a hard failure. Read is bounded to 16 KiB to
-// bound memory if the operator points at the wrong file.
-func readAccessLogSummary(path string) (int, int, error) {
-	const maxBytes = 16 * 1024
-	f, err := os.Open(path)
-	if err != nil {
-		return 0, 0, err
-	}
-	defer f.Close()
-	b, err := io.ReadAll(io.LimitReader(f, maxBytes))
-	if err != nil {
-		return 0, 0, err
-	}
-	if len(b) == 0 {
-		return 0, 0, errors.New("empty summary file")
-	}
-	return parseAccessLogSummary(b)
-}
-
-// parseAccessLogSummary is the pure parser exposed for testing.
-func parseAccessLogSummary(b []byte) (int, int, error) {
-	var s accessLogSummary
-	if err := json.Unmarshal(b, &s); err != nil {
-		return 0, 0, err
-	}
-	if s.Count4xx < 0 || s.Count5xx < 0 {
-		return 0, 0, errors.New("negative counts in summary")
-	}
-	return s.Count4xx, s.Count5xx, nil
 }

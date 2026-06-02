@@ -167,12 +167,18 @@ cause the daemon to refuse to start (REQ 8.2).
     is derived from `/proc/<pid>/comm` counts using the master-
     minus-one heuristic (a known limitation: edge cases with
     multiple master-like processes round low). `recent_4xx` /
-    `recent_5xx` come from an operator-supplied bounded summary
-    JSON file whose path is read from
-    `manifest.workload_plugin_config.nginx_apache.access_log_summary_path`;
-    the daemon never reads raw access logs (REQ 6.2). When the
-    path is absent or the file cannot be read, the counts default
-    to zero.
+    `recent_5xx` are integer counts of HTTP 4xx / 5xx responses
+    over the configured window, parsed from a bounded tail-read
+    of the configured access log inside the helper process. Raw
+    log bytes never cross the helper-to-daemon socket (REQ 6.2).
+    `recent_window_minutes` reports the window actually covered;
+    `recent_coverage` is `full` (tail covered the configured
+    window), `partial` (tail covered a shorter span), or
+    `unavailable` (no path configured, file unreadable, or no
+    parseable timestamps). When `recent_coverage` is
+    `unavailable`, `recent_4xx` and `recent_5xx` are `null` —
+    NOT zero. A null is "can't measure"; zero is "measured zero
+    errors".
 
 `workload_plugin_config` is a top-level manifest map keyed by
 plugin name; the value is a string-to-string map specific to that
@@ -181,10 +187,13 @@ plugin. Today only `nginx_apache` consumes a config:
 ```yaml
 workload_plugin_config:
   nginx_apache:
-    access_log_summary_path: /var/log/nginx/health-summary.json
+    access_log_path: /var/log/nginx/access.log
+    # access_log_window_minutes: 60   (default; 1..1440)
+    # access_log_tail_bytes: 262144   (default 256 KiB; max 4 MiB)
 ```
 
-The summary file format is documented in `doc/install.md`.
+The access log must be in combined or common log format. See
+`doc/install.md` §3.4 for the full description.
 
 Cache TTL default: 30 s. Timeout default: 5 s.
 

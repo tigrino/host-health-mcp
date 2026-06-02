@@ -3,6 +3,38 @@ title: Host Health MCP - Changelog
 author: Albert 'Tigr' Zenkoff <albert@tigr.net>
 ---
 
+# 1.19.0 — nginx_apache redesigned for zero operator plumbing (2026-06-02)
+
+BREAKING (workload config): `nginx_apache` no longer consumes an
+operator-supplied summary JSON file. The 1.18.0 cron-based pattern is
+gone. Operators upgrading from 1.18.0 must update `manifest.yml`:
+
+```yaml
+workload_plugin_config:
+  nginx_apache:
+    # OLD (removed):
+    # access_log_summary_path: /var/log/nginx/health-summary.json
+    # NEW:
+    access_log_path: /var/log/nginx/access.log
+```
+
+Schema change (additive): `recent_4xx` and `recent_5xx` are now
+nullable (`oneOf` integer or null). A null value means "can't
+measure"; zero means "measured zero errors". New required fields
+`recent_window_minutes` and `recent_coverage` (enum `full` |
+`partial` | `unavailable`) make the measurement state explicit.
+
+The helper does a bounded tail-read (default 256 KiB) of the access
+log, parses combined/common log format inside its own process, and
+returns typed counts. Raw log bytes do not cross the helper boundary
+(REQ 6.2 unchanged).
+
+Rationale: 1.18.0 introduced the project's first dependency on
+operator-built data pipelines (a cron + summary JSON file). The
+fleet manager raised this against the design principle that the
+daemon observes existing system state with zero server-side
+footprint. The redesign moves the work back inside the helper.
+
 # 1.18.0 — workload plugins fleshed out + small fixes (2026-06-01)
 
 ## Workload plugins

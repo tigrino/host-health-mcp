@@ -940,13 +940,32 @@ components:
 
     WorkloadNginxApache:
       type: object
-      required: [server, worker_count, recent_4xx, recent_5xx]
+      required: [server, worker_count, recent_4xx, recent_5xx, recent_window_minutes, recent_coverage]
       additionalProperties: false
       properties:
         server:        { type: string, enum: [nginx, apache, none] }
         worker_count:  { type: integer, minimum: 0 }
-        recent_4xx:    { type: integer, minimum: 0 }
-        recent_5xx:    { type: integer, minimum: 0 }
+        recent_4xx:
+          oneOf: [{ type: integer, minimum: 0 }, { type: "null" }]
+        recent_5xx:
+          oneOf: [{ type: integer, minimum: 0 }, { type: "null" }]
+        recent_window_minutes:
+          type: integer
+          minimum: 0
+          description: |
+            The window actually covered by the measurement. Equal to the
+            configured window when recent_coverage is "full"; smaller when
+            "partial" (the tail-read did not reach back the full window).
+            Zero when "unavailable".
+        recent_coverage:
+          type: string
+          enum: [full, partial, unavailable]
+          description: |
+            full       = the tail covered at least the configured window.
+            partial    = the tail read only covered a shorter window.
+            unavailable = no access_log_path configured, or file
+                          unreadable, or no parseable timestamps found.
+                          recent_4xx and recent_5xx are null in this case.
 
     WorkloadWireguard:
       type: object

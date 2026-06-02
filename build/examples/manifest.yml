@@ -38,7 +38,9 @@ workload_plugins: []
 # are consumed; unknown keys produce a startup warning.
 # workload_plugin_config:
 #   nginx_apache:
-#     access_log_summary_path: /var/log/nginx/health-summary.json
+#     access_log_path: /var/log/nginx/access.log
+#     # access_log_window_minutes: 60
+#     # access_log_tail_bytes: 262144
 
 # Tool 4.6 - certificate paths and their renewal units.
 cert_paths: []
