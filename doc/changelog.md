@@ -3,6 +3,84 @@ title: Host Health MCP - Changelog
 author: Albert 'Tigr' Zenkoff <albert@tigr.net>
 ---
 
+# 1.19.1 — documentation cross-check, wire-schema bump, nginx_apache cap fix (2026-06-02)
+
+Cross-check of every operator-facing document against the 1.19.0
+code state. Pulls in two code fixes the audit surfaced rather than
+ship them as separate patch releases:
+
+- **Wire `schema_version` bumped `0.7.0` → `0.8.0`** in both
+  `daemon/internal/shared/schema/envelope.go` and
+  `plugin/internal/schema/version.go`. The bump retroactively
+  honours two undocumented shape changes that landed in earlier
+  releases: 1.18.0 added `none` to the `WorkloadNginxApache.server`
+  enum, and 1.19.0 loosened `recent_4xx` / `recent_5xx` to
+  `oneOf integer | null` and added two new required fields
+  (`recent_window_minutes`, `recent_coverage`). `doc/version-matrix.md`
+  §6 now carries the schema-version history table.
+- **`nginx_apache` workload plugin needed `CAP_DAC_READ_SEARCH`** in
+  the helper's `CapabilityBoundingSet`/`AmbientCapabilities` to read
+  the Debian-default `www-data:adm 0640` access log. The 1.19.0
+  redesign moved the read into the helper but `build/postinst/caps-template.sh`
+  was not updated to add the cap. Fleets that enabled `workload` +
+  `nginx_apache` without also enabling `security` or `storage` would
+  see `tool_failed` on every call. Fixed by adding
+  `have workload && have nginx_apache && add CAP_DAC_READ_SEARCH`
+  to the postinst script and an explanatory comment in the
+  inline op-to-cap mapping. Operators upgrading must rerun
+  `caps-template.sh` (the package postinst does it automatically)
+  and `systemctl restart host-health-mcp-helper.service`.
+
+Documents updated:
+
+- `CLAUDE.md`: helper-op count refreshed (14 → 23) and listed in
+  full from `daemon/internal/shared/proto/ops.go`; workload-plugin
+  status replaced with the accurate 1.18.0 / 1.19.0 description
+  (all four implemented, `nginx_apache` reads the access log
+  directly via a bounded tail-read inside the helper); layout tree
+  brought in line with the actual repository contents (removed
+  `internal/helper/parse/` which no longer exists; added the
+  shared `schema/decode.go`, the plugin's `internal/schema/`, the
+  `build/postinst/` and `build/examples/` directories); tests
+  paragraph extended with the additions across 1.17.0–1.19.0
+  (scrub-class redactor cases, ratelimit edge cases, audit-args
+  on cache-hit, parser tests for dovecot / nginx_apache /
+  postqueue / mdraid fallback / ssh journal classifier / btime).
+- `README.md`: wire `schema_version` corrected from `0.6.0` to
+  `0.7.0` in both the sample envelope and the current-release
+  banner; current release bumped to 1.19.1; mail vs. postfix
+  question row split — `deferred_count` lives in
+  `workload.postfix`, not `mail`.
+- `doc/tools.md`: helper-op reference table extended from 16 to
+  23 rows so it matches `proto.AllOps`; cross-references to
+  `dovecot_status`, `nginx_apache_status`, `fail2ban_status`,
+  `ssh_journal_counts`, `systemd_timer_last_trigger`,
+  `rkhunter_summary`, and `unattended_upgrades_status` now line
+  up with their file paths.
+- `doc/install.md`: `enabled_tools` text updated to acknowledge
+  the additive `firewall` / `firewall_lookup` tools; §7
+  systemd-baseline paragraph rewritten to be exhaustive and
+  correct about the helper unit's deviations (the helper carries
+  `CAP_CHOWN` plus the templated per-op caps in both
+  `CapabilityBoundingSet=` and `AmbientCapabilities=`, and uses
+  the broader `SystemCallFilter=@system-service` rather than the
+  daemon's stricter subtraction set).
+- `doc/design-overview.md`: §4 endpoint count corrected from 11
+  to 19; §7.3 op-surface table prefaced with a pointer to
+  `doc/tools.md` as the authoritative list, and the
+  `read_audit_status` entry corrected from `AUDIT_READ` to
+  `AUDIT_CONTROL` (matching the empirical Debian 13 kernel
+  behaviour and the postinst `caps-template.sh` mapping).
+- `doc/version-matrix.md`: new §6 schema-version history table
+  records the `0.6.0`→`0.7.0`→`0.8.0` progression with the actual
+  shape change at each step. Plugin authors are warned to decode
+  the loosened `recent_4xx` / `recent_5xx` as nullable.
+- `build/examples/manifest.yml`: no functional change beyond the
+  existing 1.18.0 / 1.19.0 edits — included in the version-bumped
+  rebuild for completeness.
+- `build/nfpm/nfpm-amd64.yaml` and `build/nfpm/nfpm-arm64.yaml`:
+  `version: "1.19.0"` → `version: "1.19.1"`.
+
 # 1.19.0 — nginx_apache redesigned for zero operator plumbing (2026-06-02)
 
 BREAKING (workload config): `nginx_apache` no longer consumes an

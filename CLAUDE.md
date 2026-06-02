@@ -18,13 +18,21 @@ Before changing anything, read these in order:
 
 1. `doc/ARCHITECT_BRIEF.txt` - role brief for the implementing engineer.
 2. `doc/REQUIREMENTS.txt` - binding contract. Currently at Rev 2. Section 4
-   is the tool surface (17 tools, REQ 4.1-4.17). Section 6 is the security
-   boundary; every constraint there is non-negotiable. Section 12 lists the
+   is the tool surface (REQ 4.1-4.17 = 17 tools at gate; the implementation
+   has grown by additive minor releases to 19 — `firewall` from 1.13.0 and
+   `firewall_lookup` from 1.14.0 — without renaming or removing any field,
+   so REQ 7.3 minor-additive holds). Section 6 is the security boundary;
+   every constraint there is non-negotiable. Section 12 lists the
    architect-delegated decisions.
 3. `doc/design-overview.md` - implementation-level decisions with rationale
    tied back to REQUIREMENTS section numbers.
-4. `doc/schema-draft.yaml` - OpenAPI 3.1 wire schema covering all 17 tools,
-   shared response envelope, structured error shape.
+4. `doc/schema-draft.yaml` - OpenAPI 3.1 wire schema covering the registered
+   tools plus the shared response envelope and structured error shape. The
+   wire `schema_version` constant (`SchemaVersion` in
+   `daemon/internal/shared/schema/envelope.go` and
+   `plugin/internal/schema/version.go`) is the authoritative version
+   string; the OpenAPI document's own `info.version` is a separate header
+   and is not the wire contract.
 5. `doc/threat-model.md` - assumptions, in-scope and not-defended threats,
    per-constraint justification for REQ section 6, residual risks R1-R5.
 6. `doc/version-matrix.md` - plugin/daemon compatibility matrix C1-C4.
@@ -36,6 +44,7 @@ Tool numbers in this file (`4.13` etc.) refer to sections of
 
 ```
 host-health-mcp/
+├── README.md                       repository entry point for operators
 ├── CLAUDE.md                       (this file)
 ├── doc/                            design artefacts; the contract
 │   ├── ARCHITECT_BRIEF.txt
@@ -44,13 +53,10 @@ host-health-mcp/
 │   ├── schema-draft.yaml
 │   ├── threat-model.md
 │   ├── version-matrix.md
-│   ├── tools.md                    (not yet written; REQ 9.5)
-│   ├── install.md                  (not yet written; REQ 9.5)
-│   ├── changelog.md                (not yet written; REQ 9.5)
-│   └── examples/                   (not yet written; REQ 13)
-│       ├── daemon.yml
-│       ├── helper.yml
-│       └── manifest.yml
+│   ├── tools.md
+│   ├── install.md
+│   ├── changelog.md
+│   └── security-audit-2026-05-24.md  audit closed in 1.17.0
 ├── daemon/                         Go module - daemon and helper share one
 │   ├── cmd/
 │   │   ├── daemon/main.go          -> /usr/local/sbin/host-health-mcp-daemon
@@ -65,26 +71,35 @@ host-health-mcp/
 │       │   ├── httpserver/         TLS listener, routing, request handling
 │       │   ├── ratelimit/          two-level token-bucket limiter (REQ 6.6)
 │       │   ├── redact/             positive-list redaction filter (REQ 6.3)
-│       │   └── tools/              one package per tool 4.1-4.17
+│       │   └── tools/              one package per tool; the registered
+│       │                           set is 19 (REQ 4.1-4.17 plus
+│       │                           firewall, firewall_lookup)
 │       ├── helper/                 helper-only packages
 │       │   ├── config/             helper.yml parsing
 │       │   ├── dispatch/           op dispatcher; closed compile-time enum
 │       │   ├── exec/               SOLE site for helper-side os/exec
-│       │   ├── ops/                one file per op (see design §7.3)
-│       │   ├── parse/              per-tool output parsers (smartctl JSON,
-│       │   │                       lvs JSON, /proc/mdstat, etc.)
+│       │   ├── ops/                one file per op + per-op parser
+│       │   │                       and test (see design §7.3); 23 ops
 │       │   └── server/             unix-socket listener; SO_PEERCRED check
 │       └── shared/                 packages used by both binaries
-│           ├── proto/              helper-socket frame types
-│           └── schema/             types generated from doc/schema-draft.yaml
+│           ├── proto/              helper-socket frame types; AllOps
+│           │                       enumerates the 23 op tokens
+│           └── schema/             hand-coded Go shapes that mirror
+│                                   doc/schema-draft.yaml (envelope,
+│                                   error envelope, strict decoder)
 ├── plugin/                         Go module - MCP plugin
 │   ├── cmd/plugin/main.go
 │   └── internal/
 │       ├── mcp/                    MCP protocol handling
-│       └── client/                 HTTP client to the daemon's listener
+│       ├── client/                 HTTP client to the daemon's listener
+│       └── schema/                 plugin-side SchemaVersion constant
+│                                   (kept in lockstep with daemon)
 └── build/                          reproducible build orchestration
     ├── build.sh                    drives a full release build
     ├── nfpm/                       .deb packaging configs per arch
+    ├── postinst/                   post-install scripts including
+    │                               caps-template.sh (REQ 6.7, L-5)
+    ├── examples/                   daemon.yml, helper.yml, manifest.yml
     ├── systemd/                    host-health-mcp.service +
     │                               host-health-mcp-helper.service
     └── dist/                       build output, gitignored
@@ -145,25 +160,54 @@ linked sections before treating any constraint as flexible.
 
 ## Status
 
-Design gate is closed. Implementation complete at the surface level
-and building clean across both arches; `.deb` packages produced.
+Design gate is closed. Implementation complete and building clean
+across both arches; `.deb` packages produced for every released
+tag.
 
-All 17 tools per REQ 4.1-4.17 register and respond. All 14 helper
-ops implemented (no stubs remain): `read_audit_status`,
-`read_aide_summary`, `read_reboot_marker`, `smart_summary`,
-`mdraid_detail`, `lvm_report`, `zpool_status`, `btrfs_scrub`,
-`postqueue`, `wireguard_show`, `apt_pending`, `needrestart`,
-`journal_query`, `nft_table_counts`.
+The tool surface has grown past the original REQ 4.1-4.17 set
+through additive minor releases. The current registered set is 19
+top-level tools: the 17 from REQ section 4 plus `firewall`
+(1.13.0+) and `firewall_lookup` (1.14.0+). `README.md` §1 lists
+the names; `doc/tools.md` is the per-tool reference; the
+registration call sites live in `daemon/cmd/daemon/main.go`.
 
-Two workload plugins (`dovecot`, `nginx_apache`) registered with
-build tags but return "not yet implemented" — their data sources
-need operator-specific config that varies by deployment.
+All 23 helper ops are implemented and registered. The full list is
+in `daemon/internal/shared/proto/ops.go` (`AllOps`):
+`read_audit_status`, `read_aide_summary`, `read_reboot_marker`,
+`smart_summary`, `mdraid_detail`, `lvm_report`, `zpool_status`,
+`btrfs_scrub`, `postqueue`, `wireguard_show`, `apt_pending`,
+`needrestart`, `journal_query`, `nft_table_counts`,
+`fail2ban_status`, `ssh_journal_counts`,
+`systemd_timer_last_trigger`, `rkhunter_summary`,
+`unattended_upgrades_status`, `firewall_inspect`,
+`firewall_lookup`, `dovecot_status`, `nginx_apache_status`.
 
-Tests: foundational packages and parsers covered (proto frame,
-cache + singleflight, two-level rate-limiter, redactor with fuzz
-target, HTTP server negative tests including unknown-tool routing
-and oversize body, helper parsers for wireguard, LVM, zpool, AIDE
-log, apt-get -s upgrade, dpkg held). Integration tests against a
+All four workload plugins (`wireguard`, `postfix`, `dovecot`,
+`nginx_apache`) are implemented. They register at compile time via
+build tags (`wl_wireguard`, `wl_postfix`, `wl_dovecot`,
+`wl_nginx_apache`); the default build ships all four. As of
+1.19.0, `nginx_apache` reads recent 4xx/5xx counts from the access
+log directly via a bounded tail-read inside the helper process;
+the 1.18.0 design that required an operator-supplied summary JSON
+file (cron-built) was withdrawn so that the daemon does not depend
+on operator-side data pipelines.
+
+Tests: foundational packages and parsers covered. Proto framing,
+cache + singleflight, two-level rate-limiter (including the
+`(sustained=0,burst=0)` rejection and the `enabled: false` path),
+redactor with explicit scrub classes (positive- and negative-keep
+plus an extended fuzz corpus), schema strict-decode, HTTP server
+negative tests (unknown-tool routing, oversize body, audit-args
+extraction on fresh and cache-hit paths). Helper parsers covered:
+wireguard, LVM, zpool, AIDE log, apt-get -s upgrade, dpkg held,
+postqueue (parser tests including `*`/`!` exclusion), dovecot
+(`parseDoveadmWho` including the user-literally-named-`username`
+edge case), nginx_apache (six `parseAccessLogTail` cases plus two
+`readAccessLogTail` cases), mdraid (`mdraidDetailFromExport`
+fallback trigger and no-fallback paths), ssh-journal classifier
+plus `/proc/stat` btime parser and the volatile-journal truncation
+probe, server-detection, network `addrs[]` regression, plugin
+client mTLS fail-closed branches. Integration tests against a
 live host are still to come.
 
 REQ 9.5 docs in place: `doc/install.md`, `doc/tools.md`,

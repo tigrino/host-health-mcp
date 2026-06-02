@@ -455,26 +455,35 @@ block is disabled, this tool returns an empty payload plus the
 # Helper op reference
 
 Internal — the daemon's `internal/helperinvoke` package is the only
-caller. Listed here so reviewers can find each implementation:
+caller. Listed here so reviewers can find each implementation. The
+authoritative list is the `AllOps` slice in
+`daemon/internal/shared/proto/ops.go` (23 entries).
 
-| Op token            | File                                                | Caps required (helper unit)             |
-|---------------------|-----------------------------------------------------|-----------------------------------------|
-| `read_audit_status` | `internal/helper/ops/audit_status.go`               | `CAP_AUDIT_READ`                        |
-| `read_aide_summary` | `internal/helper/ops/aide_summary.go`               | `CAP_DAC_READ_SEARCH`                   |
-| `read_reboot_marker`| `internal/helper/ops/reboot_marker.go`              | none                                    |
-| `smart_summary`     | `internal/helper/ops/smart_summary.go`              | `CAP_SYS_RAWIO`, `CAP_DAC_READ_SEARCH`  |
-| `mdraid_detail`     | `internal/helper/ops/mdraid.go`                     | `CAP_DAC_READ_SEARCH`                   |
-| `lvm_report`        | `internal/helper/ops/lvm.go`                        | `CAP_DAC_READ_SEARCH`                   |
-| `zpool_status`      | `internal/helper/ops/zpool.go`                      | `CAP_SYS_ADMIN`                         |
-| `btrfs_scrub`       | `internal/helper/ops/btrfs.go`                      | `CAP_DAC_READ_SEARCH`                   |
-| `postqueue`         | `internal/helper/ops/postqueue.go`                  | none                                    |
-| `wireguard_show`    | `internal/helper/ops/wireguard.go`                  | `CAP_NET_ADMIN`                         |
-| `apt_pending`       | `internal/helper/ops/apt_pending.go`                | none                                    |
-| `needrestart`       | `internal/helper/ops/needrestart.go`                | none                                    |
-| `journal_query`     | `internal/helper/ops/journal.go`                    | none (root reads the journal directly)  |
-| `nft_table_counts`  | `internal/helper/ops/nft.go`                        | `CAP_NET_ADMIN`                         |
-| `firewall_inspect`  | `internal/helper/ops/firewall.go`                   | `CAP_NET_ADMIN`                         |
-| `firewall_lookup`   | `internal/helper/ops/firewall_lookup.go`            | `CAP_NET_ADMIN`                         |
+| Op token                     | File                                                | Caps required (helper unit)             |
+|------------------------------|-----------------------------------------------------|-----------------------------------------|
+| `read_audit_status`          | `internal/helper/ops/audit_status.go`               | `CAP_AUDIT_READ`                        |
+| `read_aide_summary`          | `internal/helper/ops/aide_summary.go`               | `CAP_DAC_READ_SEARCH`                   |
+| `read_reboot_marker`         | `internal/helper/ops/reboot_marker.go`              | none                                    |
+| `smart_summary`              | `internal/helper/ops/smart_summary.go`              | `CAP_SYS_RAWIO`, `CAP_DAC_READ_SEARCH`  |
+| `mdraid_detail`              | `internal/helper/ops/mdraid.go`                     | `CAP_DAC_READ_SEARCH`                   |
+| `lvm_report`                 | `internal/helper/ops/lvm.go`                        | `CAP_DAC_READ_SEARCH`                   |
+| `zpool_status`               | `internal/helper/ops/zpool.go`                      | `CAP_SYS_ADMIN`                         |
+| `btrfs_scrub`                | `internal/helper/ops/btrfs.go`                      | `CAP_DAC_READ_SEARCH`                   |
+| `postqueue`                  | `internal/helper/ops/postqueue.go`                  | none                                    |
+| `wireguard_show`             | `internal/helper/ops/wireguard.go`                  | `CAP_NET_ADMIN`                         |
+| `apt_pending`                | `internal/helper/ops/apt_pending.go`                | none                                    |
+| `needrestart`                | `internal/helper/ops/needrestart.go`                | none                                    |
+| `journal_query`              | `internal/helper/ops/journal.go`                    | none (root reads the journal directly)  |
+| `nft_table_counts`           | `internal/helper/ops/nft.go`                        | `CAP_NET_ADMIN`                         |
+| `fail2ban_status`            | `internal/helper/ops/fail2ban.go`                   | none                                    |
+| `ssh_journal_counts`         | `internal/helper/ops/ssh_journal.go`                | none (root reads the journal directly)  |
+| `systemd_timer_last_trigger` | `internal/helper/ops/systemd_timer.go`              | none                                    |
+| `rkhunter_summary`           | `internal/helper/ops/rkhunter.go`                   | `CAP_DAC_READ_SEARCH`                   |
+| `unattended_upgrades_status` | `internal/helper/ops/unattended_upgrades.go`        | none                                    |
+| `firewall_inspect`           | `internal/helper/ops/firewall.go`                   | `CAP_NET_ADMIN`                         |
+| `firewall_lookup`            | `internal/helper/ops/firewall_lookup.go`            | `CAP_NET_ADMIN`                         |
+| `dovecot_status`             | `internal/helper/ops/dovecot.go`                    | none                                    |
+| `nginx_apache_status`        | `internal/helper/ops/nginx_apache.go`               | `CAP_DAC_READ_SEARCH`                   |
 
 The `caps-template.sh` post-install scriptlet maps the manifest's
 `enabled_tools[]` and `workload_plugins[]` to the union of required

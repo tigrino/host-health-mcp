@@ -173,7 +173,7 @@ returns the canonical envelope:
   "host": "...",
   "as_of": "2026-05-16T...",
   "cache_age_s": 0,
-  "schema_version": "0.6.0",
+  "schema_version": "0.8.0",
   "data": { ... per-tool shape ... },
   "warnings": []
 }
@@ -193,7 +193,8 @@ Typical questions the surface answers — see
 | Which systemd units are degraded? | `systemd_units` |
 | SMART status, mdraid sync, ZFS pool errors? | `storage` |
 | Is the apt lock held? Pending updates? | `updates` |
-| Mail queue depth, deferred count? | `mail` |
+| Mail queue depth, MTA detected? | `mail` |
+| Postfix deferred count, last delivery? | `workload` (`postfix` plugin) |
 | Live SSH/auth log sample? | `logs` |
 | Which IPs are banned right now? | `firewall` |
 | Is `10.0.0.0/24` referenced anywhere in the firewall? | `firewall_lookup` |
@@ -220,7 +221,7 @@ Compatibility cells C1–C4 and the upgrade ordering:
 
 Per-release deltas: [`doc/changelog.md`](doc/changelog.md).
 
-Current release: **1.14.1** (wire schema **0.6.0**).
+Current release: **1.19.1** (wire schema **0.8.0**).
 
 Upgrade procedure on a single host:
 

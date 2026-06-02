@@ -86,9 +86,10 @@ Rationale:
   calls out "curl-able is a plus". A TLS client cert and a `curl
   --cert ... --key ... -X POST -d '{}'` reproduces any production
   call.
-- The surface is small (11 endpoints), strictly request-response, no
-  streaming, no subscription. The code-generation and performance
-  arguments for gRPC do not apply at this size.
+- The surface is small (19 endpoints as of 1.14.0, all strictly
+  request-response, no streaming, no subscription). The
+  code-generation and performance arguments for gRPC do not apply
+  at this size.
 - OpenAPI 3.1 is human-readable, supports `$ref` composition for the
   envelope, and has mature Go tooling (`oapi-codegen`).
 
@@ -321,11 +322,27 @@ The daemon maps these codes onto its own structured tool errors via
   500 ms` so the helper finishes before the daemon's outer timeout
   trips.
 
-## 7.3 Op surface (initial)
+## 7.3 Op surface
+
+The op set has grown by additive minor releases since the gate.
+The authoritative list is `daemon/internal/shared/proto/ops.go`
+(`AllOps`) and the per-op cap requirement is enumerated in
+`doc/tools.md` "Helper op reference"; the postinst
+`caps-template.sh` derives the helper unit's
+`CapabilityBoundingSet` and `AmbientCapabilities` from the
+manifest's `enabled_tools[]` and `workload_plugins[]` against that
+table.
+
+The initial gate set was the twelve ops below; the additional
+ones added through 1.13.0–1.19.0 follow the same dispatch
+discipline (closed compile-time enum token, per-op whitelist
+where a parameter is accepted, in-process parsing of subprocess
+output) and are documented in `doc/tools.md` rather than repeated
+here.
 
 | Op token            | Reads / invokes                                       | Param             | Whitelist                                                  | Caps required   |
 |---------------------|-------------------------------------------------------|-------------------|------------------------------------------------------------|-----------------|
-| `read_audit_status` | audit netlink (`NETLINK_AUDIT`)                       | none              | —                                                          | `AUDIT_READ`    |
+| `read_audit_status` | audit netlink (`NETLINK_AUDIT`)                       | none              | —                                                          | `AUDIT_CONTROL` |
 | `read_aide_summary` | `/var/lib/aide/aide.db` header                        | none              | —                                                          | `DAC_READ_SEARCH` |
 | `read_reboot_marker`| `/var/run/reboot-required` presence + length          | none              | —                                                          | none            |
 | `smart_summary`     | `smartctl --json -a /dev/<dev>`                       | block-device name | `^(sd[a-z]+\|nvme[0-9]+n[0-9]+\|vd[a-z]+\|hd[a-z]+\|xvd[a-z]+)$` (no trailing partition digits) | `SYS_RAWIO`, `DAC_READ_SEARCH` |
@@ -338,11 +355,20 @@ The daemon maps these codes onto its own structured tool errors via
 | `apt_pending`       | `apt-get -s upgrade`                                  | none              | —                                                          | none            |
 | `needrestart`       | `needrestart -b -p`                                   | none              | —                                                          | none            |
 
+`read_audit_status` is registered against `CAP_AUDIT_CONTROL`
+rather than `CAP_AUDIT_READ`: on Debian 13 kernels (6.12.x) the
+`AUDIT_GET` netlink opcode shares its access check with the
+rule-modification opcodes, which gate on `CAP_AUDIT_CONTROL`.
+`CAP_AUDIT_READ` gates only multicast event-stream binding. The
+`caps-template.sh` postinst captures this in a comment alongside
+the mapping.
+
 For tools whose underlying source is accessible to an unprivileged
 user (4.1, 4.2 via D-Bus, 4.3 via `netlink-route`, 4.10 via the
 journald API, 4.14 via `/proc` and `/sys`, 4.15 via
 `/proc/pressure`, 4.16 via `NETLINK_SOCK_DIAG`), the daemon reads
-directly. The helper is consulted only for the ops above.
+directly. The helper is consulted only for the ops above plus
+their later additions.
 
 ### 7.3.1 WireGuard parser discipline
 

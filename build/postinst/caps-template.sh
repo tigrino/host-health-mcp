@@ -42,6 +42,16 @@ fi
 #                          state via netlink NFNL_SUBSYS_NFTABLES;
 #                          unprivileged callers cannot enumerate
 #                          tables/chains/sets on stock kernels.)
+#   dovecot_status     -> (none)
+#                          (systemctl is-active uses dbus; doveadm
+#                          who connects to dovecot's master socket
+#                          owned by root — uid=0 helper passes the
+#                          DAC check via owner-mode.)
+#   nginx_apache_status -> CAP_DAC_READ_SEARCH
+#                          (Debian-default access logs are
+#                          www-data:adm 0640; uid=0 helper without
+#                          DAC_READ_SEARCH cannot read them since
+#                          it matches neither owner nor group.)
 #
 # Tool-to-op mapping (REQ 4):
 #   security        => read_audit_status, read_aide_summary
@@ -78,7 +88,8 @@ have security  && { add CAP_AUDIT_CONTROL; add CAP_DAC_READ_SEARCH; }
 have storage   && { add CAP_SYS_RAWIO; add CAP_DAC_READ_SEARCH; add CAP_SYS_ADMIN; }
 have mail      && true
 have updates   && true
-have workload  && have wireguard && add CAP_NET_ADMIN
+have workload  && have wireguard    && add CAP_NET_ADMIN
+have workload  && have nginx_apache && add CAP_DAC_READ_SEARCH
 have firewall        && add CAP_NET_ADMIN
 have firewall_lookup && add CAP_NET_ADMIN
 

@@ -7,4 +7,4 @@ package schema
 // SchemaVersion is the wire schema the plugin was compiled against.
 // Kept in lockstep with daemon/internal/shared/schema.SchemaVersion at
 // release time. A major-version mismatch is hard-incompatible (C4).
-const SchemaVersion = "0.7.0"
+const SchemaVersion = "0.8.0"

@@ -149,14 +149,16 @@ The daemon refuses unknown keys at startup (REQ 8.1).
 Per-host enablement plus tool-specific operator data. The most
 operationally significant fields:
 
-  - `enabled_tools` — subset of the 17 tools in REQ §4. The daemon
-    enforces this list at HTTP routing: a tool not on the list
-    returns 404/`unknown_tool` even when the binary is compiled in
-    (REQ 8.2). Every name on the list must be compiled into the
-    build, or the daemon refuses to start. An empty list emits a
-    single startup warning and exposes every compiled-in tool
-    (legacy behaviour for hosts that have not yet pinned the
-    surface). The `caps-template.sh` post-install script emits a
+  - `enabled_tools` — subset of the registered tool set (the 17
+    tools in REQ §4 plus the additive `firewall` and
+    `firewall_lookup` from 1.13.0 / 1.14.0). The daemon enforces
+    this list at HTTP routing: a tool not on the list returns
+    404/`unknown_tool` even when the binary is compiled in (REQ
+    8.2). Every name on the list must be compiled into the build,
+    or the daemon refuses to start. An empty list emits a single
+    startup warning and exposes every compiled-in tool (legacy
+    behaviour for hosts that have not yet pinned the surface). The
+    `caps-template.sh` post-install script emits a
     `host-health-mcp: warning: enabled_tools contains unknown name
     '<name>'` line on stderr for any name the script does not
     recognise — typically a typo or a script that pre-dates the
@@ -316,14 +318,35 @@ sudo systemd-analyze security host-health-mcp.service
 sudo systemd-analyze security host-health-mcp-helper.service
 ```
 
-The daemon unit ships with `NoNewPrivileges`, empty
+The daemon unit ships with `NoNewPrivileges=yes`, empty
 `CapabilityBoundingSet`, empty `AmbientCapabilities`,
-`ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`,
-`MemoryDenyWriteExecute`, `RestrictSUIDSGID`, and
+`ProtectSystem=strict`, `ProtectHome=yes`, `PrivateTmp=yes`,
+`PrivateDevices=yes`, `ProtectKernelTunables=yes`,
+`ProtectKernelModules=yes`, `ProtectControlGroups=yes`,
+`ProtectClock=yes`, `ProtectKernelLogs=yes`, `ProtectHostname=yes`,
+`RestrictNamespaces=yes`, `RestrictRealtime=yes`,
+`LockPersonality=yes`, `MemoryDenyWriteExecute=yes`,
+`RestrictSUIDSGID=yes`, `RemoveIPC=yes`, and
 `SystemCallFilter=@system-service ~@privileged ~@resources ~@mount
-~@swap ~@reboot ~@module`. The helper unit applies all the same
-hardening **except** the empty `CapabilityBoundingSet` — that is
-filled in by the install-time `caps.conf` drop-in.
+~@swap ~@reboot ~@module`. The helper unit applies the same set of
+filesystem, namespace, and process directives. Two intentional
+deviations:
+
+  - **Capability sets.** The shipped helper base unit keeps
+    `CapabilityBoundingSet=CAP_CHOWN` so the helper can chown its
+    unix socket and runtime directory at startup; the
+    install-time `caps.conf` drop-in extends both
+    `CapabilityBoundingSet=` and `AmbientCapabilities=` with the
+    per-op union derived from `manifest.yml`. The ambient half is
+    load-bearing because `NoNewPrivileges=yes` computes the
+    helper's effective set from `ambient ∪ (file_caps & bounding)`
+    and inherits ambient caps into subprocesses (smartctl, lvs,
+    etc.) across `execve`.
+  - **System-call filter.** The helper uses
+    `SystemCallFilter=@system-service` (the broader baseline) so
+    the privileged subprocesses it spawns retain the exec, mount-
+    info, audit-netlink, and similar syscalls they need. The
+    daemon's stricter filter does not apply.
 
 # 8. Uninstall
 

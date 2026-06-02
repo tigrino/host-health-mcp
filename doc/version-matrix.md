@@ -101,7 +101,25 @@ declare the same `schema_version`. This catches the "plugin and
 daemon shipped with mismatched schema files" case at build time,
 not at first call.
 
-# 6. Notes for the plugin author
+# 6. Schema version history
+
+| Schema version | Daemon release that landed it | Change                                                                                                       |
+|----------------|-------------------------------|--------------------------------------------------------------------------------------------------------------|
+| 0.6.0          | up to 1.14.x                  | Baseline at gate close.                                                                                      |
+| 0.7.0          | 1.15.0                        | Additive minor (firewall + firewall_lookup tools and their data shapes).                                     |
+| 0.8.0          | 1.19.1                        | `WorkloadNginxApache.server` enum gains `none` (was 1.18.0); `recent_4xx` / `recent_5xx` loosened from `integer` to `oneOf integer or null` and two new required fields `recent_window_minutes` / `recent_coverage` added (was 1.19.0). The `0.7.0` → `0.8.0` bump was deferred from those releases and lands cumulatively here. |
+
+A plugin compiled against `0.7.0` that decoded `recent_4xx` /
+`recent_5xx` as a plain `int` may surface a parse error on an
+`0.8.0` daemon reporting `recent_coverage = unavailable`. The
+operational mitigation per cell C2 is to decode those fields as
+`*int` (nullable) and treat null as "unknown". A plugin compiled
+against `0.8.0` and an `0.7.0` daemon falls under cell C2 in the
+other direction — the new fields the plugin expects are absent
+from the daemon's response. Plugin authors should treat the new
+fields as optional during the rollout window.
+
+# 7. Notes for the plugin author
 
 - The plugin's MCP tool schema should mirror the daemon's data
   shape per tool, with every field marked optional unless the
