@@ -17,3 +17,8 @@ coverage.txt
 # Local task log
 .claude_task_log.txt
 build/nfpm/nfpm-*.yaml
+
+# Local-only working files (kept on host, never in repo)
+/CLAUDE.md
+/run
+/.claude/

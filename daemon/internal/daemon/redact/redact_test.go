@@ -17,15 +17,15 @@ func mustPrefix(t *testing.T, s string) netip.Prefix {
 func TestRedactIdentifiers(t *testing.T) {
 	f := New(Rules{})
 	cases := map[string]string{
-		"":                       "",
-		"nginx":                  "nginx",
-		"sshd@123-456.service":   "sshd@123-456.service",
-		"AAAAA":                  "AAAAA",
-		"this is bare text":      "this is bare text",
-		"abcde fghij klmno":      "abcde fghij klmno",
-		"albert@tigr.net":        "albert@tigr.net",
-		"operator":                   "operator",
-		"host-health-mcp":        "host-health-mcp",
+		"":                                     "",
+		"nginx":                                "nginx",
+		"sshd@123-456.service":                 "sshd@123-456.service",
+		"AAAAA":                                "AAAAA",
+		"this is bare text":                    "this is bare text",
+		"abcde fghij klmno":                    "abcde fghij klmno",
+		"albert@tigr.net":                      "albert@tigr.net",
+		"operator":                             "operator",
+		"host-health-mcp":                      "host-health-mcp",
 		"12345678-1234-1234-1234-123456789abc": "12345678-1234-1234-1234-123456789abc",
 	}
 	for in, want := range cases {
