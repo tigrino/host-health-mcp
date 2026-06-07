@@ -88,6 +88,32 @@ func TestParseAideLogFallbackToDifferencesLine(t *testing.T) {
 	}
 }
 
+// A clean AIDE run omits every diff-summary line; the "found NO
+// differences" headline is the only signal. parseAideLog must return an
+// explicit change_count=0 / exit=0 so readAideLog stops at the (clean)
+// newest log instead of falling through to an older rotated log that may
+// still report changes. Regression for the AIDE 0.18.3 stale-count bug.
+func TestParseAideLogCleanRun(t *testing.T) {
+	const clean = `Start timestamp: 2024-01-01 03:00:00 +0000 (AIDE 0.18.3)
+AIDE found NO differences between database and filesystem. Looks okay!!
+
+Number of entries:    29814
+
+The attributes of the (uncompressed) database(s):
+/var/lib/aide/aide.db
+ MD5       : AAAAAAAAAAAAAAAAAAAAAA==
+ GOST      : BBBBBBBBBBBBBBBBBBBBBB==
+End timestamp: 2024-01-01 03:00:20 +0000 (run time: 0m 19s)
+`
+	cnt, exit := parseAideLog([]byte(clean))
+	if cnt == nil || *cnt != 0 {
+		t.Errorf("clean-run change_count = %v, want 0", cnt)
+	}
+	if exit == nil || *exit != 0 {
+		t.Errorf("clean-run exit = %v, want 0", exit)
+	}
+}
+
 func TestCountAptUpgrades(t *testing.T) {
 	in := `Reading package lists...
 Building dependency tree...

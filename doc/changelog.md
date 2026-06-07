@@ -3,6 +3,47 @@ title: Host Health MCP - Changelog
 author: Albert 'Tigr' Zenkoff <albert@tigr.net>
 ---
 
+# 1.19.2 — AIDE clean-run change_count fix (2026-06-07)
+
+Fixes a bug reported on the fleet's only Debian 12 / AIDE 0.18.3
+host: the `security` tool's `aide_or_equivalent` block reported a
+non-zero `change_count` next to `last_exit_code: 0`. Those are
+mutually exclusive — AIDE exit code 0 means zero filesystem
+differences.
+
+Root cause was a cross-parser override gap, not a miscount. The
+`read_aide_summary` helper op scans `/var/log/aide/aide.log*` newest
+first; on a clean newest log it parsed no count and fell through to an
+older rotated log that still carried real changes, returning a stale
+count. The daemon-side `fillAideFromLog` parses the operator-supplied
+`aide_log_path` and is meant to fully override the helper. It correctly
+derived `last_exit_code = 0` from the authoritative "AIDE found NO
+differences" headline, but only filled `change_count` when it was nil —
+so the stale helper count survived beside the zero exit code.
+
+- **Daemon (`daemon/internal/daemon/tools/security/security.go`)**: the
+  no-differences branch of `fillAideFromLog` now forces
+  `change_count = 0` unconditionally. "AIDE found NO differences" is
+  authoritative; the count is zero by definition on that path.
+- **Helper (`daemon/internal/helper/ops/aide_summary.go`)**:
+  `parseAideLog` now recognises the "AIDE found NO differences" /
+  "AIDE found differences" headlines and returns an explicit
+  `change_count = 0` / `last_exit_code = 0` on a clean run (and
+  `last_exit_code = 1` on a changed run). A clean newest log now yields
+  0 and stops `readAideLog` from falling through to a rotated log. This
+  also fixes the `aide_log_path`-unset path, which previously reported
+  `change_count: null` plus a spurious "change_count unparseable"
+  warning on clean hosts.
+
+No wire-schema change: `last_exit_code` was already a declared nullable
+field and is now simply populated in more cases. Wire schema stays
+**0.8.0**.
+
+Regression tests: `fillAideFromLog` clean-overrides-stale, clean-nil,
+and changed-counts cases in
+`daemon/internal/daemon/tools/security/aide_test.go`; `parseAideLog`
+clean-run case in `daemon/internal/helper/ops/parsers_test.go`.
+
 # 1.19.1 — documentation cross-check, wire-schema bump, nginx_apache cap fix (2026-06-02)
 
 Cross-check of every operator-facing document against the 1.19.0

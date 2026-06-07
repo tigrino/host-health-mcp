@@ -166,14 +166,23 @@ func readMaybeGzipped(path string) ([]byte, error) {
 // log body. Conservative: returns nil pointers when nothing matches.
 func parseAideLog(body []byte) (*int, *int) {
 	var cnt *int
+	var exit *int
 	scanner := bufio.NewScanner(bytes.NewReader(body))
 	scanner.Buffer(make([]byte, 64*1024), 64*1024)
 
 	var added, removed, changed int
 	haveDetail := false
+	foundDiff := false
+	foundNoDiff := false
 
 	for scanner.Scan() {
 		line := scanner.Text()
+		switch {
+		case strings.Contains(line, "AIDE found NO differences"):
+			foundNoDiff = true
+		case strings.Contains(line, "AIDE found differences"):
+			foundDiff = true
+		}
 		if m := diffRE.FindStringSubmatch(line); m != nil {
 			v, _ := strconv.Atoi(m[1])
 			cnt = &v
@@ -198,11 +207,25 @@ func parseAideLog(body []byte) (*int, *int) {
 		total := added + removed + changed
 		cnt = &total
 	}
-	// AIDE itself doesn't routinely log its exit status; operators
-	// often wrap it in a cron script that logs the exit code on its
-	// own line ("aide exit: N"). The daemon-side security.go
-	// parser handles the operator-supplied aide_log_path with a
-	// derived exit code; this helper-side log scan stays
-	// change-count-only.
-	return cnt, nil
+	// AIDE's clean-state report ("AIDE found NO differences between
+	// database and filesystem") omits the "Total number of differences:"
+	// header and the per-class "Added/Removed/Changed entries:" lines, so
+	// the regex scan above yields nothing. Without this headline check a
+	// clean newest log would parse as unparseable (nil) and readAideLog
+	// would fall through to an older rotated log that may still carry a
+	// non-zero count — reporting a stale change_count for a host that is
+	// actually clean. The headline is authoritative: change_count and the
+	// derived exit code are both zero.
+	switch {
+	case foundNoDiff && !foundDiff:
+		zero := 0
+		exit = &zero
+		if cnt == nil {
+			cnt = &zero
+		}
+	case foundDiff:
+		one := 1
+		exit = &one
+	}
+	return cnt, exit
 }

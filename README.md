@@ -221,7 +221,7 @@ Compatibility cells C1–C4 and the upgrade ordering:
 
 Per-release deltas: [`doc/changelog.md`](doc/changelog.md).
 
-Current release: **1.19.1** (wire schema **0.8.0**).
+Current release: **1.19.2** (wire schema **0.8.0**).
 
 Upgrade procedure on a single host:
 
