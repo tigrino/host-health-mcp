@@ -173,7 +173,7 @@ returns the canonical envelope:
   "host": "...",
   "as_of": "2026-05-16T...",
   "cache_age_s": 0,
-  "schema_version": "0.8.0",
+  "schema_version": "1.0.0",
   "data": { ... per-tool shape ... },
   "warnings": []
 }
@@ -221,7 +221,7 @@ Compatibility cells C1–C4 and the upgrade ordering:
 
 Per-release deltas: [`doc/changelog.md`](doc/changelog.md).
 
-Current release: **1.19.2** (wire schema **0.8.0**).
+Current release: **2.0.0** (wire schema **1.0.0**).
 
 Upgrade procedure on a single host:
 

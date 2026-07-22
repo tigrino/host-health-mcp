@@ -80,29 +80,64 @@ Cache TTL default: 30 s. Timeout default: 3 s.
 
 Presence and (where the helper ops have run) deep state of AIDE,
 auditd, rkhunter, debsums; intrusion-prevention backend in use;
-SSH login counters from `/var/log/auth.log`.
+recent SSH login counters.
 
-`ssh_logins.failed_since_boot` includes any of: post-auth `Failed`
-lines (password/publickey), preauth disconnects
+`ssh_logins` reports `accepted_recent`, `failed_recent`, and a
+`window` discriminator. The two counts cover a **different window
+depending on the source**, and `window` names it so the number is
+never ambiguous:
+
+  - `since_log_rotation` — counted from the live `/var/log/auth.log`
+    (Debian) or `/var/log/secure` (RHEL-family). The window is
+    whatever logrotate keeps in the current file.
+  - `last_24h` — counted from the systemd journal
+    (`journalctl --since='24 hours ago' -u ssh.service`) on hosts
+    with no file source. The journal path is bounded to 24h rather
+    than the full boot because a since-boot walk of `ssh.service`
+    on a long-uptime host iterates the entire boot and exceeds the
+    per-op deadline.
+  - `unavailable` — neither source was readable; `accepted_recent`
+    and `failed_recent` are `null` (distinct from a genuine `0`).
+
+Renamed from `accepted_since_boot` / `failed_since_boot` in schema
+1.0.0 (release 2.0.0) — an authorised breaking change; a plugin
+built against schema 0.x fails closed against a 1.0.0 daemon per
+version-matrix cell C4.
+
+`failed_recent` includes any of: post-auth `Failed` lines
+(password/publickey), preauth disconnects
 (`Disconnected from ... [preauth]`), preauth connection closes
 (`Connection closed by ... [preauth]`), and
 `kex_exchange_identification` errors. The pre-1.16.1 counter only
 matched `Failed `; on key-only fleets that pattern never fires
 because scanners disconnect during key exchange, so the counter
-was permanently zero. Both file (`/var/log/auth.log`) and journal
-paths now recognise the broader set. The file path also handles
-the OpenSSH 9.8+ split daemon (`sshd[PID]` and `sshd-session[PID]`)
-that landed in Debian 13.
+was permanently zero. Both file and journal paths recognise the
+broader set. The file path also handles the OpenSSH 9.8+ split
+daemon (`sshd[PID]` and `sshd-session[PID]`) that landed in
+Debian 13.
 
-The journal path (1.16.2+) detects volatile-journal truncation:
-if the journal's oldest retained entry for the current boot is
-more than 10 minutes after the kernel `btime`, the daemon emits
-an envelope warning `ssh_logins: journal truncated — oldest entry
-... vs boot ...`. Counters still ship — but the operator sees
-that they cover only the retained window rather than the full
-boot. Volatile journald (`Storage=volatile` in `journald.conf`)
-and aggressive `SystemMaxUse` / `RuntimeMaxUse` are the typical
-triggers.
+The journal path detects insufficient retention: when the host has
+been up longer than 24h but the journal's oldest retained entry
+starts after the 24h cutoff, the daemon emits an envelope warning
+`ssh_logins: journal retains less than 24h — oldest entry ...;
+last_24h counters reflect only ~Xh of the 24h window`. Counters
+still ship — but the operator sees they cover only the retained
+tail. A host booted less than 24h ago naturally has a shorter span
+and is not flagged. Volatile journald (`Storage=volatile` in
+`journald.conf`) and aggressive `SystemMaxUse` / `RuntimeMaxUse`
+are the typical triggers.
+
+Uptime caveat: on a host whose uptime is under 24h the `last_24h`
+counts necessarily cover only since boot, and on a volatile journal
+they cover only the current boot's runtime — which may be shorter
+than 24h **without** a truncation warning (the warning fires only
+for hosts up longer than 24h). Cross-reference uptime from the
+`system` tool when the host may have rebooted inside the window.
+If a file-based source (`/var/log/auth.log` or `/var/log/secure`)
+cannot be read to completion — e.g. a pathological over-long line —
+the daemon does not report its partial counts as authoritative: it
+emits `security: auth log read incomplete (...)` and falls back to
+the journal (`last_24h`) path.
 
   - `aide_or_equivalent`: presence by binary; deep fields from the
     helper's `read_aide_summary` op (last-run timestamp from

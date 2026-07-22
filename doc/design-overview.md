@@ -403,6 +403,46 @@ Tools other than these three follow REQ 5.2: subsystem failure
 returns the tool-level `tool_failed` error envelope; the operator
 addresses the root cause and re-queries.
 
+### 7.3.3 SSH login counter window (schema 1.0.0)
+
+`security.ssh_logins` originally reported `accepted_since_boot` /
+`failed_since_boot`. The journal-only path implemented "since boot"
+with `journalctl --boot -u ssh.service`, which walks every
+`ssh.service` entry of the current boot. On a long-uptime,
+internet-facing host that set is dominated by scanner noise and can
+run to millions of lines; the walk exceeded the per-op deadline and
+the whole `security` call failed.
+
+The fix bounds the journal path to the last 24h
+(`journalctl --since='24 hours ago'`), letting journald seek to the
+cutoff instead of scanning from boot. That changes the meaning of
+the counters, so the fields were renamed to reflect reality and a
+`window` discriminator was added:
+
+- `accepted_recent` / `failed_recent` (both nullable),
+- `window` in `{last_24h, since_log_rotation, unavailable}`.
+
+The file-based path (auth.log/secure) is left as-is — it is already
+bounded by log rotation and does not walk a growing journal — and
+reports `window: "since_log_rotation"`. The two sources thus expose
+comparable recent windows (a rotation period ≈ a day, 24h = a day)
+rather than "since a 100-day boot" versus "since last rotation".
+
+This is a **field rename**, which REQ 7.3 classifies as a major
+bump: wire schema `1.0.0`, release `2.0.0`. It was authorised
+explicitly by the fleet operator. Enforcement of the lockstep
+rollout falls out of version-matrix cell C4 — a plugin compiled
+against a `0.x` schema marks the session incompatible and fails
+closed against a `1.0.0` daemon, so no plugin ever silently
+misreads the renamed block.
+
+The coverage probe carried over from the since-boot design is
+re-based to the 24h cutoff: it flags truncation only when the host
+booted before the cutoff (a full 24h was expected) yet the journal's
+oldest retained entry begins after it — i.e. rotation dropped part
+of the window. A host booted inside the 24h window has a naturally
+short span and is not flagged.
+
 ## 7.4 Daemon-side discipline
 
 A single Go package, `internal/helperinvoke`, is the **only** place

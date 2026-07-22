@@ -6,5 +6,7 @@ package schema
 
 // SchemaVersion is the wire schema the plugin was compiled against.
 // Kept in lockstep with daemon/internal/shared/schema.SchemaVersion at
-// release time. A major-version mismatch is hard-incompatible (C4).
-const SchemaVersion = "0.8.0"
+// release time. A major-version mismatch is hard-incompatible (C4):
+// a 0.x plugin against this 1.0.0 daemon fails closed, which is the
+// intended enforcement of the security.ssh_logins field rename.
+const SchemaVersion = "1.0.0"

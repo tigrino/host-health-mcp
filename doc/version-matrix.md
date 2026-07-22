@@ -108,6 +108,7 @@ not at first call.
 | 0.6.0          | up to 1.14.x                  | Baseline at gate close.                                                                                      |
 | 0.7.0          | 1.15.0                        | Additive minor (firewall + firewall_lookup tools and their data shapes).                                     |
 | 0.8.0          | 1.19.1                        | `WorkloadNginxApache.server` enum gains `none` (was 1.18.0); `recent_4xx` / `recent_5xx` loosened from `integer` to `oneOf integer or null` and two new required fields `recent_window_minutes` / `recent_coverage` added (was 1.19.0). The `0.7.0` → `0.8.0` bump was deferred from those releases and lands cumulatively here. |
+| 1.0.0          | 2.0.0                         | **First major bump — breaking.** `security.ssh_logins` renamed `accepted_since_boot` / `failed_since_boot` to `accepted_recent` / `failed_recent` (both nullable) and added the required `window` discriminator (`last_24h` / `since_log_rotation` / `unavailable`). The journal source is now bounded to the last 24h instead of walking since boot. A field rename is major per REQ 7.3; a `0.x` plugin fails closed against a `2.0.0` daemon per cell C4. Roll daemon and plugin together. |
 
 A plugin compiled against `0.7.0` that decoded `recent_4xx` /
 `recent_5xx` as a plain `int` may surface a parse error on an

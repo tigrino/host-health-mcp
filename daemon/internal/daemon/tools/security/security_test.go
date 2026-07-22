@@ -93,7 +93,10 @@ func TestReadAuthLogCountersEndToEnd(t *testing.T) {
 	authLogPaths = []string{path}
 	t.Cleanup(func() { authLogPaths = orig })
 
-	accepted, failed, found := readAuthLogCounters()
+	accepted, failed, found, err := readAuthLogCounters()
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
 	if !found {
 		t.Fatal("found=false on a present file")
 	}
@@ -105,27 +108,53 @@ func TestReadAuthLogCountersEndToEnd(t *testing.T) {
 	}
 }
 
-// TestFormatSshJournalTruncationWarning covers the 1.16.2 warning
-// emitted when the helper detects journal truncation. The shape
-// matches what the bug report's example produces: it carries the
-// oldest entry timestamp, the boot timestamp, and a human-readable
-// retained-vs-total summary.
-func TestFormatSshJournalTruncationWarning(t *testing.T) {
-	// Pick two unambiguous unix seconds and let time.Unix render
-	// the expected RFC3339 strings so the assertions stay locked
-	// to the formatter's actual output instead of hand-computed
-	// timestamps.
-	boot := int64(1716000000)
-	oldest := boot + 4*24*3600 // +4 days
-	got := formatSshJournalTruncationWarning(boot, oldest)
+// TestReadAuthLogCountersScanError asserts that a file with a line
+// exceeding the scanner's 1 MiB buffer (bufio.ErrTooLong) is reported
+// as a read error with found=false, so the caller falls back to the
+// bounded journal path instead of trusting partial counts.
+func TestReadAuthLogCountersScanError(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "auth.log")
+	// One line longer than the scanner's 1<<20 max token size.
+	huge := make([]byte, (1<<20)+1024)
+	for i := range huge {
+		huge[i] = 'x'
+	}
+	huge = append(huge, '\n')
+	if err := os.WriteFile(path, huge, 0o600); err != nil {
+		t.Fatal(err)
+	}
 
-	bootStr := time.Unix(boot, 0).UTC().Format(time.RFC3339)
+	orig := authLogPaths
+	authLogPaths = []string{path}
+	t.Cleanup(func() { authLogPaths = orig })
+
+	_, _, found, err := readAuthLogCounters()
+	if err == nil {
+		t.Fatal("expected a scan error on an over-long line, got nil")
+	}
+	if found {
+		t.Error("found=true on a truncated read; caller would trust partial counts")
+	}
+}
+
+// TestFormatSshJournalTruncationWarning covers the 24h-rebased
+// coverage warning emitted when the journal retains less than the
+// full 24h window. It carries the oldest-entry timestamp and a
+// human-readable retained-window summary.
+func TestFormatSshJournalTruncationWarning(t *testing.T) {
+	// oldest ~6h ago so the retained window renders in hours; let
+	// time.Unix render the expected RFC3339 string so the assertion
+	// stays locked to the formatter's actual output.
+	oldest := time.Now().UTC().Unix() - 6*3600
+	got := formatSshJournalTruncationWarning(oldest)
+
 	oldestStr := time.Unix(oldest, 0).UTC().Format(time.RFC3339)
 	checks := []string{
 		"ssh_logins:",
-		"journal truncated",
-		bootStr,
+		"journal retains less than 24h",
 		oldestStr,
+		"24h window",
 		"volatile journald",
 	}
 	for _, want := range checks {

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"time"
 
 	"host-health-mcp/daemon/internal/helper/dispatch"
 	helperexec "host-health-mcp/daemon/internal/helper/exec"
@@ -16,31 +17,45 @@ import (
 
 // SshJournalCountsResult is the typed result for op ssh_journal_counts.
 //
-// The Truncated / OldestEntryUnixS / BootUnixS fields are additive
-// (added in 1.16.2). Pre-1.16.2 daemons unmarshal them with
-// omitempty defaults; pre-1.16.2 plugins are agnostic to helper
-// proto extensions.
+// As of schema 1.0.0 the journal path counts SSH events over the last
+// 24h (journalctl --since), not since boot: on a long-uptime host a
+// since-boot walk of ssh.service can iterate months of entries and
+// exceed the helper deadline. The daemon maps these into the
+// ssh_logins block with window="last_24h" (see doc/design-overview.md).
+//
+// Truncated / OldestEntryUnixS / BootUnixS drive the coverage warning
+// the daemon emits when the journal retains less than the full 24h.
 type SshJournalCountsResult struct {
-	Present           bool  `json:"present"`
-	AcceptedSinceBoot int   `json:"accepted_since_boot"`
-	FailedSinceBoot   int   `json:"failed_since_boot"`
-	Truncated         bool  `json:"truncated,omitempty"`
-	OldestEntryUnixS  int64 `json:"oldest_entry_unix_s,omitempty"`
-	BootUnixS         int64 `json:"boot_unix_s,omitempty"`
+	Present          bool  `json:"present"`
+	AcceptedLast24h  int   `json:"accepted_last_24h"`
+	FailedLast24h    int   `json:"failed_last_24h"`
+	Truncated        bool  `json:"truncated,omitempty"`
+	OldestEntryUnixS int64 `json:"oldest_entry_unix_s,omitempty"`
+	BootUnixS        int64 `json:"boot_unix_s,omitempty"`
 }
 
+// sshJournalWindowS is the width of the last-24h counting window in
+// seconds. Kept in sync with the "24 hours ago" journalctl --since
+// argument below; the truncation probe uses it to tell "journal
+// rotated within the window" from "host booted inside the window".
+const sshJournalWindowS = int64(24 * 3600)
+
 // sshJournalTruncationThresholdS is how far the journal's oldest
-// retained entry can sit after the kernel boot before we flag the
-// window as truncated. Ten minutes accommodates the typical
-// service-start gap on hosts with delayed mount/network units
-// (encrypted disks, late nss-resolve, etc.) without missing the
-// volatile-journal case where the gap is hours-to-days.
+// retained entry may sit after the 24h cutoff before we flag the
+// window as under-covered. Ten minutes absorbs normal rotation
+// granularity without missing the volatile-journal case where the
+// retained span is only hours.
 const sshJournalTruncationThresholdS = int64(600)
 
-// SshJournalCounts counts since-boot Accepted/Failed SSH login lines
-// emitted to the systemd journal by ssh.service. Used as a fallback
-// when neither /var/log/auth.log nor /var/log/secure is present
-// (journal-only Debian/RHEL hosts).
+// SshJournalCounts counts Accepted/Failed SSH login lines emitted to
+// the systemd journal by ssh.service over the last 24h (journalctl
+// --since). Used as a fallback when neither /var/log/auth.log nor
+// /var/log/secure is present (journal-only Debian/RHEL hosts).
+//
+// The window is bounded to 24h rather than the current boot because a
+// since-boot walk of ssh.service on a long-uptime host can iterate
+// months of entries and exceed the helper deadline; --since lets
+// journald seek to the cutoff instead of scanning from boot.
 //
 // Uses RunStreaming so the helper's 256 KiB stdout cap is never the
 // limiting factor: each line is visited as it arrives and counted
@@ -66,7 +81,7 @@ const sshJournalTruncationThresholdS = int64(600)
 // scanners disconnect during key exchange before reaching the
 // publickey-auth stage. The preauth-disconnect and kex-error
 // patterns below capture the actual rejection signal that
-// `failed_since_boot` is supposed to represent. We deliberately
+// `failed_last_24h` is supposed to represent. We deliberately
 // skip "Received disconnect from" because it pairs with
 // "Disconnected from" on every client-initiated SSH_MSG_DISCONNECT
 // and would double-count the same probe.
@@ -112,13 +127,16 @@ func SshJournalCounts(ctx context.Context, _ string) (any, error) {
 	_, err := helperexec.RunStreaming(ctx, func(line []byte) {
 		switch classifySshJournalLine(line) {
 		case sshJournalAccepted:
-			out.AcceptedSinceBoot++
+			out.AcceptedLast24h++
 		case sshJournalFailed:
-			out.FailedSinceBoot++
+			out.FailedLast24h++
 		}
 	},
 		"journalctl",
-		"--boot",
+		// Bound the walk to the last 24h so journald seeks to the
+		// cutoff instead of scanning the whole boot. Kept in sync
+		// with sshJournalWindowS.
+		"--since=24 hours ago",
 		"-u", "ssh.service",
 		"--output=cat",
 		"--no-pager",
@@ -138,23 +156,37 @@ func SshJournalCounts(ctx context.Context, _ string) (any, error) {
 	}
 	out.Present = true
 
-	// Truncation probe: if the journal's oldest retained entry for
-	// the current boot is significantly newer than the kernel boot
-	// time, the counters above only cover the retained window
-	// (typical on volatile-journal hosts where the ring buffer
-	// rotates within hours of a 4-day boot). Failures here are
-	// non-fatal — counters still ship, just without the truncation
-	// flag. The daemon turns Truncated=true into an envelope
-	// warning.
+	// Coverage probe: if the host has been up longer than 24h but the
+	// journal's oldest retained entry starts after the 24h cutoff, the
+	// counters above cover only the retained tail (typical on
+	// volatile-journal hosts where the ring buffer rotates within
+	// hours). Failures here are non-fatal — counters still ship, just
+	// without the flag. The daemon turns Truncated=true into an
+	// envelope warning.
 	if btime, oldest, ok := probeSshJournalTruncation(ctx); ok {
 		out.BootUnixS = btime
 		out.OldestEntryUnixS = oldest
-		if oldest-btime > sshJournalTruncationThresholdS {
+		if sshJournalTruncated(btime, oldest, time.Now().Unix()) {
 			out.Truncated = true
 		}
 	}
 
 	return out, nil
+}
+
+// sshJournalTruncated reports whether the last_24h counters under-cover
+// the window. It flags truncation only when the host booted before the
+// 24h cutoff (so a full 24h was expected) AND the journal's oldest
+// retained entry begins more than the tolerance after that cutoff — i.e.
+// rotation dropped part of the window. A host booted inside the window
+// legitimately has a shorter span and is not flagged. now is passed in
+// so the decision is unit-testable.
+func sshJournalTruncated(btime, oldest, now int64) bool {
+	cutoff := now - sshJournalWindowS
+	if btime > cutoff {
+		return false
+	}
+	return oldest-cutoff > sshJournalTruncationThresholdS
 }
 
 // probeSshJournalTruncation returns (btime, oldestEntryUnixS, ok)

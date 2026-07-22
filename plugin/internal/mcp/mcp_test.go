@@ -254,11 +254,11 @@ func TestSchemaCompatibleHostCallsThrough(t *testing.T) {
 	mux := http.NewServeMux()
 	systemHits := 0
 	mux.HandleFunc("/v1/manifest", func(w http.ResponseWriter, r *http.Request) {
-		_, _ = fmt.Fprint(w, `{"host":"fake","schema_version":"0.1.0","data":{"daemon_version":"test"}}`)
+		_, _ = fmt.Fprint(w, `{"host":"fake","schema_version":"1.0.0","data":{"daemon_version":"test"}}`)
 	})
 	mux.HandleFunc("/v1/system", func(w http.ResponseWriter, r *http.Request) {
 		systemHits++
-		_, _ = fmt.Fprint(w, `{"host":"fake","schema_version":"0.1.0","data":{"uptime_s":42}}`)
+		_, _ = fmt.Fprint(w, `{"host":"fake","schema_version":"1.0.0","data":{"uptime_s":42}}`)
 	})
 	srv := httptest.NewTLSServer(mux)
 	defer srv.Close()
@@ -406,13 +406,13 @@ func TestPerToolInputSchemaSurfacesArgs(t *testing.T) {
 func TestArgsForwardedToDaemon(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/manifest", func(w http.ResponseWriter, r *http.Request) {
-		_, _ = fmt.Fprint(w, `{"host":"fake","schema_version":"0.1.0","data":{"daemon_version":"test"}}`)
+		_, _ = fmt.Fprint(w, `{"host":"fake","schema_version":"1.0.0","data":{"daemon_version":"test"}}`)
 	})
 	var sawBody string
 	mux.HandleFunc("/v1/firewall_lookup", func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
 		sawBody = string(b)
-		_, _ = fmt.Fprint(w, `{"host":"fake","schema_version":"0.1.0","data":{"query":"10.0.0.5","matches":[],"sets":[]}}`)
+		_, _ = fmt.Fprint(w, `{"host":"fake","schema_version":"1.0.0","data":{"query":"10.0.0.5","matches":[],"sets":[]}}`)
 	})
 	srv := httptest.NewTLSServer(mux)
 	defer srv.Close()
@@ -466,13 +466,13 @@ func TestArgsForwardedToDaemon(t *testing.T) {
 func TestNoArgsToolStillSendsEmptyBody(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/manifest", func(w http.ResponseWriter, r *http.Request) {
-		_, _ = fmt.Fprint(w, `{"host":"fake","schema_version":"0.1.0","data":{"daemon_version":"test"}}`)
+		_, _ = fmt.Fprint(w, `{"host":"fake","schema_version":"1.0.0","data":{"daemon_version":"test"}}`)
 	})
 	var sawBody string
 	mux.HandleFunc("/v1/system", func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
 		sawBody = string(b)
-		_, _ = fmt.Fprint(w, `{"host":"fake","schema_version":"0.1.0","data":{"uptime_s":1}}`)
+		_, _ = fmt.Fprint(w, `{"host":"fake","schema_version":"1.0.0","data":{"uptime_s":1}}`)
 	})
 	srv := httptest.NewTLSServer(mux)
 	defer srv.Close()

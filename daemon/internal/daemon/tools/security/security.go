@@ -76,11 +76,26 @@ type IPS struct {
 	CurrentBanCount int    `json:"current_ban_count"`
 }
 
-// SSHLogins mirrors the ssh_logins block.
+// SSHLogins mirrors the ssh_logins block. The two counts cover a
+// different window depending on the source, and Window records which:
+// "since_log_rotation" for the file-based path (auth.log / secure),
+// "last_24h" for the journal path, "unavailable" when neither source
+// could be read. Counts are null (not zero) when unavailable so a
+// quiet host is distinguishable from a missing source. Renamed from
+// accepted_since_boot / failed_since_boot as an authorised breaking
+// change in schema 1.0.0 / release 2.0.0.
 type SSHLogins struct {
-	AcceptedSinceBoot int `json:"accepted_since_boot"`
-	FailedSinceBoot   int `json:"failed_since_boot"`
+	AcceptedRecent *int   `json:"accepted_recent"`
+	FailedRecent   *int   `json:"failed_recent"`
+	Window         string `json:"window"`
 }
+
+// SSH login window discriminators for SSHLogins.Window.
+const (
+	sshWindowLast24h          = "last_24h"
+	sshWindowSinceLogRotation = "since_log_rotation"
+	sshWindowUnavailable      = "unavailable"
+)
 
 // Tool is the registered tool.
 type Tool struct {
@@ -281,58 +296,69 @@ func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 		d.IntrusionPrevention.CurrentBanCount = -1
 	}
 
-	// SSH login counters: file-based first (auth.log on Debian,
-	// secure on RHEL-family), helper-backed journal fallback for
-	// journal-only systems.
-	if a, f, found := readAuthLogCounters(); found {
-		d.SSHLogins.AcceptedSinceBoot = a
-		d.SSHLogins.FailedSinceBoot = f
+	// SSH login counters: file-based first (auth.log on Debian, secure
+	// on RHEL-family) covering "since last log rotation"; helper-backed
+	// journal fallback covering the last 24h on journal-only systems.
+	// Window records which applies so the count is never ambiguous
+	// (see SSHLogins and REQ 4.5). A partial file read (fileErr) is not
+	// reported as authoritative: it warns and falls through to the
+	// journal path.
+	a, f, fileOK, fileErr := readAuthLogCounters()
+	if fileErr != nil {
+		addWarning("security: auth log read incomplete (" + fileErr.Error() +
+			"); falling back to journal counters")
+	}
+	if fileOK {
+		d.SSHLogins.AcceptedRecent = &a
+		d.SSHLogins.FailedRecent = &f
+		d.SSHLogins.Window = sshWindowSinceLogRotation
 	} else {
 		var jc helperSshJournalCounts
 		if err := t.hc.CallJSON(ctx, proto.OpSshJournalCounts, "", &jc); err != nil {
 			addOpError(proto.OpSshJournalCounts, err)
+			d.SSHLogins.Window = sshWindowUnavailable
 		} else if jc.Present {
-			d.SSHLogins.AcceptedSinceBoot = jc.AcceptedSinceBoot
-			d.SSHLogins.FailedSinceBoot = jc.FailedSinceBoot
-			if jc.Truncated && jc.OldestEntryUnixS > 0 && jc.BootUnixS > 0 {
-				warnings = append(warnings, formatSshJournalTruncationWarning(jc.BootUnixS, jc.OldestEntryUnixS))
+			ja, jf := jc.AcceptedLast24h, jc.FailedLast24h
+			d.SSHLogins.AcceptedRecent = &ja
+			d.SSHLogins.FailedRecent = &jf
+			d.SSHLogins.Window = sshWindowLast24h
+			if jc.Truncated && jc.OldestEntryUnixS > 0 {
+				addWarning(formatSshJournalTruncationWarning(jc.OldestEntryUnixS))
 			}
+		} else {
+			d.SSHLogins.Window = sshWindowUnavailable
 		}
 	}
 
 	return d, warnings, nil
 }
 
-// helperSshJournalCounts mirrors the helper op's response. The
-// Truncated / OldestEntryUnixS / BootUnixS fields land from 1.16.2+
-// helpers; older helpers leave them at zero.
+// helperSshJournalCounts mirrors the helper op's ssh_journal_counts
+// response: last-24h counts plus the coverage-probe fields
+// (Truncated / OldestEntryUnixS / BootUnixS).
 type helperSshJournalCounts struct {
-	Present           bool  `json:"present"`
-	AcceptedSinceBoot int   `json:"accepted_since_boot"`
-	FailedSinceBoot   int   `json:"failed_since_boot"`
-	Truncated         bool  `json:"truncated,omitempty"`
-	OldestEntryUnixS  int64 `json:"oldest_entry_unix_s,omitempty"`
-	BootUnixS         int64 `json:"boot_unix_s,omitempty"`
+	Present          bool  `json:"present"`
+	AcceptedLast24h  int   `json:"accepted_last_24h"`
+	FailedLast24h    int   `json:"failed_last_24h"`
+	Truncated        bool  `json:"truncated,omitempty"`
+	OldestEntryUnixS int64 `json:"oldest_entry_unix_s,omitempty"`
+	BootUnixS        int64 `json:"boot_unix_s,omitempty"`
 }
 
 // formatSshJournalTruncationWarning composes the envelope warning
-// emitted when the helper detects that the journal's oldest
-// retained entry is significantly later than boot. The window the
-// counters reflect is the gap between oldest_entry and now; the
-// gap between boot and oldest_entry is what was lost.
-func formatSshJournalTruncationWarning(bootUnixS, oldestEntryUnixS int64) string {
-	boot := time.Unix(bootUnixS, 0).UTC().Format(time.RFC3339)
+// emitted when the journal retains less than the full 24h window and
+// the host has been up longer than 24h — so the last_24h counters
+// actually cover only the retained tail (now - oldest_entry).
+func formatSshJournalTruncationWarning(oldestEntryUnixS int64) string {
 	oldest := time.Unix(oldestEntryUnixS, 0).UTC().Format(time.RFC3339)
-	lostS := oldestEntryUnixS - bootUnixS
 	retainedS := time.Now().UTC().Unix() - oldestEntryUnixS
 	if retainedS < 0 {
 		retainedS = 0
 	}
 	return fmt.Sprintf(
-		"ssh_logins: journal truncated — oldest entry %s vs boot %s; counters reflect ~%s of %s boot (volatile journald or aggressive rotation)",
-		oldest, boot,
+		"ssh_logins: journal retains less than 24h — oldest entry %s; last_24h counters reflect only ~%s of the 24h window (volatile journald or aggressive rotation)",
+		oldest,
 		shortDuration(time.Duration(retainedS)*time.Second),
-		shortDuration(time.Duration(retainedS+lostS)*time.Second),
 	)
 }
 
@@ -599,25 +625,26 @@ func isSSHFailedLine(line string) bool {
 	return false
 }
 
-// readAuthLogCounters returns (accepted, failed, found) counts from
-// the first existing path in authLogPaths. found=false means no
-// file-based source exists and the caller should fall back to the
-// helper's journal counter. The file-based path approximates
-// "since boot" via "since the last rotation".
-func readAuthLogCounters() (accepted, failed int, found bool) {
+// readAuthLogCounters returns (accepted, failed, found, err) counts
+// from the first existing path in authLogPaths. found=false means no
+// usable file-based source exists and the caller should fall back to
+// the helper's journal counter; err is non-nil when a file source
+// existed but could not be read to completion (see below). The counts
+// cover the live file, i.e. "since the last log rotation".
+func readAuthLogCounters() (accepted, failed int, found bool, err error) {
 	var path string
 	for _, p := range authLogPaths {
-		if _, err := os.Stat(p); err == nil {
+		if _, statErr := os.Stat(p); statErr == nil {
 			path = p
 			break
 		}
 	}
 	if path == "" {
-		return 0, 0, false
+		return 0, 0, false, nil
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		return 0, 0, false
+	f, openErr := os.Open(path)
+	if openErr != nil {
+		return 0, 0, false, nil
 	}
 	defer f.Close()
 	scanner := bufio.NewScanner(f)
@@ -634,5 +661,13 @@ func readAuthLogCounters() (accepted, failed int, found bool) {
 			failed++
 		}
 	}
-	return accepted, failed, true
+	if scanErr := scanner.Err(); scanErr != nil {
+		// A line exceeding the 1 MiB buffer (bufio.ErrTooLong) or a
+		// read error stops the scan mid-file, so the counts so far are
+		// partial. Return found=false with the error so the caller
+		// does not report them as authoritative "since_log_rotation"
+		// figures and instead falls back to the bounded journal path.
+		return accepted, failed, false, scanErr
+	}
+	return accepted, failed, true, nil
 }

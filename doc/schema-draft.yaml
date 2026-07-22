@@ -863,10 +863,26 @@ components:
               minimum: 0
         ssh_logins:
           type: object
-          required: [accepted_since_boot, failed_since_boot]
+          required: [accepted_recent, failed_recent, window]
+          description: |
+            Recent SSH login counters. The window they cover depends on
+            the source and is stated by `window`: file-based hosts
+            (/var/log/auth.log or /var/log/secure) report
+            "since_log_rotation"; journal-only hosts report "last_24h";
+            "unavailable" means no source was readable and both counts
+            are null. Renamed from accepted_since_boot / failed_since_boot
+            in schema 1.0.0 (authorised breaking change): the journal
+            path is now bounded to the last 24h via journalctl --since
+            instead of walking the whole boot, which timed out on
+            long-uptime hosts.
           properties:
-            accepted_since_boot: { type: integer, minimum: 0 }
-            failed_since_boot:   { type: integer, minimum: 0 }
+            accepted_recent:
+              oneOf: [{ type: integer, minimum: 0 }, { type: "null" }]
+            failed_recent:
+              oneOf: [{ type: integer, minimum: 0 }, { type: "null" }]
+            window:
+              type: string
+              enum: [last_24h, since_log_rotation, unavailable]
 
     CertEntry:
       type: object

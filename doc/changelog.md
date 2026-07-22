@@ -3,6 +3,61 @@ title: Host Health MCP - Changelog
 author: Albert 'Tigr' Zenkoff <albert@tigr.net>
 ---
 
+# 2.0.0 — SSH login counter window redesign (2026-07-22)
+
+**Breaking change — wire schema 1.0.0. Roll the daemon and the plugin
+together; a plugin built against schema 0.x fails closed against a
+2.0.0 daemon (version-matrix cell C4).** Authorised explicitly by the
+fleet operator.
+
+The `security` tool's `ssh_logins` counters were reported since boot
+on journal-only hosts (`journalctl --boot -u ssh.service`). On a
+long-uptime, internet-facing host that walk iterates the entire boot's
+`ssh.service` journal — millions of scanner lines — and exceeds the
+per-op deadline, failing the whole `security` call. The journal path
+is now bounded to the last 24h so journald seeks to the cutoff instead
+of scanning from boot.
+
+Bounding the window changes what the counters mean, so the fields were
+renamed to reflect reality and a `window` discriminator was added:
+
+- **Renamed** `ssh_logins.accepted_since_boot` → `accepted_recent` and
+  `ssh_logins.failed_since_boot` → `failed_recent`. Both are now
+  nullable.
+- **Added** `ssh_logins.window`, one of `last_24h` (journal source),
+  `since_log_rotation` (file source, `/var/log/auth.log` or
+  `/var/log/secure`), or `unavailable` (no source readable — both
+  counts `null`, distinct from a genuine `0`).
+
+The file-based path is unchanged in behaviour (it was already bounded
+by log rotation, not a growing journal) and now reports
+`window: "since_log_rotation"`. The two sources therefore expose
+comparable recent windows instead of "since a 100-day boot" versus
+"since last rotation".
+
+- **Helper (`daemon/internal/helper/ops/ssh_journal.go`)**: op
+  `ssh_journal_counts` swaps `--boot` for `--since='24 hours ago'`,
+  renames its result fields to `accepted_last_24h` / `failed_last_24h`,
+  and re-bases the coverage probe to the 24h cutoff (flags truncation
+  only when the host booted before the cutoff yet the journal's oldest
+  retained entry starts after it).
+- **Daemon (`daemon/internal/daemon/tools/security/security.go`)**:
+  `SSHLogins` carries the new fields; the journal-truncation envelope
+  warning is reworded to `ssh_logins: journal retains less than 24h …`.
+  `readAuthLogCounters` now checks `scanner.Err()`: a file source that
+  cannot be read to completion (e.g. a line exceeding the 1 MiB buffer)
+  no longer reports partial counts as authoritative — it emits
+  `security: auth log read incomplete (…)` and falls back to the
+  bounded journal path.
+- **Schema**: `SchemaVersion` → `1.0.0` in both
+  `daemon/internal/shared/schema/envelope.go` and
+  `plugin/internal/schema/version.go`. `doc/schema-draft.yaml`,
+  `doc/REQUIREMENTS.txt` (Rev 3), `doc/tools.md`,
+  `doc/design-overview.md` (§7.3.3), and `doc/version-matrix.md`
+  updated.
+
+Wire schema: **0.8.0 → 1.0.0** (major; field rename).
+
 # 1.19.2 — AIDE clean-run change_count fix (2026-06-07)
 
 Fixes a bug reported on the fleet's only Debian 12 / AIDE 0.18.3

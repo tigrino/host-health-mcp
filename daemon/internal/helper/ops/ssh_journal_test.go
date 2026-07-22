@@ -9,7 +9,7 @@ import (
 
 // TestClassifySshJournalLine covers the 1.16.1 regression: the
 // pre-fix classifier only recognised "Accepted "/"Failed " prefixes,
-// so on key-only fleets `failed_since_boot` stayed at zero because
+// so on key-only fleets `failed_last_24h` stayed at zero because
 // scanners disconnect during key exchange and never produce a
 // "Failed " message. The preauth-disconnect, connection-close, and
 // kex-error branches capture the real probe-rejection signal.
@@ -43,6 +43,39 @@ func TestClassifySshJournalLine(t *testing.T) {
 		if got != c.want {
 			t.Errorf("classifySshJournalLine(%q) = %v, want %v", c.line, got, c.want)
 		}
+	}
+}
+
+// TestSshJournalTruncated covers the 24h-rebased coverage probe. A
+// host up longer than 24h whose journal's oldest retained entry sits
+// well after the 24h cutoff is truncated; a host booted inside the
+// window (naturally short span) is not; a journal reaching back past
+// the cutoff is not.
+func TestSshJournalTruncated(t *testing.T) {
+	const now = int64(1_800_000_000)
+	const day = int64(24 * 3600)
+	cutoff := now - day // sshJournalWindowS
+	cases := []struct {
+		name           string
+		btime, oldest  int64
+		want           bool
+	}{
+		// Up 10 days; journal only retains ~6h → oldest far after cutoff.
+		{"rotated within window", now - 10*day, now - 6*3600, true},
+		// Up 10 days; journal reaches back a full 24h+ → covered.
+		{"full window retained", now - 10*day, cutoff - 3600, false},
+		// Booted 5h ago → short span is expected, not truncation.
+		{"booted inside window", now - 5*3600, now - 5*3600, false},
+		// Oldest exactly at cutoff (within tolerance) → not flagged.
+		{"oldest at cutoff", now - 10*day, cutoff, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := sshJournalTruncated(c.btime, c.oldest, now); got != c.want {
+				t.Errorf("sshJournalTruncated(btime=%d, oldest=%d) = %v, want %v",
+					c.btime, c.oldest, got, c.want)
+			}
+		})
 	}
 }
 

@@ -14,6 +14,12 @@ Status         : Requirements - for implementation by the health-check architect
                  design-review pass 3 outcome. Section 3.4 split across
                  units; section 9.2 lists both units; section 9.3 places
                  the helper at /usr/local/sbin (no setuid bit).
+                 Rev 3 (2026-07-22): section 4.5 ssh_logins fields renamed
+                 (accepted_since_boot/failed_since_boot ->
+                 accepted_recent/failed_recent) and a window discriminator
+                 added, per fleet-operator request. Authorised breaking
+                 change: wire schema 1.0.0, release 2.0.0. Rationale in
+                 4.5 below.
 Repository     : (this repository)
 
 --------------------------------------------------------------------------------
@@ -191,7 +197,18 @@ enabled in the manifest. Core tools must always be available.
      debsums_or_equivalent: present (bool), last_run_ts, modified_count.
      intrusion_prevention: backend_in_use (fail2ban/crowdsec/other/none),
             current_ban_count.
-     ssh_logins: accepted_since_boot, failed_since_boot.
+     ssh_logins: accepted_recent, failed_recent, window.
+            window in {last_24h, since_log_rotation, unavailable} states
+            which window the two counts cover; counts are null when
+            window is "unavailable" (no source readable).
+            The window exists because the journal source is bounded to
+            the last 24h (journalctl --since) rather than counting since
+            boot: on long-uptime hosts a since-boot walk of ssh.service
+            iterates the entire boot's journal and exceeds the per-op
+            deadline. The file source (auth.log/secure) is bounded by log
+            rotation. The two sources therefore report different but
+            comparable recent windows, and window records which applies.
+            (Renamed from accepted_since_boot/failed_since_boot; Rev 3.)
 
      Any subsystem not present on the host reports present=false; the tool
      must not fail because optional subsystems are missing.
