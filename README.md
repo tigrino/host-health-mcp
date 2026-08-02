@@ -323,7 +323,7 @@ sudo systemd-analyze security host-health-mcp-helper.service
 ```
 host-health-mcp/
 ├── README.md                       this file
-├── CLAUDE.md                       implementing-engineer brief
+├── LICENSE                         MIT
 ├── doc/                            design artefacts and reference
 │   ├── ARCHITECT_BRIEF.txt
 │   ├── REQUIREMENTS.txt
