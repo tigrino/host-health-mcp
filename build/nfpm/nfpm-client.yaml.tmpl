@@ -1,0 +1,38 @@
+name: host-health-mcp-client
+arch: "${ARCH}"
+version: "${VERSION}"
+section: admin
+priority: optional
+maintainer: Albert 'Tigr' Zenkoff <albert@tigr.net>
+description: |
+  MCP client for the host-health-mcp daemon. Exposes the daemon's
+  read-only tool surface to MCP-speaking clients over mTLS. Runs on
+  the operator workstation, on the target host, or on a designated
+  relay. Configured entirely by environment; see
+  /usr/share/doc/host-health-mcp-client/examples/client.env.
+homepage: https://tigr.net/
+
+contents:
+  - src: ../dist/${ARCH}/host-health-mcp-client
+    dst: /usr/bin/host-health-mcp-client
+    file_info:
+      mode: 0755
+
+  - src: ../examples/client.env
+    dst: /usr/share/doc/host-health-mcp-client/examples/client.env
+    file_info:
+      mode: 0644
+
+  - src: ../../doc/version-matrix.md
+    dst: /usr/share/doc/host-health-mcp-client/version-matrix.md
+    file_info:
+      mode: 0644
+
+  - src: copyright
+    dst: /usr/share/doc/host-health-mcp-client/copyright
+    file_info:
+      mode: 0644
+  - src: ../dist/changelog.gz
+    dst: /usr/share/doc/host-health-mcp-client/changelog.gz
+    file_info:
+      mode: 0644

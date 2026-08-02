@@ -1,12 +1,12 @@
 [Unit]
 Description=host-health-mcp network-facing daemon
-Documentation=file:///usr/share/doc/host-health-mcp/design-overview.md
+Documentation=file:///usr/share/doc/host-health-mcp-server/design-overview.md
 After=network.target host-health-mcp-helper.service
 Requires=host-health-mcp-helper.service
 
 [Service]
 Type=notify
-ExecStart=/usr/local/sbin/host-health-mcp-daemon --config /etc/host-health-mcp/daemon.yml
+ExecStart=/usr/sbin/host-health-mcp-daemon --config /etc/host-health-mcp/daemon.yml
 Restart=on-failure
 RestartSec=5s
 WatchdogSec=30s

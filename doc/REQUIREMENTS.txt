@@ -13,13 +13,19 @@ Status         : Requirements - for implementation by the health-check architect
                  cooperating systemd units (daemon + helper service) per
                  design-review pass 3 outcome. Section 3.4 split across
                  units; section 9.2 lists both units; section 9.3 places
-                 the helper at /usr/local/sbin (no setuid bit).
+                 the helper at /usr/local/sbin (no setuid bit; corrected
+                 to /usr/sbin in Rev 4).
                  Rev 3 (2026-07-22): section 4.5 ssh_logins fields renamed
                  (accepted_since_boot/failed_since_boot ->
                  accepted_recent/failed_recent) and a window discriminator
                  added, per fleet-operator request. Authorised breaking
                  change: wire schema 1.0.0, release 2.0.0. Rationale in
                  4.5 below.
+                 Rev 4 (2026-08-02): FHS install-path correction (section
+                 9.3) and the split of the single package into the
+                 host-health-mcp-server and host-health-mcp-client binary
+                 packages. No change to the tool surface or the wire
+                 schema.
 Repository     : (this repository)
 
 --------------------------------------------------------------------------------
@@ -586,9 +592,9 @@ host state, or to pivot to other systems.
       - Restart=on-failure, RestartSec=5s.
 
 9.3 File layout on the host
-    /usr/local/sbin/host-health-mcp-daemon    (Go ELF, mode 0755,
+    /usr/sbin/host-health-mcp-daemon          (Go ELF, mode 0755,
                                                owner root:root)
-    /usr/local/sbin/host-health-mcp-helper    (Go ELF, mode 0755,
+    /usr/sbin/host-health-mcp-helper          (Go ELF, mode 0755,
                                                owner root:root; runs as
                                                root via its systemd unit,
                                                NOT setuid)

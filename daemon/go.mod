@@ -2,8 +2,6 @@ module host-health-mcp/daemon
 
 go 1.22
 
-toolchain go1.22.5
-
 require (
 	github.com/coreos/go-systemd/v22 v22.5.0
 	golang.org/x/sync v0.7.0

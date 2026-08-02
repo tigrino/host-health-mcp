@@ -30,8 +30,10 @@ rejected are listed with reasons.
 
 # 3. Implementation language: Go
 
-Pinned toolchain: Go 1.22 series. Exact patch version recorded in
-`go.mod` and reproduced by the build script.
+Pinned toolchain: the exact patch version is set by `GOTOOLCHAIN` in
+`build/build.sh`. The `go 1.22` directive in each `go.mod` is a
+compatibility floor, not a pin, and is held at 1.22 because Ubuntu
+24.04 ships exactly that.
 
 Rationale:
 
@@ -560,39 +562,71 @@ Loadable shared objects are forbidden by section 4.9 and are not used.
 
 # 10. Build shape
 
-Output:
+Output — two binary packages per architecture:
 
-- `host-health-mcp_<version>_amd64.deb`
-- `host-health-mcp_<version>_arm64.deb`
+- `host-health-mcp-server_<version>_<arch>.deb` — the daemon, the
+  helper, the two systemd units, the capability-drop-in generator,
+  and the package documentation.
+- `host-health-mcp-client_<version>_<arch>.deb` — the MCP client
+  binary and its worked environment example. No systemd unit, no
+  system user, no package dependencies.
 
-Each package installs:
+`host-health-mcp-server` installs:
 
 ```
-/usr/local/sbin/host-health-mcp-daemon                  (Go ELF, no setuid)
-/usr/local/sbin/host-health-mcp-helper                  (Go ELF, no setuid;
+/usr/sbin/host-health-mcp-daemon                        (Go ELF, no setuid)
+/usr/sbin/host-health-mcp-helper                        (Go ELF, no setuid;
                                                          runs as root via
                                                          its systemd unit)
-/lib/systemd/system/host-health-mcp.service             (daemon unit)
-/lib/systemd/system/host-health-mcp-helper.service      (helper unit)
-/etc/host-health-mcp/daemon.yml.example
-/etc/host-health-mcp/helper.yml.example
-/etc/host-health-mcp/manifest.yml.example
-/usr/share/doc/host-health-mcp/{tools.md,threat-model.md,changelog.md,schema.yaml,version-matrix.md}
+/usr/sbin/host-health-mcp-caps-template                 (capability drop-in
+                                                         generator, mode 0755)
+/usr/lib/systemd/system/host-health-mcp.service         (daemon unit)
+/usr/lib/systemd/system/host-health-mcp-helper.service  (helper unit)
+/usr/share/doc/host-health-mcp-server/examples/{daemon.yml,helper.yml,manifest.yml}   (mode 0644)
+/usr/share/doc/host-health-mcp-server/{REQUIREMENTS.txt,design-overview.md,threat-model.md,schema.yaml,version-matrix.md}
+/usr/share/doc/host-health-mcp-server/{copyright,changelog.gz}
 ```
 
-The post-install scriptlet creates the system user `host-health-mcp`
-with no shell and no home (the state directory `/var/lib/host-health-mcp`
-serves as `HOME` only for systemd's `ProtectHome` model). It enables
-the unit; it does not start it, so the operator places real
-configuration before first start.
+`doc/tools.md` and `doc/changelog.md` are repository documentation
+and are deliberately not shipped in the package; the Debian
+`changelog.gz` is generated at build time and points at them.
+
+`host-health-mcp-client` installs:
+
+```
+/usr/bin/host-health-mcp-client                         (Go ELF)
+/usr/share/doc/host-health-mcp-client/examples/client.env
+/usr/share/doc/host-health-mcp-client/version-matrix.md
+/usr/share/doc/host-health-mcp-client/{copyright,changelog.gz}
+```
+
+The example configurations ship as documentation, not as
+conffiles. Nothing under `/etc/host-health-mcp/` is package-owned;
+the operator copies the examples into place and edits them, so
+package upgrades never touch live configuration and `dpkg` never
+raises a conffile prompt.
+
+The `host-health-mcp-server` post-install scriptlet creates the system
+user `host-health-mcp` with no shell and no home (the state directory
+`/var/lib/host-health-mcp` serves as `HOME` only for systemd's
+`ProtectHome` model) and runs the capability generator. It neither
+reloads, enables, nor starts the units, and the package ships no
+`prerm`/`postrm`: `nfpm` emits no systemd maintainer-script
+fragments, and adding `systemctl` calls by hand would trip the
+`maintainer-script-calls-systemctl` lintian tag. Unit enablement is
+therefore an operator step, documented in `install.md` §5 and §8.
+The client package has no scriptlet.
 
 `build/build.sh` drives the build. Inputs: a clean checkout and a
 pinned Go toolchain. The script:
 
-1. Reads the Go toolchain version from `go.mod`'s `toolchain`
-   directive (an exact pin such as `toolchain go1.22.5`, not the
-   minimum `go 1.22` directive) and verifies the local toolchain
-   matches.
+1. Pins the toolchain by exporting
+   `GOTOOLCHAIN=${GOTOOLCHAIN:-go1.26.5}`, so a release is built
+   against a known Go rather than whatever the build host carries;
+   the value is overridable from the environment. The `go 1.22`
+   directive in each `go.mod` is a minimum, not a pin, and is held
+   at 1.22 because that is what Ubuntu 24.04 ships. There is no
+   `toolchain` directive in any `go.mod`.
 2. Sets `SOURCE_DATE_EPOCH` from the HEAD commit's author timestamp.
    The Go linker and `nfpm` honour this for embedded timestamps;
    it is included for hygiene, not as a guarantee of byte-identical
@@ -608,10 +642,14 @@ pinned Go toolchain. The script:
    `CGO_ENABLED=0 -trimpath
    -ldflags='-buildid= -X main.buildID=<git-sha>'`. Both binaries
    share the same Go module so a single `go build ./cmd/daemon
-   ./cmd/helper` per arch produces both.
-5. Stages the per-architecture tree (two binaries, two unit files,
-   example configs, documentation) and invokes `nfpm` to produce
-   the `.deb`.
+   ./cmd/helper` per arch produces both. The client binary
+   (`host-health-mcp-client`) is built from the separate `plugin`
+   module with the same flags and for the same two architectures.
+5. Stages the per-architecture trees — the server tree (two
+   binaries, the capability generator, two unit files, example
+   configs, documentation) and the client tree (one binary, one
+   environment example) — and invokes `nfpm` once per tree per
+   architecture, four invocations producing four `.deb` artefacts.
 6. Writes `SHA256SUMS` into `build/dist/`.
 
 ## 10.1 Reproducibility: scope and accepted trade-off
@@ -620,8 +658,8 @@ The build is **functionally reproducible**: the same source tree at
 the same commit, built with the same pinned Go toolchain, produces
 binaries whose runtime behaviour is equivalent across builders. `go.sum` pins module
 content hashes; `-trimpath` strips local paths from the binary;
-`-buildid=` zeroes the Go build ID; the `toolchain` directive in
-`go.mod` pins the exact Go patch version.
+`-buildid=` zeroes the Go build ID; `GOTOOLCHAIN` in `build/build.sh`
+pins the exact Go patch version.
 
 The build is **not byte-identical** across builders. Builders running
 on different host distributions, with different working-directory

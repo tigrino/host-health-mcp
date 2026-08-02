@@ -1,0 +1,98 @@
+name: host-health-mcp-server
+arch: "${ARCH}"
+version: "${VERSION}"
+section: admin
+priority: optional
+maintainer: Albert 'Tigr' Zenkoff <albert@tigr.net>
+description: |
+  Read-only Linux host health-check service. A network-facing daemon
+  answers structured RPC queries about local host health over an
+  mTLS HTTPS endpoint; a privileged helper service performs the few
+  reads that require root. See
+  /usr/share/doc/host-health-mcp-server/.
+homepage: https://tigr.net/
+
+depends:
+  - adduser
+
+# The single host-health-mcp package was split into -server and
+# -client at 2.1.0. Retire the old name on upgrade.
+replaces:
+  - host-health-mcp
+conflicts:
+  - host-health-mcp
+provides:
+  - host-health-mcp
+
+contents:
+  - src: ../dist/${ARCH}/host-health-mcp-daemon
+    dst: /usr/sbin/host-health-mcp-daemon
+    file_info:
+      mode: 0755
+
+  - src: ../dist/${ARCH}/host-health-mcp-helper
+    dst: /usr/sbin/host-health-mcp-helper
+    file_info:
+      mode: 0755
+
+  - src: ../postinst/caps-template.sh
+    dst: /usr/sbin/host-health-mcp-caps-template
+    file_info:
+      mode: 0755
+
+  - src: ../systemd/host-health-mcp.service
+    dst: /usr/lib/systemd/system/host-health-mcp.service
+    file_info:
+      mode: 0644
+  - src: ../systemd/host-health-mcp-helper.service
+    dst: /usr/lib/systemd/system/host-health-mcp-helper.service
+    file_info:
+      mode: 0644
+
+  # Examples are documentation, not conffiles. The operator copies
+  # them into /etc/host-health-mcp/ and edits them there.
+  - src: ../examples/daemon.yml
+    dst: /usr/share/doc/host-health-mcp-server/examples/daemon.yml
+    file_info:
+      mode: 0644
+  - src: ../examples/helper.yml
+    dst: /usr/share/doc/host-health-mcp-server/examples/helper.yml
+    file_info:
+      mode: 0644
+  - src: ../examples/manifest.yml
+    dst: /usr/share/doc/host-health-mcp-server/examples/manifest.yml
+    file_info:
+      mode: 0644
+
+  - src: ../../doc/REQUIREMENTS.txt
+    dst: /usr/share/doc/host-health-mcp-server/REQUIREMENTS.txt
+    file_info:
+      mode: 0644
+  - src: ../../doc/design-overview.md
+    dst: /usr/share/doc/host-health-mcp-server/design-overview.md
+    file_info:
+      mode: 0644
+  - src: ../../doc/threat-model.md
+    dst: /usr/share/doc/host-health-mcp-server/threat-model.md
+    file_info:
+      mode: 0644
+  - src: ../../doc/schema-draft.yaml
+    dst: /usr/share/doc/host-health-mcp-server/schema.yaml
+    file_info:
+      mode: 0644
+  - src: ../../doc/version-matrix.md
+    dst: /usr/share/doc/host-health-mcp-server/version-matrix.md
+    file_info:
+      mode: 0644
+
+  - src: copyright
+    dst: /usr/share/doc/host-health-mcp-server/copyright
+    file_info:
+      mode: 0644
+  - src: ../dist/changelog.gz
+    dst: /usr/share/doc/host-health-mcp-server/changelog.gz
+    file_info:
+      mode: 0644
+
+scripts:
+  postinstall: ../postinst/postinst.sh

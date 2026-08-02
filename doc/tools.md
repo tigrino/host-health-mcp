@@ -520,6 +520,6 @@ authoritative list is the `AllOps` slice in
 | `dovecot_status`             | `internal/helper/ops/dovecot.go`                    | none                                    |
 | `nginx_apache_status`        | `internal/helper/ops/nginx_apache.go`               | `CAP_DAC_READ_SEARCH`                   |
 
-The `caps-template.sh` post-install scriptlet maps the manifest's
-`enabled_tools[]` and `workload_plugins[]` to the union of required
-caps and writes them to the helper unit's drop-in.
+The capability generator (`/usr/sbin/host-health-mcp-caps-template`)
+maps the manifest's `enabled_tools[]` and `workload_plugins[]` to the
+union of required caps and writes them to the helper unit's drop-in.

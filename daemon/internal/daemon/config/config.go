@@ -33,6 +33,20 @@ type Daemon struct {
 	ExpensiveToolBuckets     map[string]BucketLimit   `yaml:"expensive_tool_buckets"`
 	MaxConcurrentHandshakes  int                      `yaml:"max_concurrent_handshakes"`
 	HelperSocketPath         string                   `yaml:"helper_socket_path"`
+	// IPFilterAllow is consumed at install time by
+	// host-health-mcp-caps-template, not by the daemon: it becomes the
+	// IPAddressAllow= lines of a systemd drop-in, and the kernel does
+	// the enforcing. It is declared here so the strict decoder accepts
+	// the key and so garbage fails at startup rather than at the next
+	// systemctl restart, when an invalid drop-in would stop the unit
+	// from starting at all.
+	//
+	// systemd's IPAddressAllow=/IPAddressDeny= filter packets in BOTH
+	// directions. The list must therefore name every network that has
+	// to reach the listener as well as every egress destination, or
+	// the daemon becomes unreachable. Empty means no drop-in is
+	// generated and no IP filtering is applied.
+	IPFilterAllow            []string                 `yaml:"ip_filter_allow"`
 }
 
 // BucketLimit configures a token bucket per REQ 6.6. Enabled is a
@@ -202,7 +216,32 @@ func (d Daemon) Validate() error {
 			return fmt.Errorf("config: ipv6_allowlist_ranges[%d] %q: %w", i, r, err)
 		}
 	}
+	for i, e := range d.IPFilterAllow {
+		if !validIPFilterEntry(e) {
+			return fmt.Errorf("config: ip_filter_allow[%d] %q: want a CIDR, a bare address, or one of any/localhost/link-local/multicast", i, e)
+		}
+	}
 	return nil
+}
+
+// systemdIPFilterKeywords are the symbolic names systemd accepts in an
+// IPAddressAllow= line alongside literal addresses and prefixes.
+var systemdIPFilterKeywords = map[string]bool{
+	"any":        true,
+	"localhost":  true,
+	"link-local": true,
+	"multicast":  true,
+}
+
+func validIPFilterEntry(e string) bool {
+	if systemdIPFilterKeywords[e] {
+		return true
+	}
+	if _, err := netip.ParsePrefix(e); err == nil {
+		return true
+	}
+	_, err := netip.ParseAddr(e)
+	return err == nil
 }
 
 // CacheTTL returns the configured TTL for a tool, or fallback if no

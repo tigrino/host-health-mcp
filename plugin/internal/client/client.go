@@ -69,7 +69,7 @@ func New(cfg Config) (*Client, error) {
 	} else if os.Getenv(EnvTrustSystemRoots) == "1" {
 		log.Printf("client: WARNING CAPath is empty and %s=1; trusting system root CAs (override active)", EnvTrustSystemRoots)
 	} else {
-		return nil, fmt.Errorf("client: CAPath is empty; set HOSTHEALTH_CA_PATH to an internal CA bundle (recommended) or %s=1 to use system roots", EnvTrustSystemRoots)
+		return nil, fmt.Errorf("client: CAPath is empty; set HOSTHEALTH_TLS_CA to an internal CA bundle (recommended) or %s=1 to use system roots", EnvTrustSystemRoots)
 	}
 
 	timeout := cfg.HTTPTimeout

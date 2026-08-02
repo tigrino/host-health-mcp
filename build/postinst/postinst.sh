@@ -17,16 +17,18 @@ fi
 install -d -m 0750 -o "$USER" -g "$GROUP" "$HOME_DIR"
 install -d -m 0750 -o root    -g "$GROUP" /etc/host-health-mcp/tls
 
-# Generate the helper's CapabilityBoundingSet drop-in.
-/usr/local/share/host-health-mcp/caps-template.sh || true
+# Generate the helper's CapabilityBoundingSet drop-in. Not guarded:
+# a helper that cannot have its capability set templated would run
+# with an empty one, so a failure here must fail the install rather
+# than install quietly and break at first start.
+host-health-mcp-caps-template
 
-systemctl daemon-reload || true
+# Unit reload and enablement are deliberately absent: dh_installsystemd
+# generates equivalents that additionally honour policy-rc.d, --no-enable
+# and chroot detection. Doing it here as well would enable twice.
 
-# Enable but do not start; the operator places real configuration
-# (TLS material, daemon.yml, manifest.yml) before first start.
-systemctl enable host-health-mcp-helper.service || true
-systemctl enable host-health-mcp.service || true
-
-echo "host-health-mcp: installed. Place TLS material under" \
-     "/etc/host-health-mcp/tls/, customise /etc/host-health-mcp/" \
-     "{daemon,helper,manifest}.yml, then 'systemctl start host-health-mcp'." >&2
+echo "host-health-mcp-server: installed. Place TLS material under" \
+     "/etc/host-health-mcp/tls/, copy the examples from" \
+     "/usr/share/doc/host-health-mcp-server/examples/ into" \
+     "/etc/host-health-mcp/ and customise them, then" \
+     "'systemctl start host-health-mcp'." >&2

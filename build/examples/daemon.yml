@@ -62,3 +62,25 @@ expensive_tool_buckets:
 
 # TLS handshake concurrency ceiling (design 8). Default 16.
 max_concurrent_handshakes: 16
+
+# Kernel-level IP filter for the daemon unit (REQ 6.8). Consumed at
+# install time by host-health-mcp-caps-template, which turns it into
+# IPAddressAllow= lines in
+# /etc/systemd/system/host-health-mcp.service.d/10-ip-filter.conf.
+# Re-run the generator after changing it.
+#
+# systemd's IPAddressAllow=/IPAddressDeny= filter packets in BOTH
+# directions. This list must therefore name every network that has to
+# reach the listener as well as every egress destination the daemon is
+# allowed to contact — a list containing only resolvers will make the
+# daemon unreachable. Leave it out entirely (the default) and no
+# drop-in is generated.
+#
+# Block form only, one entry per line. The generator rejects flow form
+# (ip_filter_allow: [a, b]) rather than silently producing an empty
+# filter from a non-empty config.
+#
+# ip_filter_allow:
+#   - localhost                  # loopback, and systemd-resolved
+#   - 10.0.0.0/8                 # operator workstations and resolvers
+#   - 192.0.2.10                 # a single external resolver

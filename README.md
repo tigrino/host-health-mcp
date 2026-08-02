@@ -9,7 +9,9 @@ A read-only health-check surface for a Linux host fleet, exposed to
 MCP-speaking clients (operator workstations, ChatOps relays,
 automation pipelines).
 
-The repository ships three artefacts from one `.deb`:
+The repository ships three artefacts across two `.deb` packages —
+`host-health-mcp-server` (the first two) and `host-health-mcp-client`
+(the third):
 
 - **`host-health-mcp-daemon`** — the network-facing side. Listens
   on an mTLS HTTPS endpoint, validates client certificates against
@@ -19,9 +21,11 @@ The repository ships three artefacts from one `.deb`:
   daemon talks to over a unix socket for the few reads that need
   privilege (smartctl, WireGuard, AIDE, audit). The helper has
   the only capability grant; the daemon runs unprivileged.
-- **`host-health-mcp-plugin`** — the MCP-side client that exposes
+- **`host-health-mcp-client`** — the MCP-side client that exposes
   the daemon's surface to MCP-speaking clients. Runs on the
-  operator workstation or a designated relay.
+  operator workstation or a designated relay. Configured entirely
+  by environment variable; see [`doc/install.md`](doc/install.md)
+  §5.1.
 
 This README is the entry point. For mechanics, follow the
 cross-links into [`doc/`](doc/).
@@ -57,9 +61,9 @@ limitation to fix later.
 - **Not an inventory system.** The operator brings the target
   list, the network ACLs, the credential rollout, the
   configuration management. None of that is implemented here.
-- **Not a deployment tool.** This repo produces one `.deb`. How
-  it lands on a host, when it gets restarted, how the manifest is
-  updated — operator concern.
+- **Not a deployment tool.** This repo produces two `.deb`
+  packages. How they land on a host, when the services get
+  restarted, how the manifest is updated — operator concern.
 - **Not a metric backend.** Calls are synchronous request/reply.
   There is no push, no streaming, no historical retention beyond
   what `journalctl` keeps from the audit log.
@@ -79,7 +83,7 @@ operator workstation                target host
 |   (Claude, etc.)   |               |    unprivileged uid            |
 |                    |               |    NoNewPrivileges=yes         |
 |   host-health-mcp- |  mTLS HTTPS   |    empty cap set               |
-|   plugin <--------------+--------->|    /v1/<tool>                  |
+|   client <--------------+--------->|    /v1/<tool>                  |
 +--------------------+               |       |                        |
                                      |       | unix socket            |
                                      |       | (SO_PEERCRED)          |
@@ -132,10 +136,18 @@ Step-by-step single-host install:
 
 Quick orientation:
 
-1. Build (or fetch) the `.deb` for the target arch.
-2. Install with `dpkg`. The post-install scriptlet creates the
-   `host-health-mcp` system user and enables (but does not start)
-   the two systemd units.
+1. `apt install host-health-mcp-server` from the fleet
+   repository. The post-install scriptlet creates the
+   `host-health-mcp` system user and group, establishes
+   `/etc/host-health-mcp/tls`, and runs the capability
+   generator. It does not reload, enable, or start the units —
+   the packages built here carry no `systemctl` call in any
+   maintainer script.
+2. Copy the example configurations out of
+   `/usr/share/doc/host-health-mcp-server/examples/` into
+   `/etc/host-health-mcp/`. They ship as documentation, not as
+   conffiles; nothing under `/etc/host-health-mcp/` is
+   package-owned, so upgrades never touch live configuration.
 3. Place PKI material under `/etc/host-health-mcp/tls/`. From
    1.12.0 onward, every client cert MUST carry
    `extendedKeyUsage = clientAuth` — see install §2.2 for the
@@ -145,9 +157,19 @@ Quick orientation:
    `CapabilityBoundingSet` via the post-install caps generator.
 5. Author `/etc/host-health-mcp/daemon.yml` for this host's bind
    address, allowlists, and rate-limit buckets.
-6. Start the helper first, then the daemon.
+6. Enable the units so they come up after a reboot.
+   `systemctl daemon-reload`, then `systemctl enable
+   host-health-mcp-helper.service host-health-mcp.service`.
+7. Start the helper first, then the daemon.
    `systemctl start host-health-mcp-helper.service`,
    then `systemctl start host-health-mcp.service`.
+
+On the operator workstation or relay, install the client side
+separately with `apt install host-health-mcp-client`. That package
+carries the `host-health-mcp-client` binary and a worked
+environment example at
+`/usr/share/doc/host-health-mcp-client/examples/client.env`; it
+installs no unit, creates no user, and pulls in no dependencies.
 
 Fleet rollout — target inventory, credential provisioning, ACL
 push, restart cadence — is operator infrastructure and not
@@ -179,10 +201,12 @@ returns the canonical envelope:
 }
 ```
 
-The MCP plugin wraps these calls so an MCP-speaking client can
-issue them by name. The plugin is launched per the MCP host's
-plugin configuration; it dials the daemon over mTLS using the
-operator's client cert.
+`host-health-mcp-client` wraps these calls so an MCP-speaking
+client can issue them by name. It is launched per the MCP host's
+server configuration and dials the daemon over mTLS using the
+operator's client cert. Its target, PKI paths, DNS suffix, and
+tool-name prefix all come from the environment — see
+[`doc/install.md`](doc/install.md) §5.1.
 
 Typical questions the surface answers — see
 [`doc/tools.md`](doc/tools.md) for the full per-tool reference:
@@ -212,7 +236,7 @@ under `expensive_tool_buckets`.
 
 ## 7. Upgrade and compatibility
 
-Wire schema follows semver-style additive minors. The plugin and
+Wire schema follows semver-style additive minors. The client and
 daemon compare versions on first contact per session; a
 major-version mismatch is hard-incompatible (cell C4).
 
@@ -221,15 +245,15 @@ Compatibility cells C1–C4 and the upgrade ordering:
 
 Per-release deltas: [`doc/changelog.md`](doc/changelog.md).
 
-Current release: **2.0.0** (wire schema **1.0.0**).
+Current release: **2.1.0** (wire schema **1.0.0**).
 
 Upgrade procedure on a single host:
 
 1. Stop the daemon. The helper can keep running.
    `systemctl stop host-health-mcp.service`.
-2. `dpkg -i host-health-mcp_<new>_<arch>.deb`.
+2. `apt install --only-upgrade host-health-mcp-server`.
 3. Re-run the caps templating if `enabled_tools[]` changed:
-   `/usr/local/share/host-health-mcp/caps-template.sh`,
+   `/usr/sbin/host-health-mcp-caps-template`,
    `systemctl daemon-reload`,
    `systemctl restart host-health-mcp-helper.service`.
 4. Start the daemon.
@@ -311,7 +335,7 @@ host-health-mcp/
 │   ├── tools.md
 │   └── changelog.md
 ├── daemon/                         Go module — daemon + helper
-├── plugin/                         Go module — MCP plugin
+├── plugin/                         Go module — MCP client
 └── build/                          reproducible build orchestration
     ├── build.sh
     ├── nfpm/
@@ -326,10 +350,15 @@ host-health-mcp/
 ./build/build.sh
 ```
 
-Produces `.deb` artefacts for `linux/amd64` and `linux/arm64`
-under `build/dist/` with a `SHA256SUMS` manifest. Requires Go
-(toolchain pinned in `daemon/go.mod`) and `nfpm` (install via
+Produces the `host-health-mcp-server` and `host-health-mcp-client`
+`.deb` artefacts for `linux/amd64` and `linux/arm64` under
+`build/dist/` with a `SHA256SUMS` manifest. Requires Go and `nfpm`
+(install via
 `go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest`).
+`build.sh` pins the toolchain by exporting `GOTOOLCHAIN`
+(currently `go1.26.5`, overridable from the environment); the
+`go 1.22` directive in each `go.mod` is a floor, kept because
+Ubuntu 24.04 ships exactly 1.22.
 
 Build reproducibility is functional, not byte-identical; the
 canonical artefact identity is the SHA-256 recorded in

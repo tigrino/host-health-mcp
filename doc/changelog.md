@@ -3,6 +3,115 @@ title: Host Health MCP - Changelog
 author: Albert 'Tigr' Zenkoff <albert@tigr.net>
 ---
 
+# 2.1.0 — FHS install paths and server/client package split (2026-08-02)
+
+Packaging release requested by the fleet build host so the project can
+be published as a proper Debian source package. **No change to the tool
+surface or the wire schema**; `schema_version` stays `1.0.0` and the
+version matrix is unaffected. Daemon and client may be rolled
+independently, as at any other minor release.
+
+The single `host-health-mcp` package is replaced by two:
+`host-health-mcp-server` (daemon, helper, units, capability generator,
+documentation) and `host-health-mcp-client` (the MCP client binary).
+The server package declares `Replaces`/`Conflicts`/`Provides` against
+the old name, so an upgrade retires it automatically.
+
+Install paths move out of `/usr/local`, which a package manager must
+never write to:
+
+| Component | Was | Now |
+|---|---|---|
+| daemon | `/usr/local/sbin/host-health-mcp-daemon` | `/usr/sbin/host-health-mcp-daemon` |
+| helper | `/usr/local/sbin/host-health-mcp-helper` | `/usr/sbin/host-health-mcp-helper` |
+| capability generator | `/usr/local/share/host-health-mcp/caps-template.sh` | `/usr/sbin/host-health-mcp-caps-template` |
+| systemd units | `/lib/systemd/system/` | `/usr/lib/systemd/system/` |
+| example configs | `/etc/host-health-mcp/*.yml.example` | `/usr/share/doc/host-health-mcp-server/examples/*.yml` |
+| client | *(never packaged)* | `/usr/bin/host-health-mcp-client` |
+
+Unit file names are unchanged. The `/lib` to `/usr/lib` move relocates
+no file — `/lib` is already a symlink on every target OS — it corrects
+the package's *declared* paths so two packages cannot disagree about
+who owns one.
+
+**Examples are no longer conffiles.** They ship as documentation at
+`0644` and the operator copies them into `/etc/host-health-mcp/`.
+Nothing under `/etc/host-health-mcp/` is package-owned now, so `apt
+purge` removes nothing there at all — previously it removed the three
+`*.yml.example` conffiles, never the operator's live configuration or
+PKI. `doc/install.md` §8 covers what has to be cleaned up by hand.
+
+- **The MCP client is packaged for the first time** and its binary is
+  renamed `host-health-mcp-plugin` → `host-health-mcp-client`, matching
+  the package. `--version` follows. The MCP protocol server name
+  remains the literal `host-health-mcp` — that is protocol identity and
+  does not track the binary name. A worked environment example ships at
+  `/usr/share/doc/host-health-mcp-client/examples/client.env` covering
+  all eight `HOSTHEALTH_*` variables.
+- **Fixed: the fail-closed CA error named a variable that does not
+  exist.** `plugin/internal/client/client.go` told the operator to set
+  `HOSTHEALTH_CA_PATH`; the variable actually read is
+  `HOSTHEALTH_TLS_CA`. An operator following the message stayed broken.
+- **Fixed: the generated IP filter blocked the daemon's own listener.**
+  Releases 1.17.0 through 2.0.0 wrote an unconditional
+  `IPAddressDeny=any` / `IPAddressAllow=localhost` drop-in against the
+  daemon unit. systemd's `IPAddress*` directives are bidirectional —
+  they filter packets sent *and received* — so every inbound mTLS
+  connection was denied and the listener was unreachable on any
+  non-loopback `bind_addr`. The drop-in also parsed a `dns.resolvers[]`
+  key that does not exist in `daemon.yml`; because the decoder is
+  strict, an operator who added that key per `install.md` prevented the
+  daemon from starting at all.
+
+  The filter is now opt-in and operator-enumerated through a real
+  `ip_filter_allow:` key, validated at startup. It must list every
+  network that has to reach the listener as well as every permitted
+  egress destination. Absent or empty, no drop-in is written. The key
+  must be written in YAML block form; the generator rejects flow form
+  rather than deriving an empty filter from a non-empty config. The
+  obsolete `10-ip-egress.conf` is removed whenever the generator runs,
+  before any early exit, so it is retired even on a host with no
+  `manifest.yml`.
+- **Maintainer script.** `daemon-reload` and the two `systemctl enable`
+  calls are gone, because `maintainer-script-calls-systemctl` is one of
+  the tags blocking publication. In a Debian source package built with
+  debhelper, `dh_installsystemd` generates equivalents that additionally
+  honour `policy-rc.d`, `--no-enable` and chroot detection, and keeping
+  both would enable the units twice.
+
+  **The `.deb` artefacts produced by `build/build.sh` are built with
+  nfpm, not debhelper, and nfpm emits no systemd maintainer-script
+  fragments. Nothing in them enables the units.** After installing a
+  locally built package the operator must run `systemctl daemon-reload`
+  and enable both units explicitly; `doc/install.md` §5 carries the
+  sequence. Packages built downstream from the Debian source package are
+  unaffected.
+
+  The capability generator is no longer invoked with `|| true`: a helper
+  whose capability set cannot be templated would run with an empty one,
+  so that failure now fails the install.
+- **Toolchain.** The `toolchain go1.22.5` directive is removed from all
+  three modules. Distribution builds pin to whatever Go their suite
+  ships and run offline, so the directive could only ever cause a hard
+  failure. The `go 1.22` floor is deliberately retained: Ubuntu 24.04
+  noble ships exactly 1.22. `build/build.sh` now pins `GOTOOLCHAIN`
+  explicitly for local release builds, which the go.mod floor never did.
+- **Packaging metadata.** Both packages ship a DEP-5 `copyright` and a
+  generated Debian `changelog.gz`. `build/build.sh` produces four
+  `.deb` artefacts per release (two packages × two architectures).
+
+Lintian is clean on all four artefacts under `--fail-on error,warning`
+with three tags suppressed: `statically-linked-binary` and
+`unstripped-binary-or-object`, which are inherent to Go and are excluded
+from the publication gate, and `no-manual-page`, which is not. The
+manpage tag is new in this release — lintian does not run that check
+against `/usr/local`, so moving the binaries to `/usr/sbin` and
+`/usr/bin` is what exposed it. All four artefacts emit it, for
+`host-health-mcp-daemon`, `host-health-mcp-helper`,
+`host-health-mcp-caps-template` and `host-health-mcp-client`. Whether it
+blocks publication depends on the gate's check list; man pages are not
+yet written.
+
 # 2.0.0 — SSH login counter window redesign (2026-07-22)
 
 **Breaking change — wire schema 1.0.0. Roll the daemon and the plugin

@@ -59,7 +59,7 @@ The daemon assumes:
   IMA, dpkg signature verification on the installed package, etc.).
   Neither binary carries a setuid bit; the helper's privilege comes
   from its own systemd unit configuration. Write access to
-  `/usr/local/sbin/` already implies a privileged compromise
+  `/usr/sbin/` already implies a privileged compromise
   outside this daemon's defensive scope. Neither binary re-verifies
   itself at runtime.
 - **The host filesystem is not adversarial above the daemon.** A
@@ -322,7 +322,7 @@ Properties relied on:
 
 - **No setuid bit on disk.** Both binaries are mode `0755` owner
   `root:root`. The helper's privilege comes from its unit config.
-  An on-host attacker with write access to `/usr/local/sbin/` is
+  An on-host attacker with write access to `/usr/sbin/` is
   already outside the threat model.
 - **Closed dispatch.** Each request frame from daemon to helper
   carries an `op` token from a compile-time Go enum on both sides

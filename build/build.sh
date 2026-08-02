@@ -1,12 +1,20 @@
 #!/usr/bin/env bash
 # Drives a release build per design-overview.md section 10.
-# Inputs: a clean checkout and a pinned Go toolchain (from daemon/go.mod).
-# Outputs: versioned, checksummed .deb artefacts for amd64 and arm64.
+# Inputs: a clean checkout and the Go toolchain pinned by GOTOOLCHAIN
+# below. Outputs: versioned, checksummed .deb artefacts for amd64 and
+# arm64, one package each for the server and the client.
 #
 # Build reproducibility is FUNCTIONAL, not byte-identical. See section
 # 10.1 of design-overview.md for the trade-off.
 
 set -euo pipefail
+
+# The go.mod `go` directive is a floor, not a pin: with GOTOOLCHAIN=auto
+# a release would be built against whatever Go the build host happens to
+# carry, and its stdlib would vary between hosts with no signal. Pin it
+# exactly here. Distribution packages built downstream deliberately do
+# not use this script; they pin to the toolchain their suite ships.
+export GOTOOLCHAIN=${GOTOOLCHAIN:-go1.26.5}
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)
 REPO=$(cd -- "$SCRIPT_DIR/.." && pwd)
@@ -66,8 +74,21 @@ for ARCH in amd64 arm64; do
     ( cd "$REPO/plugin" && \
         CGO_ENABLED=0 GOOS=linux GOARCH=$ARCH \
         go build -trimpath -ldflags="$LDFLAGS" \
-        -o "$DIST/$ARCH/host-health-mcp-plugin" ./cmd/plugin )
+        -o "$DIST/$ARCH/host-health-mcp-client" ./cmd/plugin )
 done
+
+# Step 4b: Debian changelog for the package doc directories. Native
+# package, so the file is changelog.gz rather than changelog.Debian.gz.
+# Generated rather than tracked because it carries the release version.
+CHANGELOG_DATE=$(date -u -R -d "@$SOURCE_DATE_EPOCH" 2>/dev/null || date -u -R)
+{
+    echo "host-health-mcp ($VERSION) unstable; urgency=medium"
+    echo
+    echo "  * Release $VERSION. See /usr/share/doc/host-health-mcp-server/"
+    echo "    or doc/changelog.md in the source tree for the full entry."
+    echo
+    echo " -- Albert 'Tigr' Zenkoff <albert@tigr.net>  $CHANGELOG_DATE"
+} | gzip -9n > "$DIST/changelog.gz"
 
 # Step 5: nfpm per arch.
 if ! command -v nfpm >/dev/null 2>&1; then
@@ -75,10 +96,13 @@ if ! command -v nfpm >/dev/null 2>&1; then
     echo "Install from https://nfpm.goreleaser.com/ to produce packages." >&2
 else
     for ARCH in amd64 arm64; do
-        echo "==> Package $ARCH"
-        ARCH=$ARCH VERSION=$VERSION envsubst < "$SCRIPT_DIR/nfpm/nfpm.yaml.tmpl" \
-            > "$SCRIPT_DIR/nfpm/nfpm-$ARCH.yaml"
-        ( cd "$SCRIPT_DIR/nfpm" && nfpm package -f "nfpm-$ARCH.yaml" -p deb -t "$DIST/" )
+        for PKG in server client; do
+            echo "==> Package host-health-mcp-$PKG $ARCH"
+            ARCH=$ARCH VERSION=$VERSION envsubst \
+                < "$SCRIPT_DIR/nfpm/nfpm-$PKG.yaml.tmpl" \
+                > "$SCRIPT_DIR/nfpm/nfpm-$PKG-$ARCH.yaml"
+            ( cd "$SCRIPT_DIR/nfpm" && nfpm package -f "nfpm-$PKG-$ARCH.yaml" -p deb -t "$DIST/" )
+        done
     done
 fi
 

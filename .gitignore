@@ -22,3 +22,4 @@ build/nfpm/nfpm-*.yaml
 /CLAUDE.md
 /run
 /.claude/
+/report/

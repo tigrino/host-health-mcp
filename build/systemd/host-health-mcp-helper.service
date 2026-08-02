@@ -1,12 +1,12 @@
 [Unit]
 Description=host-health-mcp privileged helper
-Documentation=file:///usr/share/doc/host-health-mcp/design-overview.md
+Documentation=file:///usr/share/doc/host-health-mcp-server/design-overview.md
 After=local-fs.target
 PartOf=host-health-mcp.service
 
 [Service]
 Type=notify
-ExecStart=/usr/local/sbin/host-health-mcp-helper --config /etc/host-health-mcp/helper.yml
+ExecStart=/usr/sbin/host-health-mcp-helper --config /etc/host-health-mcp/helper.yml
 Restart=on-failure
 RestartSec=5s
 WatchdogSec=30s

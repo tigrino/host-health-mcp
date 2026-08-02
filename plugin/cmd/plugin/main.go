@@ -32,7 +32,7 @@ func main() {
 	versionFlag := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
 	if *versionFlag {
-		fmt.Printf("host-health-mcp-plugin %s\n", buildID)
+		fmt.Printf("host-health-mcp-client %s\n", buildID)
 		return
 	}
 

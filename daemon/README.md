@@ -1,10 +1,11 @@
 # daemon/
 
-Go module containing two binaries that ship together as one package:
+Go module containing two binaries that ship together in the
+`host-health-mcp-server` package:
 
-- `cmd/daemon` → `/usr/local/sbin/host-health-mcp-daemon` (network-facing,
+- `cmd/daemon` → `/usr/sbin/host-health-mcp-daemon` (network-facing,
   unprivileged).
-- `cmd/helper` → `/usr/local/sbin/host-health-mcp-helper` (root via its
+- `cmd/helper` → `/usr/sbin/host-health-mcp-helper` (root via its
   systemd unit, exposed only via unix socket).
 
 Privilege separation, IPC framing, op surface, and the linter discipline
