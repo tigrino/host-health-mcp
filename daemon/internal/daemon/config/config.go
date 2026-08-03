@@ -125,10 +125,15 @@ func LoadDaemon(path string) (Daemon, error) {
 	return cfg, nil
 }
 
-// LoadManifest reads manifest.yml.
+// LoadManifest reads manifest.yml. Validation is part of the loader's
+// contract, matching LoadDaemon, so no caller can obtain an unvalidated
+// Manifest.
 func LoadManifest(path string) (Manifest, error) {
 	cfg := Manifest{}
 	if err := decodeYAMLStrict(path, &cfg); err != nil {
+		return cfg, err
+	}
+	if err := cfg.ValidateUnitSelectors(); err != nil {
 		return cfg, err
 	}
 	return cfg, nil

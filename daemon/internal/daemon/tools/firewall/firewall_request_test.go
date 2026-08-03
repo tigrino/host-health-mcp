@@ -1,8 +1,12 @@
 package firewall
 
 import (
+	"context"
 	"strings"
 	"testing"
+
+	"host-health-mcp/daemon/internal/daemon/config"
+	"host-health-mcp/daemon/internal/daemon/tools"
 
 	"host-health-mcp/daemon/internal/shared/schema"
 )
@@ -93,5 +97,57 @@ func TestValidateRequestMessagesAreActionable(t *testing.T) {
 	}
 	if strings.Contains(tblErr.Message, "garbage") {
 		t.Errorf("table error echoes caller input: %q", tblErr.Message)
+	}
+}
+
+// TestHandleValidatesBeforeManifestCheck is the regression test for the
+// 2.2.1 ordering defect: validation sat after the `!mf.Enabled` early
+// return, so the same malformed request was rejected on a host with the
+// tool enabled and accepted with a 200 on a host with it disabled.
+// Argument validity is a property of the request, not the deployment.
+//
+// The disabled path returns before touching the helper client, so a nil
+// client is safe here.
+func TestHandleValidatesBeforeManifestCheck(t *testing.T) {
+	disabled := &Tool{mf: config.Firewall{Enabled: false}}
+
+	bad := [][]byte{
+		[]byte(`{"mode":"detial"}`),
+		[]byte(`{"table":"garbage"}`),
+		[]byte(`{"unknown_field":1}`),
+	}
+	for _, body := range bad {
+		_, _, err := disabled.Handle(context.Background(), body)
+		if err == nil {
+			t.Errorf("body %s accepted on a disabled host; expected bad_argument", body)
+			continue
+		}
+		te, ok := err.(*tools.Error)
+		if !ok {
+			t.Errorf("body %s: err type %T, want *tools.Error", body, err)
+			continue
+		}
+		if te.Code != schema.ErrCodeBadArgument {
+			t.Errorf("body %s: code = %q, want %q", body, te.Code, schema.ErrCodeBadArgument)
+		}
+	}
+
+	// A well-formed request on a disabled host must still take the
+	// disabled path, not an error.
+	data, warnings, err := disabled.Handle(context.Background(), []byte(`{"mode":"detail"}`))
+	if err != nil {
+		t.Fatalf("valid request on a disabled host errored: %v", err)
+	}
+	if data == nil {
+		t.Fatal("valid request on a disabled host returned no data")
+	}
+	found := false
+	for _, w := range warnings {
+		if strings.Contains(w, "disabled in manifest") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected the disabled-in-manifest warning, got %v", warnings)
 	}
 }

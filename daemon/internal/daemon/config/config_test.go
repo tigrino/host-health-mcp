@@ -1,6 +1,10 @@
 package config
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 // TestValidateRejectsZeroZeroBucket covers M-9: a bucket configured
 // with sustained_per_min=0 AND burst=0 must fail load unless the
@@ -144,5 +148,37 @@ func TestValidateUnitSelectors(t *testing.T) {
 		if err := c.m.ValidateUnitSelectors(); err == nil {
 			t.Errorf("%s: accepted, expected an error", c.name)
 		}
+	}
+}
+
+// TestLoadManifestValidatesSelectors pins that validation is part of the
+// loader's contract, not something a caller must remember. 2.2.1 called
+// ValidateUnitSelectors from main.go only, so LoadDaemon validated
+// internally while LoadManifest did not — a future second caller would
+// silently have skipped it.
+func TestLoadManifestValidatesSelectors(t *testing.T) {
+	write := func(t *testing.T, body string) string {
+		t.Helper()
+		p := filepath.Join(t.TempDir(), "manifest.yml")
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+
+	if _, err := LoadManifest(write(t, "whitelisted_units:\n  - nginx*\n")); err == nil {
+		t.Error("LoadManifest accepted a glob in whitelisted_units")
+	}
+	if _, err := LoadManifest(write(t, "whitelisted_unit_patterns:\n  - \"*\"\n")); err == nil {
+		t.Error("LoadManifest accepted a match-everything pattern")
+	}
+
+	good := "whitelisted_units:\n  - sshd.service\nwhitelisted_unit_patterns:\n  - nginx*\n"
+	m, err := LoadManifest(write(t, good))
+	if err != nil {
+		t.Fatalf("LoadManifest rejected a valid manifest: %v", err)
+	}
+	if len(m.WhitelistedUnits) != 1 || len(m.WhitelistedUnitPatterns) != 1 {
+		t.Errorf("selectors not decoded: %+v", m)
 	}
 }
