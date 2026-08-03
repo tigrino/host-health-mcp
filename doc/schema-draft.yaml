@@ -90,10 +90,28 @@ paths:
                     properties:
                       data:
                         type: object
-                        required: [units]
+                        required: [units, pattern_units]
                         properties:
                           units:
                             type: array
+                            description: |
+                              Results of the exact selector
+                              (manifest whitelisted_units), including the
+                              load_state "not-found" rows systemd
+                              synthesises for names it does not
+                              recognise. Unchanged since schema 0.1.0.
+                            items: { $ref: '#/components/schemas/SystemdUnit' }
+                          pattern_units:
+                            type: array
+                            description: |
+                              Results of the glob selector (manifest
+                              whitelisted_unit_patterns), added in schema
+                              1.1.0. Disjoint from units[]: a unit both
+                              named and matched appears only in units[].
+                              Only loaded units can match, so this array
+                              never carries a "not-found" row. Capped at
+                              100 entries, with truncation reported as an
+                              envelope warning.
                             items: { $ref: '#/components/schemas/SystemdUnit' }
         default: { $ref: '#/components/responses/Error' }
 
@@ -1101,6 +1119,22 @@ components:
         whitelisted_units:
           type: array
           items: { type: string }
+          description: |
+            Exact unit names the daemon reports on (tool 4.2). Resolved
+            through systemd's ListUnitsByNames, which synthesises a
+            not-found row for a name it does not recognise, so a unit
+            the operator expects but that is absent is still reported.
+        whitelisted_unit_patterns:
+          type: array
+          items: { type: string }
+          description: |
+            Glob half of the same selector, added in schema 1.1.0.
+            Resolved through systemd's ListUnitsByPatterns with the same
+            semantics as `systemctl list-units '<pattern>'`. Only loaded
+            units can match, and a pattern matching nothing is
+            indistinguishable from the units being absent. Results land
+            in the systemd_units response's pattern_units[], capped at
+            100 units; truncation is reported as an envelope warning.
 
     UpdatesData:
       type: object

@@ -13,23 +13,25 @@ import (
 // Data is the response data for tool manifest. Mirrors ManifestData in
 // doc/schema-draft.yaml.
 type Data struct {
-	SchemaVersion          string    `json:"schema_version"`
-	DaemonVersion          string    `json:"daemon_version"`
-	BuildID                string    `json:"build_id"`
-	StartedAtTS            time.Time `json:"started_at_ts"`
-	EnabledTools           []string  `json:"enabled_tools"`
-	EnabledWorkloadPlugins []string  `json:"enabled_workload_plugins"`
-	WhitelistedUnits       []string  `json:"whitelisted_units"`
+	SchemaVersion           string    `json:"schema_version"`
+	DaemonVersion           string    `json:"daemon_version"`
+	BuildID                 string    `json:"build_id"`
+	StartedAtTS             time.Time `json:"started_at_ts"`
+	EnabledTools            []string  `json:"enabled_tools"`
+	EnabledWorkloadPlugins  []string  `json:"enabled_workload_plugins"`
+	WhitelistedUnits        []string  `json:"whitelisted_units"`
+	WhitelistedUnitPatterns []string  `json:"whitelisted_unit_patterns"`
 }
 
 // Snapshot captures the daemon-wide values the tool returns.
 type Snapshot struct {
-	DaemonVersion          string
-	BuildID                string
-	StartedAt              time.Time
-	EnabledTools           []string
-	EnabledWorkloadPlugins []string
-	WhitelistedUnits       []string
+	DaemonVersion           string
+	BuildID                 string
+	StartedAt               time.Time
+	EnabledTools            []string
+	EnabledWorkloadPlugins  []string
+	WhitelistedUnits        []string
+	WhitelistedUnitPatterns []string
 }
 
 // Tool is the registered tool.
@@ -50,6 +52,9 @@ func New(snap Snapshot) *Tool {
 	if snap.WhitelistedUnits == nil {
 		snap.WhitelistedUnits = []string{}
 	}
+	if snap.WhitelistedUnitPatterns == nil {
+		snap.WhitelistedUnitPatterns = []string{}
+	}
 	return &Tool{snap: snap}
 }
 
@@ -66,12 +71,13 @@ func (*Tool) DefaultTimeout() time.Duration { return 1 * time.Second }
 // Handle returns the snapshot.
 func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 	return Data{
-		SchemaVersion:          schema.SchemaVersion,
-		DaemonVersion:          t.snap.DaemonVersion,
-		BuildID:                t.snap.BuildID,
-		StartedAtTS:            t.snap.StartedAt,
-		EnabledTools:           t.snap.EnabledTools,
-		EnabledWorkloadPlugins: t.snap.EnabledWorkloadPlugins,
-		WhitelistedUnits:       t.snap.WhitelistedUnits,
+		SchemaVersion:           schema.SchemaVersion,
+		DaemonVersion:           t.snap.DaemonVersion,
+		BuildID:                 t.snap.BuildID,
+		StartedAtTS:             t.snap.StartedAt,
+		EnabledTools:            t.snap.EnabledTools,
+		EnabledWorkloadPlugins:  t.snap.EnabledWorkloadPlugins,
+		WhitelistedUnits:        t.snap.WhitelistedUnits,
+		WhitelistedUnitPatterns: t.snap.WhitelistedUnitPatterns,
 	}, nil, nil
 }

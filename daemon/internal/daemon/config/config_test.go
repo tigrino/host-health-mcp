@@ -99,3 +99,47 @@ func TestValidateIPFilterAllow(t *testing.T) {
 		}
 	}
 }
+
+// TestValidateUnitSelectors covers the tool 4.2 selector split. A glob
+// in whitelisted_units is rejected rather than passed to
+// ListUnitsByNames, where it would come back as a synthesised
+// not-found row and read as "the unit is missing".
+func TestValidateUnitSelectors(t *testing.T) {
+	accepted := []Manifest{
+		{},
+		{WhitelistedUnits: []string{"sshd.service", "cron.service"}},
+		{WhitelistedUnitPatterns: []string{"nginx*", "php*-fpm.service", "systemd-*"}},
+		{
+			WhitelistedUnits:        []string{"sshd.service"},
+			WhitelistedUnitPatterns: []string{"postfix*"},
+		},
+		// Escaped device unit names legitimately carry no metacharacter
+		// but do carry backslashes; they must pass as exact names.
+		{WhitelistedUnits: []string{`dev-disk-by\x2duuid-1234.device`}},
+	}
+	for i, m := range accepted {
+		if err := m.ValidateUnitSelectors(); err != nil {
+			t.Errorf("accepted[%d] rejected: %v", i, err)
+		}
+	}
+
+	rejected := []struct {
+		name string
+		m    Manifest
+	}{
+		{"glob in the exact list", Manifest{WhitelistedUnits: []string{"nginx*"}}},
+		{"bracket glob in the exact list", Manifest{WhitelistedUnits: []string{"sshd[1].service"}}},
+		{"question mark in the exact list", Manifest{WhitelistedUnits: []string{"ssh?.service"}}},
+		{"empty exact entry", Manifest{WhitelistedUnits: []string{""}}},
+		{"blank exact entry", Manifest{WhitelistedUnits: []string{"   "}}},
+		{"empty pattern entry", Manifest{WhitelistedUnitPatterns: []string{""}}},
+		{"match-everything pattern", Manifest{WhitelistedUnitPatterns: []string{"*"}}},
+		{"match-everything pattern, doubled", Manifest{WhitelistedUnitPatterns: []string{"**"}}},
+		{"metacharacters only", Manifest{WhitelistedUnitPatterns: []string{"?*"}}},
+	}
+	for _, c := range rejected {
+		if err := c.m.ValidateUnitSelectors(); err == nil {
+			t.Errorf("%s: accepted, expected an error", c.name)
+		}
+	}
+}

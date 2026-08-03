@@ -3,6 +3,70 @@ title: Host Health MCP - Changelog
 author: Albert 'Tigr' Zenkoff <albert@tigr.net>
 ---
 
+# 2.2.0 — glob selector for systemd_units (2026-08-03)
+
+Requested by the fleet operator: `whitelisted_units` accepts only exact
+unit names, which forces a per-host manifest wherever unit names vary,
+and every name systemd does not recognise comes back as a synthesised
+`load_state: "not-found"` row.
+
+Both behaviours are inherent to systemd's `ListUnitsByNames`, which is
+what the tool has always called. Rather than change how exact names are
+resolved, 2.2.0 adds a second, separate selector.
+
+**Wire schema 1.0.0 → 1.1.0, additive.** No field is renamed or
+removed, so a 1.0.0 plugin keeps working against a 2.2.0 daemon and
+simply does not see the new arrays (version-matrix cell C2). Daemon and
+client may be rolled independently.
+
+- **New manifest key `whitelisted_unit_patterns`** — globs, resolved by
+  systemd itself through `ListUnitsByPatterns`, so the semantics are
+  identical to `systemctl list-units '<pattern>'` and cannot drift from
+  a reimplementation. No regex, so no pathological-input class.
+- **New response array `systemd_units.pattern_units[]`** carrying that
+  selector's results. `units[]` continues to carry the exact selector's
+  results, unchanged in shape and content.
+
+  The two are kept separate rather than merged so the change is additive
+  by construction: a consumer written before 2.2.0 reads `units[]` and
+  sees exactly what it saw before, and pattern-discovered units cannot
+  leak into an existing dashboard or alert rule unless it opts in. The
+  distinction is also operationally real — a `not-found` row in `units[]`
+  means a unit the operator declared is missing and is worth alerting
+  on, whereas a unit leaving `pattern_units[]` is usually routine, such
+  as `php8.2-fpm` being superseded by `php8.3-fpm`.
+
+  The arrays are disjoint: a unit both named exactly and matched by a
+  pattern appears only in `units[]`.
+- **The keys are separate, not sniffed from content.** A glob
+  metacharacter is legal inside an escaped systemd unit name, so
+  inferring intent from an entry would silently reinterpret a valid
+  exact name.
+- **Two caveats inherent to pattern resolution**, documented rather than
+  worked around: only *loaded* units can match, so an installed but
+  never-loaded unit does not appear at all; and a pattern matching
+  nothing is indistinguishable from the units being absent. Name a unit
+  exactly when you need to be told it is missing.
+- **`pattern_units[]` is capped at 100.** Each unit costs two further
+  D-Bus round trips against a 3s budget, so a broad pattern such as
+  `*.service` would otherwise exceed the deadline on any normal host.
+  Truncation is reported as an envelope warning. `units[]` is not
+  capped — it is enumerated by hand and so is self-limiting.
+- **Startup validation, fail-closed.** A glob metacharacter in
+  `whitelisted_units` is rejected and points the operator at the
+  patterns key, rather than being passed through to produce a
+  not-found row that reads as a missing unit. Empty entries in either
+  list, and a pattern consisting solely of metacharacters, are also
+  rejected.
+- **`manifest` response gains `whitelisted_unit_patterns`** so the
+  effective selector stays inspectable from the wire.
+- **`doc/tools.md` gains an argument-matching reference** covering how
+  every caller-supplied argument across the tool surface is matched and
+  bounded — enum, parsed type, bounded integer, anchored regex, or
+  unvalidated. That table did not exist before.
+
+`doc/REQUIREMENTS.txt` is now Rev 5.
+
 # 2.1.0 — FHS install paths and server/client package split (2026-08-02)
 
 Packaging release requested by the fleet build host so the project can

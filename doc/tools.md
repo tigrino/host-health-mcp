@@ -28,6 +28,115 @@ failing the call: `storage.smart[].error`, `updates.apt_lock_state`,
 and `dns` (per-probe bool plus envelope warning). All other tools
 follow the "tool fails as a whole" rule.
 
+# Argument matching
+
+Every value that can influence what a tool does is matched by one of a
+small number of disciplines. This section is the single place they are
+enumerated; the per-tool sections below repeat the bounds in context
+but do not restate the discipline.
+
+Three of the nineteen tools decode a request body at all: `logs`,
+`firewall`, `firewall_lookup`. The other sixteen ignore the body
+entirely — their handler signature discards it — and are driven solely
+by values passed in from `manifest.yml` at construction time.
+
+## Envelope-level bounds
+
+These apply to every request regardless of tool:
+
+  - Request bodies are read through a limit reader and rejected with
+    `body_too_large` above **4 KiB**.
+  - An empty body is normalised to `{}`; a body that is not valid JSON
+    is rejected before it reaches the cache.
+  - The three tools that decode a body use a strict decoder
+    (`DisallowUnknownFields`), so an unrecognised JSON key is a
+    `bad_argument` error, not a silent ignore.
+  - Helper-to-daemon response frames are capped at **4 MiB**, bounding
+    the volume of subprocess-derived data independently of the
+    request.
+
+## Caller-supplied arguments
+
+| Tool | Argument | Discipline | Bound / allowed values |
+|------|----------|------------|------------------------|
+| `logs` | `severity` | closed enum, map lookup | `emerg`, `alert`, `crit`, `err`, `warning`; default `warning` |
+| `logs` | `window` | closed enum, map lookup | `15m`, `1h`, `6h`, `24h`; default `1h` |
+| `logs` | `source` | closed enum, map lookup | `journal`, `audit`; default `journal` |
+| `firewall` | `mode` | compared against one literal | `detail` enables rule bodies (and only if the manifest sets `detail_mode_allowed`); every other value, including the documented `summary`, is treated as not-detail. Not an enforced enum — see the note below |
+| `firewall` | `table` | structured split on `/` | `<family>/<name>`; a value without exactly one `/` yields no filter and the whole ruleset is returned. Never reaches a subprocess or a path — it is used only as an in-process map-key comparison |
+| `firewall` | `include_set_elements` | boolean | JSON `true` / `false`; default `false` |
+| `firewall_lookup` | `query` | parsed into a type | Required, non-blank. Parsed helper-side by `net/netip` — `ParsePrefix` then `ParseAddr`; anything that is not a valid IPv4/IPv6 address or CIDR is rejected with `bad_param`. Never string-matched, never used as a path or argv element. The audit-log copy is truncated to 64 runes |
+| `firewall_lookup` | `include_set_elements` | boolean | JSON `true` / `false`; default `false` |
+
+No other tool accepts caller input. In particular `systemd_units`
+(selector is manifest-only), `storage`, `security` and `workload`
+expose no argument by which a caller can name a device, unit, path or
+plugin.
+
+Note on `firewall.mode`: the tool layer performs no closed-set check.
+The helper tests `mode == "detail"` and treats anything else as
+summary, so a typo degrades silently to summary output rather than
+raising `bad_argument`. Callers should not rely on an unrecognised
+mode being rejected.
+
+## Manifest-supplied values
+
+Operator-controlled, read once at startup. They are not caller input,
+but they are the other half of what bounds a tool's behaviour.
+
+| Tool | Key | Discipline | Bound / allowed values |
+|------|-----|------------|------------------------|
+| `systemd_units` | `whitelisted_units[]` | exact names, startup-validated | Non-blank; no `*`, `?` or `[`. Unbounded in length |
+| `systemd_units` | `whitelisted_unit_patterns[]` | fnmatch globs, resolved by systemd | Non-blank; not composed solely of metacharacters. Result capped at 100 units |
+| `workload.nginx_apache` | `access_log_path` | **none** | Free string; see below |
+| `workload.nginx_apache` | `access_log_window_minutes` | bounded integer | `1`..`1440`; default 60. Out-of-range or non-numeric is a hard error from the plugin |
+| `workload.nginx_apache` | `access_log_tail_bytes` | bounded integer | Non-negative; default 256 KiB; hard-capped helper-side at 4 MiB |
+| `firewall` | `detail_mode_allowed` | boolean | Gates `mode: detail` irrespective of what the caller asks for |
+| `firewall` | `max_set_elements_per_set` | bounded integer | Default 2000; hard-capped helper-side at 40000 |
+| `firewall` | `max_rule_text_bytes` | integer, floor only | Default 65536 when unset or non-positive; **no upper bound is enforced** |
+| `firewall` | `ban_sets[]` | literal strings | Used as map keys (`family/table/name`); no per-field validation |
+| `storage` | `btrfs_mountpoints[]` | anchored regex plus a filesystem-type check | See `btrfsMountPathRE` below |
+| `certs` | `cert_paths[]`, `cert_renewal_units[]` | none | Parallel lists; read by the daemon, never passed to a subprocess |
+
+`workload.nginx_apache.access_log_path` is the one value in the whole
+surface with no allow-list. It is passed to the helper, which runs as
+root, and opened directly: `os.Stat` then `os.Open`, with no
+`O_NOFOLLOW`, no prefix constraint, and no canonicalisation. The only
+check is that the resolved target is a regular file — and because
+`os.Stat` follows symlinks, a symlink to a regular file is followed.
+An operator who misconfigures this key can therefore cause the helper
+to read the tail of any root-readable regular file on the host; the
+parsed 4xx/5xx counts, not the bytes, are what crosses the socket, but
+the read itself is unconstrained. This is accepted only because the
+value is operator-supplied and never caller-supplied: no request body
+can reach it. Treat it with the same care as any other root-context
+path in `manifest.yml`.
+
+## Helper-side validation
+
+Several tools reach an underlying binary through a helper op. Op
+parameters are not caller arguments, but they are the validation layer
+that stands between a tool and a subprocess argv, so they belong in
+the same picture. Every one of these patterns is fully anchored, and
+`helperexec` builds argv slices directly — there is no `sh -c`
+anywhere in the ops package, so these guard argv content, not shell
+metacharacters.
+
+| Pattern | Op | Validates |
+|---------|-----|-----------|
+| `deviceRE` — <code>^(sd[a-z]+&#124;nvme[0-9]+n[0-9]+&#124;vd[a-z]+&#124;hd[a-z]+&#124;xvd[a-z]+)$</code> | `smart_summary` | Device name, before `/dev/` prefixing. The daemon's own pre-filter in `storage` is a convenience, not the boundary — this is |
+| `nvmeRE` — `^nvme[0-9]+n[0-9]+$` | `smart_summary` | Runs after `deviceRE` has passed, only to decide whether to add `-d nvme`. Not itself a gate |
+| `mdraidNameRE` — `^md[0-9]+$` | `mdraid_detail` | Array name, before `/dev/` prefixing |
+| `btrfsMountPathRE` — `^(/[A-Za-z0-9_-]+)+$` | `btrfs_scrub` | Mountpoint. Backed by a second, independent gate: `statfs(2)` must report `BTRFS_SUPER_MAGIC`. The window between the statfs and the exec is a known, accepted TOCTOU |
+| `timerUnitRE` — `^[A-Za-z0-9][A-Za-z0-9._@-]*\.timer$` | `systemd_timer_last_trigger` | Unit name. Call sites pass literals only (e.g. `debsums-check.timer`) |
+| `paramRE` — `^severity=(...) window=(...) source=(...)$` | `journal_query` | The whole structured parameter string the `logs` tool builds. Deliberately redundant with the tool's enum check; the approved values are then translated through fixed switch statements into `journalctl` argv, so no caller string reaches argv even in literal form |
+| `jailNameRE` — `^[A-Za-z][A-Za-z0-9._-]{0,63}$` | `fail2ban_status` | Not an op parameter — the op takes none. Filters jail names parsed **out of** `fail2ban-client status` output before they are fed back into a second invocation |
+| `wgPublicKeyRE` — `^[A-Za-z0-9+/]{42,43}=?$` | `wireguard_show` | Not an op parameter. Validates each public key parsed out of `wg show all dump` before it enters the result |
+
+The remaining fifteen ops take no parameter at all: their argv is
+fixed at compile time and contains no caller- or operator-influenced
+element.
+
 # Tools
 
 ## `system` (REQ 4.1, CORE)
@@ -40,11 +149,92 @@ Cache TTL default: 15 s. Timeout default: 3 s.
 
 ## `systemd_units` (REQ 4.2, CORE)
 
-Per-unit state for every name in `manifest.yml`'s
-`whitelisted_units`. Source: system D-Bus (no helper). Per-unit
-fields: `name`, `load_state`, `active_state`, `sub_state`, `result`,
-`exec_main_status`, `active_enter_ts`, `active_exit_ts`,
-`restart_count`. Caller cannot supply unit names.
+Per-unit state for the units selected by `manifest.yml`. Source:
+system D-Bus (no helper). The caller supplies nothing — neither unit
+names nor patterns; the selector is entirely operator-controlled.
+
+Per-unit fields, identical in both arrays: `name`, `load_state`,
+`active_state`, `sub_state`, `result`, `exec_main_status`,
+`active_enter_ts`, `active_exit_ts`, `restart_count`.
+
+### Selector
+
+Two independent manifest keys, each feeding its own response array:
+
+| Manifest key                | Response array   | Resolved by                 |
+|-----------------------------|------------------|-----------------------------|
+| `whitelisted_units`         | `units[]`        | `ListUnitsByNames` (exact)  |
+| `whitelisted_unit_patterns` | `pattern_units[]`| `ListUnitsByPatterns` (glob)|
+
+`whitelisted_units` is unchanged from earlier releases: exact unit
+names, resolved by name. systemd **synthesises** a row for any name it
+does not recognise, carrying `load_state: "not-found"` and empty
+`active_state` / `sub_state`. That is deliberate and useful — it is
+how a caller learns that a unit the operator declared is absent, as
+opposed to present-and-stopped.
+
+`whitelisted_unit_patterns` (2.2.0+) holds fnmatch globs (`*`, `?`,
+`[...]`) matched by systemd itself, with the same semantics as
+`systemctl list-units '<pattern>'`. Two differences from the exact
+list follow inherently from how systemd resolves patterns:
+
+  - Only **loaded** units can match. A unit that is installed but has
+    never been loaded does not appear at all.
+  - A pattern that matches nothing is indistinguishable from the
+    units being absent. There is no not-found row on this path. Name
+    a unit in `whitelisted_units` when you need to be told it is
+    missing.
+
+The keys are kept separate rather than inferred from an entry's
+content because a metacharacter is legal inside an escaped systemd
+unit name; sniffing for one would silently reinterpret a valid exact
+name as a glob.
+
+### Disjointness and the cap
+
+The two arrays are **disjoint**. A unit that is both named exactly and
+matched by a pattern appears only in `units[]`, never in both, so a
+consumer reading the two together cannot double-count it.
+
+Keeping them separate makes the 2.2.0 change additive by
+construction: a consumer written before 2.2.0 reads `units[]` and sees
+exactly what it saw before, and pattern-discovered units cannot leak
+into an existing dashboard or alert rule unless the consumer opts in
+by reading the new array. The provenance distinction is also
+operationally real — a `not-found` row in `units[]` means "a unit I
+declared is missing" and is usually worth alerting on, whereas a unit
+disappearing from `pattern_units[]` is routine (`php8.2-fpm`
+superseded by `php8.3-fpm`).
+
+`pattern_units[]` is capped at **100 units**. Each unit costs two
+further D-Bus round trips against a 3 s budget, so a broad pattern
+such as `*.service` would otherwise exhaust the deadline on any normal
+host. Past the cap the array is truncated and the envelope carries:
+
+```
+systemd_units: whitelisted_unit_patterns resolved to <n> units,
+capped at 100; narrow the patterns
+```
+
+`units[]` is never truncated — it is enumerated by hand in the
+manifest and is therefore self-limiting.
+
+### Startup validation
+
+These are hard startup failures, not warnings; the daemon refuses to
+start:
+
+  - a glob metacharacter (`*`, `?`, `[`) in a `whitelisted_units`
+    entry — the error points the operator at
+    `whitelisted_unit_patterns`. Passed to `ListUnitsByNames` such an
+    entry would match nothing and come back as a synthesised
+    not-found row, which reads as "the unit is missing";
+  - an empty or blank entry in either list;
+  - a pattern consisting solely of metacharacters (`*`, `**`, `?*`),
+    which would match every unit on the host.
+
+The `manifest` tool echoes both keys, so a caller can see the selector
+it is being served without reading `manifest.yml`.
 
 Cache TTL default: 15 s. Timeout default: 3 s.
 
@@ -256,9 +446,13 @@ Cache TTL default: 15 s. Timeout default: 5 s.
 
 Daemon self-description. `schema_version`, `daemon_version`,
 `build_id`, `started_at_ts`, `enabled_tools`,
-`enabled_workload_plugins`, `whitelisted_units`. Required for
-plugins to negotiate schema-version compatibility (REQ 7.2;
-`doc/version-matrix.md`).
+`enabled_workload_plugins`, `whitelisted_units`,
+`whitelisted_unit_patterns`. Required for plugins to negotiate
+schema-version compatibility (REQ 7.2; `doc/version-matrix.md`).
+
+`whitelisted_unit_patterns` is new in 2.2.0 (wire schema 1.1.0,
+additive); it is the glob half of the tool 4.2 selector and is
+always present, as `[]` when no patterns are configured.
 
 Cache TTL default: 60 s. Timeout default: 1 s.
 

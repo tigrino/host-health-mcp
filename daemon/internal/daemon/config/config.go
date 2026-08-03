@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -64,6 +65,12 @@ type BucketLimit struct {
 type Manifest struct {
 	EnabledTools           []string                     `yaml:"enabled_tools"`
 	WhitelistedUnits       []string                     `yaml:"whitelisted_units"`
+	// WhitelistedUnitPatterns is the glob half of the tool 4.2
+	// selector. Kept separate from WhitelistedUnits rather than
+	// inferred from an entry's content: systemd unit names may carry
+	// escaped bytes, so a literal '*' or '[' in a name is legal and
+	// sniffing for metacharacters would silently reinterpret it.
+	WhitelistedUnitPatterns []string                    `yaml:"whitelisted_unit_patterns"`
 	WorkloadPlugins        []string                     `yaml:"workload_plugins"`
 	WorkloadPluginConfig   map[string]map[string]string `yaml:"workload_plugin_config"`
 	CertPaths              []string                     `yaml:"cert_paths"`
@@ -148,6 +155,35 @@ var knownWorkloadPluginKeys = map[string]map[string]bool{
 // yet have a key registered here); only known plugins' key sets are
 // enforced. The caller logs the returned warnings — the function
 // itself has no side effects.
+// unitGlobMetachars are the fnmatch metacharacters systemd honours in
+// a unit pattern.
+const unitGlobMetachars = "*?["
+
+// ValidateUnitSelectors checks the tool 4.2 selector lists. Exact names
+// carrying a metacharacter are rejected outright: passed to
+// ListUnitsByNames they would match nothing and come back as a
+// synthesised not-found row, which reads as "the unit is missing"
+// rather than "you put a pattern in the wrong key".
+func (m Manifest) ValidateUnitSelectors() error {
+	for i, u := range m.WhitelistedUnits {
+		if strings.TrimSpace(u) == "" {
+			return fmt.Errorf("config: whitelisted_units[%d] is empty", i)
+		}
+		if strings.ContainsAny(u, unitGlobMetachars) {
+			return fmt.Errorf("config: whitelisted_units[%d] %q contains a glob metacharacter; put patterns in whitelisted_unit_patterns", i, u)
+		}
+	}
+	for i, p := range m.WhitelistedUnitPatterns {
+		if strings.TrimSpace(p) == "" {
+			return fmt.Errorf("config: whitelisted_unit_patterns[%d] is empty", i)
+		}
+		if strings.Trim(p, unitGlobMetachars+"]") == "" {
+			return fmt.Errorf("config: whitelisted_unit_patterns[%d] %q matches every unit on the host; name something", i, p)
+		}
+	}
+	return nil
+}
+
 func (m Manifest) CheckWorkloadPluginConfig() []string {
 	var warnings []string
 	for plugin, kv := range m.WorkloadPluginConfig {

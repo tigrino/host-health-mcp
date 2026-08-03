@@ -26,6 +26,10 @@ Status         : Requirements - for implementation by the health-check architect
                  host-health-mcp-server and host-health-mcp-client binary
                  packages. No change to the tool surface or the wire
                  schema.
+                 Rev 5 (2026-08-03): tool 4.2's selector gains
+                 whitelisted_unit_patterns[], returned in a separate
+                 pattern_units[] array, and the 4.11 manifest response
+                 gains the matching field (wire schema 1.1.0, additive).
 Repository     : (this repository)
 
 --------------------------------------------------------------------------------
@@ -174,9 +178,40 @@ enabled in the manifest. Core tools must always be available.
      mismatch against installed package).
 
 4.2  systemd_units                                                   (CORE)
-     For each unit in a per-host whitelist (see 8.2): name, load_state,
-     active_state, sub_state, result, exec_main_status, active_enter_ts,
-     active_exit_ts, restart_count. No free-form unit name from the caller.
+     For each unit selected by the per-host manifest (see 8.2): name,
+     load_state, active_state, sub_state, result, exec_main_status,
+     active_enter_ts, active_exit_ts, restart_count. No free-form unit name
+     and no free-form pattern from the caller; the selector is entirely
+     operator-controlled.
+
+     The selector has two independent manifest keys, each returned in its
+     own response array:
+
+       whitelisted_units[]         -> units[]
+           Exact unit names, resolved by name. A name systemd does not
+           recognise yields a synthesised row with load_state "not-found".
+           That row is the signal that a unit the operator declared is
+           absent, and must be preserved.
+
+       whitelisted_unit_patterns[] -> pattern_units[]
+           fnmatch globs, resolved by systemd with the same semantics as
+           `systemctl list-units '<pattern>'`. Only loaded units can match,
+           so this path cannot report absence: a pattern matching nothing
+           is indistinguishable from the units being absent.
+
+     The two arrays are disjoint - a unit both named exactly and matched by
+     a pattern appears only in units[]. Keeping them separate rather than
+     merged keeps the addition compatible by construction: a consumer that
+     predates the change reads units[] and sees exactly what it saw before.
+
+     pattern_units[] is capped at 100 units; beyond the cap the array is
+     truncated and the envelope carries a warning naming the cap and
+     directing the operator to narrow the patterns. units[] is not capped -
+     it is enumerated by hand in the manifest and is self-limiting.
+
+     The daemon must refuse to start on a glob metacharacter in
+     whitelisted_units[], on a blank entry in either list, or on a pattern
+     composed solely of metacharacters.
 
 4.3  network                                                         (CORE)
      interfaces[] (name, mac, mtu, oper_state, carrier, addrs[]),
@@ -266,8 +301,8 @@ enabled in the manifest. Core tools must always be available.
 4.11 manifest                                                        (CORE)
      Returns the daemon's view of itself: schema_version, daemon_version,
      enabled_tools[], enabled_workload_plugins[], whitelisted_units[],
-     build_id, started_at_ts. Required for callers to learn the daemon's
-     surface before issuing queries.
+     whitelisted_unit_patterns[], build_id, started_at_ts. Required for
+     callers to learn the daemon's surface before issuing queries.
 
 4.12 updates                                                         (CORE)
      apt_lock_state (enum: acquired/contended/unknown),
@@ -543,7 +578,8 @@ host state, or to pivot to other systems.
     Path: /etc/host-health-mcp/manifest.yml (mode 0644).
     Declares:
       enabled_tools[]                 (subset of 4.1 - 4.17)
-      whitelisted_units[]             (for tool 4.2)
+      whitelisted_units[]             (for tool 4.2; exact unit names)
+      whitelisted_unit_patterns[]     (for tool 4.2; fnmatch globs)
       workload_plugins[]              (for tool 4.9; selects compiled-in
                                        plugins, not loadable modules)
       cert_paths[]                    (for tool 4.6)

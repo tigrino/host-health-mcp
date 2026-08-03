@@ -74,6 +74,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("daemon: manifest: %v", err)
 	}
+	if err := manifestCfg.ValidateUnitSelectors(); err != nil {
+		log.Fatalf("daemon: manifest: %v", err)
+	}
 	for _, w := range manifestCfg.CheckWorkloadPluginConfig() {
 		log.Printf("daemon: %s", w)
 	}
@@ -115,7 +118,7 @@ func main() {
 	reg.Register(sockets.New())
 	reg.Register(updates.New(hc))
 	reg.Register(storage.New(hc, manifestCfg.BtrfsMountpoints))
-	reg.Register(systemdunits.New(manifestCfg.WhitelistedUnits))
+	reg.Register(systemdunits.New(manifestCfg.WhitelistedUnits, manifestCfg.WhitelistedUnitPatterns))
 	reg.Register(dns.New(dns.Probes{
 		ExternalProbe: cfg.DNSProbeTargets["external_probe"],
 		FilterCanary:  cfg.DNSProbeTargets["filter_canary"],
@@ -182,12 +185,13 @@ func main() {
 	}
 
 	reg.Register(manifest.New(manifest.Snapshot{
-		DaemonVersion:          buildID,
-		BuildID:                buildID,
-		StartedAt:              time.Now().UTC(),
-		EnabledTools:           enforcedTools,
-		EnabledWorkloadPlugins: manifestCfg.WorkloadPlugins,
-		WhitelistedUnits:       manifestCfg.WhitelistedUnits,
+		DaemonVersion:           buildID,
+		BuildID:                 buildID,
+		StartedAt:               time.Now().UTC(),
+		EnabledTools:            enforcedTools,
+		EnabledWorkloadPlugins:  manifestCfg.WorkloadPlugins,
+		WhitelistedUnits:        manifestCfg.WhitelistedUnits,
+		WhitelistedUnitPatterns: manifestCfg.WhitelistedUnitPatterns,
 	}))
 
 	cch := cache.New()
