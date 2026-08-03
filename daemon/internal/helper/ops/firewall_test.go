@@ -226,26 +226,16 @@ func TestFirewallHardRuleTextCap(t *testing.T) {
 			firewallHardRuleTextCap, proto.MaxResponseFrame)
 	}
 
-	// Mirror the clamp applied in firewallInspect.
-	clamp := func(v int) int {
-		if v <= 0 {
-			v = 65536
-		}
-		if v > firewallHardRuleTextCap {
-			v = firewallHardRuleTextCap
-		}
-		return v
-	}
 	cases := []struct{ in, want int }{
-		{0, 65536},
-		{-1, 65536},
-		{65536, 65536},
+		{0, firewallRuleTextDefault},
+		{-1, firewallRuleTextDefault},
+		{firewallRuleTextDefault, firewallRuleTextDefault},
 		{firewallHardRuleTextCap, firewallHardRuleTextCap},
 		{firewallHardRuleTextCap + 1, firewallHardRuleTextCap},
 		{1 << 30, firewallHardRuleTextCap},
 	}
 	for _, c := range cases {
-		if got := clamp(c.in); got != c.want {
+		if got := clampRuleTextBytes(c.in); got != c.want {
 			t.Errorf("clamp(%d) = %d, want %d", c.in, got, c.want)
 		}
 	}

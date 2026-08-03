@@ -31,9 +31,10 @@ whitelisted_units:
 
 # Glob half of the same selector, matched by systemd itself with the
 # same semantics as `systemctl list-units '<pattern>'`. Kept separate
-# from whitelisted_units above rather than inferred from the entry: a
-# metacharacter is legal inside an escaped unit name, so sniffing for
-# one would silently reinterpret a valid exact name.
+# from whitelisted_units above rather than inferred from the entry,
+# because the two resolve differently and only the exact list can tell
+# you a unit is absent. Say which you meant; do not make the daemon
+# guess from punctuation.
 #
 # Two differences from the exact list, both inherent to how systemd
 # resolves patterns:
@@ -43,9 +44,10 @@ whitelisted_units:
 #     being absent. Name a unit exactly above when you need to be told
 #     that it is missing.
 #
-# The merged selector is capped at 100 units; beyond that the response
-# is truncated and carries a warning. A pattern like "*.service" will
-# hit that on any normal host.
+# Only the pattern results are capped, at 100 units beyond those named
+# exactly; beyond that pattern_units[] is truncated and the response
+# carries a warning. whitelisted_units above is never truncated. A
+# pattern like "*.service" will hit the cap on any normal host.
 whitelisted_unit_patterns: []
 #   - nginx*
 #   - php*-fpm.service

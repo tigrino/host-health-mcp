@@ -62,8 +62,8 @@ These apply to every request regardless of tool:
 | `logs` | `severity` | closed enum, map lookup | `emerg`, `alert`, `crit`, `err`, `warning`; default `warning` |
 | `logs` | `window` | closed enum, map lookup | `15m`, `1h`, `6h`, `24h`; default `1h` |
 | `logs` | `source` | closed enum, map lookup | `journal`, `audit`; default `journal` |
-| `firewall` | `mode` | compared against one literal | `detail` enables rule bodies (and only if the manifest sets `detail_mode_allowed`); every other value, including the documented `summary`, is treated as not-detail. Not an enforced enum — see the note below |
-| `firewall` | `table` | structured split on `/` | `<family>/<name>`; a value without exactly one `/` yields no filter and the whole ruleset is returned. Never reaches a subprocess or a path — it is used only as an in-process map-key comparison |
+| `firewall` | `mode` | closed enum | `summary` (default, also the empty value) or `detail`; `detail` additionally requires the manifest's `detail_mode_allowed`. Any other value is `bad_argument` |
+| `firewall` | `table` | structured split on the first `/` | `<family>/<name>`, both halves non-empty; anything else is `bad_argument`. Only the first `/` separates, so `inet/a/b` names table `a/b`. Never reaches a subprocess or a path — used only as an in-process map-key comparison |
 | `firewall` | `include_set_elements` | boolean | JSON `true` / `false`; default `false` |
 | `firewall_lookup` | `query` | parsed into a type | Required, non-blank. Parsed helper-side by `net/netip` — `ParsePrefix` then `ParseAddr`; anything that is not a valid IPv4/IPv6 address or CIDR is rejected with `bad_param`. Never string-matched, never used as a path or argv element. The audit-log copy is truncated to 64 runes |
 | `firewall_lookup` | `include_set_elements` | boolean | JSON `true` / `false`; default `false` |
@@ -190,9 +190,10 @@ list follow inherently from how systemd resolves patterns:
     missing.
 
 The keys are kept separate rather than inferred from an entry's
-content because a metacharacter is legal inside an escaped systemd
-unit name; sniffing for one would silently reinterpret a valid exact
-name as a glob.
+content because the two halves resolve through different D-Bus calls
+with materially different semantics — one can report a unit as absent,
+the other cannot. Which of the two an operator intended should be
+stated rather than guessed from punctuation.
 
 ### Disjointness and the cap
 

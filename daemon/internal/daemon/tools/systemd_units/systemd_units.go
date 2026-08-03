@@ -77,11 +77,30 @@ func New(whitelisted, patterns []string) *Tool {
 	return &Tool{whitelisted: w, patterns: p}
 }
 
-// sortUnits orders rows by name so the response, and the cache key
-// derived from it, are deterministic regardless of D-Bus ordering.
+// sortUnits orders rows by name. Applied only to the pattern results:
+// ListUnitsByPatterns walks systemd's unit hashmap, so its order is not
+// meaningful and would vary between calls. The exact results are left
+// alone — ListUnitsByNames iterates the input array, so units[] comes
+// back in manifest order, and 2.2.0 briefly sorted it too, which
+// silently reordered the array for every existing consumer.
 func sortUnits(units []dbus.UnitStatus) []dbus.UnitStatus {
 	sort.Slice(units, func(i, j int) bool { return units[i].Name < units[j].Name })
 	return units
+}
+
+// plan resolves the two D-Bus result sets into the two response arrays
+// without touching D-Bus itself, so the wiring Handle depends on is
+// testable. Returns the exact rows unchanged, the pattern rows with
+// exact-name collisions removed, sorted and capped, plus any warning.
+func plan(named, matched []dbus.UnitStatus) ([]dbus.UnitStatus, []dbus.UnitStatus, []string) {
+	pattern, dropped := capUnits(sortUnits(excludeNamed(matched, named)), maxPatternUnits)
+	var warnings []string
+	if dropped > 0 {
+		warnings = append(warnings, fmt.Sprintf(
+			"systemd_units: whitelisted_unit_patterns matched %d units beyond those named exactly, capped at %d; narrow the patterns",
+			len(pattern)+dropped, maxPatternUnits))
+	}
+	return named, pattern, warnings
 }
 
 // excludeNamed drops any pattern match that the exact selector already
@@ -152,17 +171,10 @@ func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 		}
 	}
 
-	matched, dropped := capUnits(sortUnits(excludeNamed(matched, named)), maxPatternUnits)
-	var warnings []string
-	if dropped > 0 {
-		warnings = append(warnings, fmt.Sprintf(
-			"systemd_units: whitelisted_unit_patterns resolved to %d units, capped at %d; narrow the patterns",
-			len(matched)+dropped, maxPatternUnits))
-	}
-
+	exact, pattern, warnings := plan(named, matched)
 	out := Data{
-		Units:        t.collect(ctx, conn, sortUnits(named)),
-		PatternUnits: t.collect(ctx, conn, matched),
+		Units:        t.collect(ctx, conn, exact),
+		PatternUnits: t.collect(ctx, conn, pattern),
 	}
 	return out, warnings, nil
 }

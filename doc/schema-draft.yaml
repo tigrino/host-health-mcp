@@ -1078,6 +1078,7 @@ components:
         - enabled_tools
         - enabled_workload_plugins
         - whitelisted_units
+        - whitelisted_unit_patterns
       properties:
         schema_version:
           type: string

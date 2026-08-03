@@ -18,22 +18,22 @@ import (
 
 // Daemon is the typed shape of /etc/host-health-mcp/daemon.yml.
 type Daemon struct {
-	BindAddr                 string                   `yaml:"bind_addr"`
-	TLSCertPath              string                   `yaml:"tls_cert_path"`
-	TLSKeyPath               string                   `yaml:"tls_key_path"`
-	ClientCAPath             string                   `yaml:"client_ca_path"`
-	ManifestPath             string                   `yaml:"manifest_path"`
-	LogRedactionRules        string                   `yaml:"log_redaction_rules"`
-	CacheTTLOverrides        map[string]int           `yaml:"cache_ttl_overrides"`
-	TimeoutOverrides         map[string]int           `yaml:"timeout_overrides"`
-	DNSProbeTargets          map[string]string        `yaml:"dns_probe_targets"`
-	SensitiveDirs            []string                 `yaml:"sensitive_dirs"`
-	IPv4AllowlistRanges      []string                 `yaml:"ipv4_allowlist_ranges"`
-	IPv6AllowlistRanges      []string                 `yaml:"ipv6_allowlist_ranges"`
-	PublicBindAcknowledged   bool                     `yaml:"public_bind_acknowledged"`
-	ExpensiveToolBuckets     map[string]BucketLimit   `yaml:"expensive_tool_buckets"`
-	MaxConcurrentHandshakes  int                      `yaml:"max_concurrent_handshakes"`
-	HelperSocketPath         string                   `yaml:"helper_socket_path"`
+	BindAddr                string                 `yaml:"bind_addr"`
+	TLSCertPath             string                 `yaml:"tls_cert_path"`
+	TLSKeyPath              string                 `yaml:"tls_key_path"`
+	ClientCAPath            string                 `yaml:"client_ca_path"`
+	ManifestPath            string                 `yaml:"manifest_path"`
+	LogRedactionRules       string                 `yaml:"log_redaction_rules"`
+	CacheTTLOverrides       map[string]int         `yaml:"cache_ttl_overrides"`
+	TimeoutOverrides        map[string]int         `yaml:"timeout_overrides"`
+	DNSProbeTargets         map[string]string      `yaml:"dns_probe_targets"`
+	SensitiveDirs           []string               `yaml:"sensitive_dirs"`
+	IPv4AllowlistRanges     []string               `yaml:"ipv4_allowlist_ranges"`
+	IPv6AllowlistRanges     []string               `yaml:"ipv6_allowlist_ranges"`
+	PublicBindAcknowledged  bool                   `yaml:"public_bind_acknowledged"`
+	ExpensiveToolBuckets    map[string]BucketLimit `yaml:"expensive_tool_buckets"`
+	MaxConcurrentHandshakes int                    `yaml:"max_concurrent_handshakes"`
+	HelperSocketPath        string                 `yaml:"helper_socket_path"`
 	// IPFilterAllow is consumed at install time by
 	// host-health-mcp-caps-template, not by the daemon: it becomes the
 	// IPAddressAllow= lines of a systemd drop-in, and the kernel does
@@ -47,7 +47,7 @@ type Daemon struct {
 	// to reach the listener as well as every egress destination, or
 	// the daemon becomes unreachable. Empty means no drop-in is
 	// generated and no IP filtering is applied.
-	IPFilterAllow            []string                 `yaml:"ip_filter_allow"`
+	IPFilterAllow []string `yaml:"ip_filter_allow"`
 }
 
 // BucketLimit configures a token bucket per REQ 6.6. Enabled is a
@@ -63,26 +63,29 @@ type BucketLimit struct {
 
 // Manifest is the typed shape of /etc/host-health-mcp/manifest.yml.
 type Manifest struct {
-	EnabledTools           []string                     `yaml:"enabled_tools"`
-	WhitelistedUnits       []string                     `yaml:"whitelisted_units"`
+	EnabledTools     []string `yaml:"enabled_tools"`
+	WhitelistedUnits []string `yaml:"whitelisted_units"`
 	// WhitelistedUnitPatterns is the glob half of the tool 4.2
 	// selector. Kept separate from WhitelistedUnits rather than
-	// inferred from an entry's content: systemd unit names may carry
-	// escaped bytes, so a literal '*' or '[' in a name is legal and
-	// sniffing for metacharacters would silently reinterpret it.
-	WhitelistedUnitPatterns []string                    `yaml:"whitelisted_unit_patterns"`
-	WorkloadPlugins        []string                     `yaml:"workload_plugins"`
-	WorkloadPluginConfig   map[string]map[string]string `yaml:"workload_plugin_config"`
-	CertPaths              []string                     `yaml:"cert_paths"`
-	CertRenewalUnits       []string                     `yaml:"cert_renewal_units"`
-	BackupLogPath          string                       `yaml:"backup_log_path"`
-	BackupBackend          string                       `yaml:"backup_backend"`
-	BackupStatePath        string                       `yaml:"backup_state_path"`
-	DebsumsLogPath         string                       `yaml:"debsums_log_path"`
-	AideLogPath            string                       `yaml:"aide_log_path"`
-	IPv6Policy             string                       `yaml:"ipv6_policy"`
-	BtrfsMountpoints       []string                     `yaml:"btrfs_mountpoints"`
-	Firewall               Firewall                     `yaml:"firewall"`
+	// inferred from an entry's content because the two resolve
+	// through different D-Bus calls with materially different
+	// semantics — see ValidateUnitSelectors — so which one an
+	// operator meant should be stated, not guessed. (An earlier
+	// comment justified this by claiming a raw metacharacter is legal
+	// in a unit name; it is not, systemd escapes them.)
+	WhitelistedUnitPatterns []string                     `yaml:"whitelisted_unit_patterns"`
+	WorkloadPlugins         []string                     `yaml:"workload_plugins"`
+	WorkloadPluginConfig    map[string]map[string]string `yaml:"workload_plugin_config"`
+	CertPaths               []string                     `yaml:"cert_paths"`
+	CertRenewalUnits        []string                     `yaml:"cert_renewal_units"`
+	BackupLogPath           string                       `yaml:"backup_log_path"`
+	BackupBackend           string                       `yaml:"backup_backend"`
+	BackupStatePath         string                       `yaml:"backup_state_path"`
+	DebsumsLogPath          string                       `yaml:"debsums_log_path"`
+	AideLogPath             string                       `yaml:"aide_log_path"`
+	IPv6Policy              string                       `yaml:"ipv6_policy"`
+	BtrfsMountpoints        []string                     `yaml:"btrfs_mountpoints"`
+	Firewall                Firewall                     `yaml:"firewall"`
 }
 
 // Firewall is the manifest's host_firewall block. Empty (zero-value)
@@ -92,11 +95,11 @@ type Manifest struct {
 // reply comfortably under proto.MaxResponseFrame regardless of the
 // host's ruleset size.
 type Firewall struct {
-	Enabled              bool              `yaml:"enabled"`
-	BanSets              []FirewallBanSet  `yaml:"ban_sets"`
-	DetailModeAllowed    bool              `yaml:"detail_mode_allowed"`
-	MaxSetElementsPerSet int               `yaml:"max_set_elements_per_set"`
-	MaxRuleTextBytes     int               `yaml:"max_rule_text_bytes"`
+	Enabled              bool             `yaml:"enabled"`
+	BanSets              []FirewallBanSet `yaml:"ban_sets"`
+	DetailModeAllowed    bool             `yaml:"detail_mode_allowed"`
+	MaxSetElementsPerSet int              `yaml:"max_set_elements_per_set"`
+	MaxRuleTextBytes     int              `yaml:"max_rule_text_bytes"`
 }
 
 // FirewallBanSet names one nftables set that carries the live ban
@@ -144,9 +147,9 @@ var knownWorkloadPluginKeys = map[string]map[string]bool{
 		"access_log_window_minutes": true,
 		"access_log_tail_bytes":     true,
 	},
-	"wireguard":    {},
-	"postfix":      {},
-	"dovecot":      {},
+	"wireguard": {},
+	"postfix":   {},
+	"dovecot":   {},
 }
 
 // CheckWorkloadPluginConfig returns one warning per unrecognised key
@@ -155,6 +158,22 @@ var knownWorkloadPluginKeys = map[string]map[string]bool{
 // yet have a key registered here); only known plugins' key sets are
 // enforced. The caller logs the returned warnings — the function
 // itself has no side effects.
+func (m Manifest) CheckWorkloadPluginConfig() []string {
+	var warnings []string
+	for plugin, kv := range m.WorkloadPluginConfig {
+		allowed, known := knownWorkloadPluginKeys[plugin]
+		if !known {
+			continue
+		}
+		for k := range kv {
+			if !allowed[k] {
+				warnings = append(warnings, fmt.Sprintf("manifest: workload_plugin_config.%s: unknown key %q — ignored", plugin, k))
+			}
+		}
+	}
+	return warnings
+}
+
 // unitGlobMetachars are the fnmatch metacharacters systemd honours in
 // a unit pattern.
 const unitGlobMetachars = "*?["
@@ -178,26 +197,10 @@ func (m Manifest) ValidateUnitSelectors() error {
 			return fmt.Errorf("config: whitelisted_unit_patterns[%d] is empty", i)
 		}
 		if strings.Trim(p, unitGlobMetachars+"]") == "" {
-			return fmt.Errorf("config: whitelisted_unit_patterns[%d] %q matches every unit on the host; name something", i, p)
+			return fmt.Errorf("config: whitelisted_unit_patterns[%d] %q consists only of glob metacharacters; name something", i, p)
 		}
 	}
 	return nil
-}
-
-func (m Manifest) CheckWorkloadPluginConfig() []string {
-	var warnings []string
-	for plugin, kv := range m.WorkloadPluginConfig {
-		allowed, known := knownWorkloadPluginKeys[plugin]
-		if !known {
-			continue
-		}
-		for k := range kv {
-			if !allowed[k] {
-				warnings = append(warnings, fmt.Sprintf("manifest: workload_plugin_config.%s: unknown key %q — ignored", plugin, k))
-			}
-		}
-	}
-	return warnings
 }
 
 func defaultDaemon() Daemon {

@@ -74,9 +74,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("daemon: manifest: %v", err)
 	}
-	if err := manifestCfg.ValidateUnitSelectors(); err != nil {
-		log.Fatalf("daemon: manifest: %v", err)
-	}
 	for _, w := range manifestCfg.CheckWorkloadPluginConfig() {
 		log.Printf("daemon: %s", w)
 	}

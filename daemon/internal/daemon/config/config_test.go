@@ -136,6 +136,9 @@ func TestValidateUnitSelectors(t *testing.T) {
 		{"match-everything pattern", Manifest{WhitelistedUnitPatterns: []string{"*"}}},
 		{"match-everything pattern, doubled", Manifest{WhitelistedUnitPatterns: []string{"**"}}},
 		{"metacharacters only", Manifest{WhitelistedUnitPatterns: []string{"?*"}}},
+		{"bracket only", Manifest{WhitelistedUnitPatterns: []string{"["}}},
+		{"bracket pair only", Manifest{WhitelistedUnitPatterns: []string{"[]"}}},
+		{"whitespace pattern", Manifest{WhitelistedUnitPatterns: []string{"  "}}},
 	}
 	for _, c := range rejected {
 		if err := c.m.ValidateUnitSelectors(); err == nil {

@@ -59,6 +59,22 @@ const firewallElemBudget = 40000
 // is 16x the default and still leaves frame headroom.
 const firewallHardRuleTextCap = 1024 * 1024
 
+// firewallRuleTextDefault applies when the manifest leaves
+// max_rule_text_bytes unset or non-positive.
+const firewallRuleTextDefault = 65536
+
+// clampRuleTextBytes applies the floor and the ceiling. Extracted so
+// the test exercises this function rather than a copy of its logic.
+func clampRuleTextBytes(v int) int {
+	if v <= 0 {
+		return firewallRuleTextDefault
+	}
+	if v > firewallHardRuleTextCap {
+		return firewallHardRuleTextCap
+	}
+	return v
+}
+
 // FirewallReq mirrors the daemon's encoded request param.
 type FirewallReq struct {
 	Mode               string           `json:"mode"`
@@ -82,14 +98,14 @@ type FirewallBanSet struct {
 // tool's response data block; the daemon attaches structured errors
 // and rate-limiter accounting on top.
 type FirewallResult struct {
-	Backend           string                 `json:"backend"`
-	NftVersion        string                 `json:"nft_version,omitempty"`
-	RulesetHashSHA256 string                 `json:"ruleset_hash_sha256,omitempty"`
-	Tables            []FirewallTableMeta    `json:"tables"`
-	Chains            []FirewallChain        `json:"chains"`
-	Sets              []FirewallSet          `json:"sets"`
-	Bans              FirewallBans           `json:"bans"`
-	Warnings          []string               `json:"warnings,omitempty"`
+	Backend           string              `json:"backend"`
+	NftVersion        string              `json:"nft_version,omitempty"`
+	RulesetHashSHA256 string              `json:"ruleset_hash_sha256,omitempty"`
+	Tables            []FirewallTableMeta `json:"tables"`
+	Chains            []FirewallChain     `json:"chains"`
+	Sets              []FirewallSet       `json:"sets"`
+	Bans              FirewallBans        `json:"bans"`
+	Warnings          []string            `json:"warnings,omitempty"`
 }
 
 // FirewallTableMeta is one entry in result.tables.
@@ -199,21 +215,16 @@ func FirewallInspect(ctx context.Context, paramJSON string) (any, error) {
 	if req.MaxSetElements <= 0 {
 		req.MaxSetElements = 2000
 	}
-	if req.MaxRuleTextBytes <= 0 {
-		req.MaxRuleTextBytes = 65536
-	}
+	req.MaxRuleTextBytes = clampRuleTextBytes(req.MaxRuleTextBytes)
 	if req.MaxSetElements > firewallHardElemCap {
 		req.MaxSetElements = firewallHardElemCap
 	}
-	if req.MaxRuleTextBytes > firewallHardRuleTextCap {
-		req.MaxRuleTextBytes = firewallHardRuleTextCap
-	}
 
 	res := FirewallResult{
-		Tables:   []FirewallTableMeta{},
-		Chains:   []FirewallChain{},
-		Sets:     []FirewallSet{},
-		Bans:     FirewallBans{BySet: []FirewallBanSetStat{}},
+		Tables: []FirewallTableMeta{},
+		Chains: []FirewallChain{},
+		Sets:   []FirewallSet{},
+		Bans:   FirewallBans{BySet: []FirewallBanSetStat{}},
 	}
 
 	rawBytes, truncated, err := runNftListRuleset(ctx)
@@ -533,11 +544,11 @@ type fwNftRoot struct {
 // of these pointers per entry.
 type fwNftEntry struct {
 	Metainfo *json.RawMessage `json:"metainfo,omitempty"`
-	Table    *fwNftTable        `json:"table,omitempty"`
-	Chain    *fwNftChain        `json:"chain,omitempty"`
-	Rule     *fwNftRule         `json:"rule,omitempty"`
-	Set      *fwNftSet          `json:"set,omitempty"`
-	Map      *fwNftSet          `json:"map,omitempty"`
+	Table    *fwNftTable      `json:"table,omitempty"`
+	Chain    *fwNftChain      `json:"chain,omitempty"`
+	Rule     *fwNftRule       `json:"rule,omitempty"`
+	Set      *fwNftSet        `json:"set,omitempty"`
+	Map      *fwNftSet        `json:"map,omitempty"`
 }
 
 type fwNftTable struct {

@@ -3,6 +3,67 @@ title: Host Health MCP - Changelog
 author: Albert 'Tigr' Zenkoff <albert@tigr.net>
 ---
 
+# 2.2.2 — corrections to 2.2.0 and 2.2.1 (2026-08-03)
+
+Findings from a review of the two preceding releases. No schema change;
+`schema_version` stays `1.1.0`.
+
+- **`units[]` ordering is restored.** 2.2.0 sorted the exact selector's
+  results alphabetically. `ListUnitsByNames` iterates the names it was
+  given, so before 2.2.0 `units[]` came back in **manifest order** — and
+  2.2.0 reordered it for every existing consumer, on hosts with no
+  patterns configured at all. That contradicted the release's own
+  central claim that `units[]` was unchanged, which was stated in the
+  changelog, `doc/tools.md`, `doc/schema-draft.yaml` and the 2.2.0
+  release notes.
+
+  Only `pattern_units[]` is sorted now, which is where sorting was
+  needed: `ListUnitsByPatterns` walks systemd's unit hashmap and its
+  order is not meaningful. An operator who orders `whitelisted_units`
+  deliberately gets that order back.
+
+  Anyone who upgraded to 2.2.0 or 2.2.1 and depends on array order
+  should go straight to 2.2.2.
+- **Firewall argument validation now runs before the manifest check.**
+  2.2.1 placed it after the `firewall.enabled` early return, so a
+  malformed request got `200` plus a "disabled in manifest" warning on a
+  host with the tool disabled, and `400 bad_argument` on a host with it
+  enabled. Argument validity is a property of the request, not of the
+  deployment.
+- **The stated rationale for two separate manifest keys was wrong.** It
+  claimed a raw glob metacharacter is legal inside an escaped systemd
+  unit name. It is not — systemd escapes them (`systemd-escape 'a*b'`
+  yields `a\x2ab`), so content-sniffing would not in fact have misread
+  anything. The decision stands, for a better reason: the two halves
+  resolve through different D-Bus calls with materially different
+  semantics, and only the exact list can report a unit as absent. The
+  claim is corrected in the code comment, `doc/tools.md`,
+  `build/examples/manifest.yml` and this changelog.
+- **`doc/tools.md` contradicted itself.** 2.2.1 rewrote the prose about
+  `firewall` argument handling but left the reference table above it
+  describing the pre-2.2.1 behaviour, including "the whole ruleset is
+  returned" for a malformed `table` — the exact defect 2.2.1 fixed,
+  still presented as current in the part of the document structured as
+  reference material.
+- **`TestFirewallHardRuleTextCap` was tautological**: it exercised a
+  copy of the clamp defined inside the test, so deleting the production
+  clamp left it green. The clamp is now `clampRuleTextBytes` and the
+  test calls it. Verified by mutation — removing the ceiling fails the
+  test.
+- **Truncation warning wording.** It reported the count after
+  exact-name exclusion as though it were the raw match count.
+- **`ValidateUnitSelectors` folded into `LoadManifest`**, so the two
+  config loaders follow the same contract and a future second caller
+  cannot skip validation. The "matches every unit on the host" message
+  is reworded — it fired for `[` and `]`, which match nothing of the
+  sort, while `*.service` passed it. The 100-unit cap is the real
+  defence there.
+- **Regression tests** for all of the above, including a `plan()`
+  extraction so the merged selector behaviour is testable without
+  D-Bus. The ordering bug survived 2.2.0 precisely because every unit
+  test covered a helper in isolation and nothing pinned how `Handle`
+  wired them together.
+
 # 2.2.1 — firewall argument validation fails closed (2026-08-03)
 
 Three defects on the `firewall` path, all pre-existing and all found
@@ -79,10 +140,10 @@ client may be rolled independently.
 
   The arrays are disjoint: a unit both named exactly and matched by a
   pattern appears only in `units[]`.
-- **The keys are separate, not sniffed from content.** A glob
-  metacharacter is legal inside an escaped systemd unit name, so
-  inferring intent from an entry would silently reinterpret a valid
-  exact name.
+- **The keys are separate, not sniffed from content**, because the two
+  resolve through different D-Bus calls with materially different
+  semantics and only the exact list can report a unit as absent. Which
+  one an operator meant should be stated, not guessed from punctuation.
 - **Two caveats inherent to pattern resolution**, documented rather than
   worked around: only *loaded* units can match, so an installed but
   never-loaded unit does not appear at all; and a pattern matching

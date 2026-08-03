@@ -1,6 +1,7 @@
 package systemdunits
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/coreos/go-systemd/v22/dbus"
@@ -127,5 +128,81 @@ func TestNewCopiesSelectors(t *testing.T) {
 	}
 	if tool.patterns[0] != "nginx*" {
 		t.Errorf("patterns aliases the caller's slice: %q", tool.patterns[0])
+	}
+}
+
+// TestPlanLeavesExactOrderUntouched is the regression test for the
+// 2.2.0 ordering bug. ListUnitsByNames returns rows in the order of the
+// names it was given, so units[] comes back in manifest order; 2.2.0
+// sorted it alphabetically as well, silently reordering the array for
+// every consumer that already existed. plan() must hand the exact rows
+// back exactly as received.
+func TestPlanLeavesExactOrderUntouched(t *testing.T) {
+	named := rows("zebra.service", "alpha.service", "middle.service")
+	exact, _, _ := plan(named, nil)
+	want := []string{"zebra.service", "alpha.service", "middle.service"}
+	if !equal(names(exact), want) {
+		t.Errorf("plan reordered units[]: got %v, want manifest order %v", names(exact), want)
+	}
+}
+
+// TestPlanSortsOnlyPatternResults: ListUnitsByPatterns walks systemd's
+// unit hashmap, so that order is not meaningful and must be normalised.
+func TestPlanSortsOnlyPatternResults(t *testing.T) {
+	_, pattern, _ := plan(nil, rows("c.service", "a.service", "b.service"))
+	want := []string{"a.service", "b.service", "c.service"}
+	if !equal(names(pattern), want) {
+		t.Errorf("pattern_units not sorted: got %v, want %v", names(pattern), want)
+	}
+}
+
+// TestPlanDisjoint asserts the two arrays never carry the same unit.
+func TestPlanDisjoint(t *testing.T) {
+	named := rows("nginx.service")
+	matched := rows("nginx.service", "nginx-extra.service")
+	exact, pattern, _ := plan(named, matched)
+	if !equal(names(exact), []string{"nginx.service"}) {
+		t.Errorf("units[] = %v", names(exact))
+	}
+	if !equal(names(pattern), []string{"nginx-extra.service"}) {
+		t.Errorf("pattern_units[] = %v, want the collision removed", names(pattern))
+	}
+}
+
+// TestPlanWarningArithmetic pins the reported total. The count is taken
+// after exclusion and after truncation, so it must reconstruct the
+// pre-truncation figure rather than reporting the capped length.
+func TestPlanWarningArithmetic(t *testing.T) {
+	if _, _, w := plan(nil, make([]dbus.UnitStatus, maxPatternUnits)); len(w) != 0 {
+		t.Errorf("warning emitted at exactly the cap: %v", w)
+	}
+	_, pattern, warnings := plan(nil, make([]dbus.UnitStatus, maxPatternUnits+37))
+	if len(pattern) != maxPatternUnits {
+		t.Fatalf("pattern_units length = %d, want %d", len(pattern), maxPatternUnits)
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("expected exactly one warning, got %v", warnings)
+	}
+	if !strings.Contains(warnings[0], "137") {
+		t.Errorf("warning should report the pre-truncation total 137: %q", warnings[0])
+	}
+	if !strings.Contains(warnings[0], "100") {
+		t.Errorf("warning should report the cap: %q", warnings[0])
+	}
+}
+
+// TestPlanNoPatternsConfigured is the common case: an unchanged 2.1.0
+// manifest. Nothing may be added, dropped, reordered, or warned about.
+func TestPlanNoPatternsConfigured(t *testing.T) {
+	named := rows("sshd.service", "cron.service")
+	exact, pattern, warnings := plan(named, nil)
+	if !equal(names(exact), []string{"sshd.service", "cron.service"}) {
+		t.Errorf("units[] = %v", names(exact))
+	}
+	if len(pattern) != 0 {
+		t.Errorf("pattern_units[] = %v, want empty", names(pattern))
+	}
+	if len(warnings) != 0 {
+		t.Errorf("unexpected warnings: %v", warnings)
 	}
 }

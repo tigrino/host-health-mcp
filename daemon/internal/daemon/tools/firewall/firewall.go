@@ -219,12 +219,11 @@ func (t *Tool) Handle(ctx context.Context, body []byte) (any, []string, error) {
 	}
 	var warnings []string
 
-	if !t.mf.Enabled {
-		warnings = append(warnings, "firewall: disabled in manifest")
-		d.Backend = "none"
-		return d, warnings, nil
-	}
-
+	// Argument validity is a property of the request, not of the
+	// deployment, so it is settled before the manifest check below.
+	// Validating after it meant a malformed request got 200 plus a
+	// "disabled in manifest" warning on a host with the tool turned
+	// off, and 400 on a host with it on.
 	var req Request
 	if len(body) > 0 {
 		// Tolerate empty body or "{}"; reject malformed JSON or unknown
@@ -235,6 +234,12 @@ func (t *Tool) Handle(ctx context.Context, body []byte) (any, []string, error) {
 	}
 	if terr := validateRequest(&req); terr != nil {
 		return nil, nil, terr
+	}
+
+	if !t.mf.Enabled {
+		warnings = append(warnings, "firewall: disabled in manifest")
+		d.Backend = "none"
+		return d, warnings, nil
 	}
 
 	helperReq := struct {
