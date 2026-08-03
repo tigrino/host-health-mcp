@@ -3,6 +3,47 @@ title: Host Health MCP - Changelog
 author: Albert 'Tigr' Zenkoff <albert@tigr.net>
 ---
 
+# 2.2.1 — firewall argument validation fails closed (2026-08-03)
+
+Three defects on the `firewall` path, all pre-existing and all found
+while writing the argument-matching reference for 2.2.0. No schema
+change; `schema_version` stays `1.1.0`.
+
+- **`mode` was not a closed set.** The only test anywhere was the
+  helper's `mode == "detail"`, so any other value — including a typo
+  like `detial`, and including the documented default `summary` — was
+  silently treated as summary. A caller asking for detail and mistyping
+  it received a successful response with less data and no indication the
+  argument had not been understood. `mode` is now checked against
+  `{"", "summary", "detail"}` at the daemon boundary and anything else
+  is `bad_argument`.
+- **`table` failed open.** The filter was `SplitN(value, "/", 2)`, and a
+  value that did not yield two parts left the filter unset — after which
+  the keep-predicate matched every table. So `table: "garbage"` returned
+  the **entire ruleset** rather than nothing: a caller trying to narrow
+  the response silently widened it. `table` must now parse as
+  `<family>/<name>` with both halves non-empty, rejected as
+  `bad_argument` at the daemon; the helper independently refuses an
+  unparseable filter rather than falling back to matching everything.
+- **`max_rule_text_bytes` had a floor but no ceiling.** Unset or
+  non-positive became 65536, and that was the only bound — unlike
+  `max_set_elements_per_set`, which is hard-capped at 40000. An operator
+  setting it arbitrarily high removed the only limit on inline rules per
+  chain and could push the helper's reply past `MaxResponseFrame`, which
+  the helper reports as a dropped connection with no diagnostic. Now
+  hard-capped at 1 MiB, sixteen times the default and still well inside
+  the frame.
+
+The first two are caller-facing behaviour changes: a request that
+previously succeeded with a silently degraded or silently widened result
+now returns `bad_argument`. That is the intent — both failures were
+indistinguishable from success — but a caller sending a malformed
+`table` and relying on the full ruleset coming back will now see an
+error.
+
+`doc/tools.md`'s argument-matching reference is updated accordingly; it
+documented the old fail-open behaviour, which was accurate when written.
+
 # 2.2.0 — glob selector for systemd_units (2026-08-03)
 
 Requested by the fleet operator: `whitelisted_units` accepts only exact

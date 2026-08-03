@@ -50,6 +50,15 @@ const firewallHardElemCap = 40000
 // would otherwise sum past the frame cap).
 const firewallElemBudget = 40000
 
+// firewallHardRuleTextCap is the absolute ceiling on the per-chain rule
+// text budget, regardless of the manifest's max_rule_text_bytes. That
+// key had a floor (<= 0 becomes 65536) but no ceiling, so an operator
+// setting it arbitrarily high removed the only bound on inline rules
+// per chain and could push the response past MaxResponseFrame — which
+// the helper reports as a dropped connection with no diagnostic. 1 MiB
+// is 16x the default and still leaves frame headroom.
+const firewallHardRuleTextCap = 1024 * 1024
+
 // FirewallReq mirrors the daemon's encoded request param.
 type FirewallReq struct {
 	Mode               string           `json:"mode"`
@@ -196,6 +205,9 @@ func FirewallInspect(ctx context.Context, paramJSON string) (any, error) {
 	if req.MaxSetElements > firewallHardElemCap {
 		req.MaxSetElements = firewallHardElemCap
 	}
+	if req.MaxRuleTextBytes > firewallHardRuleTextCap {
+		req.MaxRuleTextBytes = firewallHardRuleTextCap
+	}
 
 	res := FirewallResult{
 		Tables:   []FirewallTableMeta{},
@@ -239,10 +251,19 @@ func FirewallInspect(ctx context.Context, paramJSON string) (any, error) {
 	}
 	var filter *tableFilter
 	if req.TableFilter != "" {
-		parts := strings.SplitN(req.TableFilter, "/", 2)
-		if len(parts) == 2 {
-			filter = &tableFilter{family: parts[0], name: parts[1]}
+		// Fail closed. Leaving filter nil on an unparseable value made
+		// keep() return true for everything, so a malformed filter
+		// widened the response to the entire ruleset instead of
+		// narrowing it. The daemon validates this too; this is the
+		// second layer.
+		family, name, ok := strings.Cut(req.TableFilter, "/")
+		if !ok || family == "" || name == "" {
+			return FirewallResult{}, &dispatch.Error{
+				Code:    proto.CodeBadParam,
+				Message: "firewall_inspect: table_filter must be \"<family>/<name>\"",
+			}
 		}
+		filter = &tableFilter{family: family, name: name}
 	}
 
 	keep := func(family, name string) bool {

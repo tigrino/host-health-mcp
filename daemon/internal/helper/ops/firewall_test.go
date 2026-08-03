@@ -2,6 +2,7 @@ package ops
 
 import (
 	"encoding/json"
+	"host-health-mcp/daemon/internal/shared/proto"
 	"strings"
 	"testing"
 )
@@ -141,9 +142,9 @@ func TestRenderElements_RespectsCap(t *testing.T) {
 // populate Bans.TotalActiveV4 / V6 from set metadata.
 func TestIsV4V6Set(t *testing.T) {
 	cases := []struct {
-		t      string
-		isV4   bool
-		isV6   bool
+		t    string
+		isV4 bool
+		isV6 bool
 	}{
 		{"ipv4_addr", true, false},
 		{"ipv6_addr", false, true},
@@ -183,8 +184,8 @@ func TestStringifyType(t *testing.T) {
 // stable alphabetical order behind them.
 func TestOrderSetKeys_BanSetsFirst(t *testing.T) {
 	sets := map[string]*FirewallSet{
-		"inet/net-ban/banned_v4":           {},
-		"inet/net-ban/banned_v6":           {},
+		"inet/net-ban/banned_v4":            {},
+		"inet/net-ban/banned_v6":            {},
 		"inet/crowdsec/crowdsec-blacklists": {},
 		"inet/filter/temp_set":              {},
 	}
@@ -206,6 +207,46 @@ func TestOrderSetKeys_BanSetsFirst(t *testing.T) {
 	for i := range want {
 		if got[i] != want[i] {
 			t.Errorf("got[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+// TestFirewallHardRuleTextCap pins the ceiling on the per-chain rule
+// text budget. max_rule_text_bytes had a floor but no ceiling, so an
+// operator could set it arbitrarily high, remove the only bound on
+// inline rules per chain, and push the reply past MaxResponseFrame —
+// which surfaces as a dropped connection with no diagnostic.
+func TestFirewallHardRuleTextCap(t *testing.T) {
+	if firewallHardRuleTextCap <= 65536 {
+		t.Errorf("hard cap %d is not above the 65536 default; it would silently shrink existing configs",
+			firewallHardRuleTextCap)
+	}
+	if firewallHardRuleTextCap >= proto.MaxResponseFrame {
+		t.Errorf("hard cap %d leaves no frame headroom (MaxResponseFrame %d)",
+			firewallHardRuleTextCap, proto.MaxResponseFrame)
+	}
+
+	// Mirror the clamp applied in firewallInspect.
+	clamp := func(v int) int {
+		if v <= 0 {
+			v = 65536
+		}
+		if v > firewallHardRuleTextCap {
+			v = firewallHardRuleTextCap
+		}
+		return v
+	}
+	cases := []struct{ in, want int }{
+		{0, 65536},
+		{-1, 65536},
+		{65536, 65536},
+		{firewallHardRuleTextCap, firewallHardRuleTextCap},
+		{firewallHardRuleTextCap + 1, firewallHardRuleTextCap},
+		{1 << 30, firewallHardRuleTextCap},
+	}
+	for _, c := range cases {
+		if got := clamp(c.in); got != c.want {
+			t.Errorf("clamp(%d) = %d, want %d", c.in, got, c.want)
 		}
 	}
 }

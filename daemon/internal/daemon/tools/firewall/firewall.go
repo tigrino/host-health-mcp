@@ -13,6 +13,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"host-health-mcp/daemon/internal/daemon/config"
@@ -28,6 +29,36 @@ type Request struct {
 	Mode               string `json:"mode,omitempty"`
 	Table              string `json:"table,omitempty"`
 	IncludeSetElements bool   `json:"include_set_elements,omitempty"`
+}
+
+// validModes is the closed set for Request.Mode. Empty means summary.
+// Without this the helper's only test is `mode == "detail"`, so any
+// other value — including a typo like "detial" — silently produced a
+// summary response with no indication the argument was not understood.
+var validModes = map[string]bool{"": true, "summary": true, "detail": true}
+
+// validateRequest rejects caller arguments the helper would otherwise
+// misread. Both checks fail closed: an unrecognised mode is an error
+// rather than a silent downgrade, and an unparseable table filter is an
+// error rather than a filter that matches everything.
+func validateRequest(req *Request) *tools.Error {
+	if !validModes[req.Mode] {
+		return &tools.Error{
+			Code:    schema.ErrCodeBadArgument,
+			Message: "firewall: mode must be \"summary\" or \"detail\"",
+		}
+	}
+	if req.Table == "" {
+		return nil
+	}
+	family, name, ok := strings.Cut(req.Table, "/")
+	if !ok || family == "" || name == "" {
+		return &tools.Error{
+			Code:    schema.ErrCodeBadArgument,
+			Message: "firewall: table must be \"<family>/<name>\", e.g. \"inet/filter\"",
+		}
+	}
+	return nil
 }
 
 // Data is the response data block. Mirrors the helper-side
@@ -201,6 +232,9 @@ func (t *Tool) Handle(ctx context.Context, body []byte) (any, []string, error) {
 		if err := schema.DecodeStrict(body, &req); err != nil {
 			return nil, nil, &tools.Error{Code: schema.ErrCodeBadArgument, Message: "firewall: " + err.Error()}
 		}
+	}
+	if terr := validateRequest(&req); terr != nil {
+		return nil, nil, terr
 	}
 
 	helperReq := struct {

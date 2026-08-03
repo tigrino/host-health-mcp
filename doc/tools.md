@@ -73,11 +73,15 @@ No other tool accepts caller input. In particular `systemd_units`
 expose no argument by which a caller can name a device, unit, path or
 plugin.
 
-Note on `firewall.mode`: the tool layer performs no closed-set check.
-The helper tests `mode == "detail"` and treats anything else as
-summary, so a typo degrades silently to summary output rather than
-raising `bad_argument`. Callers should not rely on an unrecognised
-mode being rejected.
+Both `firewall` arguments fail closed as of 2.2.1. `mode` is checked
+against the closed set `{"", "summary", "detail"}` and anything else is
+`bad_argument`; before 2.2.1 the only test was the helper's
+`mode == "detail"`, so a typo degraded silently to summary output.
+`table` must parse as `<family>/<name>` with both halves non-empty;
+before 2.2.1 a value that did not split left the helper's filter unset,
+and an unset filter matched everything, so a malformed filter returned
+the entire ruleset instead of narrowing it. The helper re-checks the
+filter and refuses an unparseable one as a second layer.
 
 ## Manifest-supplied values
 
@@ -93,7 +97,7 @@ but they are the other half of what bounds a tool's behaviour.
 | `workload.nginx_apache` | `access_log_tail_bytes` | bounded integer | Non-negative; default 256 KiB; hard-capped helper-side at 4 MiB |
 | `firewall` | `detail_mode_allowed` | boolean | Gates `mode: detail` irrespective of what the caller asks for |
 | `firewall` | `max_set_elements_per_set` | bounded integer | Default 2000; hard-capped helper-side at 40000 |
-| `firewall` | `max_rule_text_bytes` | integer, floor only | Default 65536 when unset or non-positive; **no upper bound is enforced** |
+| `firewall` | `max_rule_text_bytes` | bounded integer | Default 65536 when unset or non-positive; hard-capped helper-side at 1 MiB since 2.2.1 (previously floor-only, so an arbitrarily large value removed the only bound on inline rules per chain) |
 | `firewall` | `ban_sets[]` | literal strings | Used as map keys (`family/table/name`); no per-field validation |
 | `storage` | `btrfs_mountpoints[]` | anchored regex plus a filesystem-type check | See `btrfsMountPathRE` below |
 | `certs` | `cert_paths[]`, `cert_renewal_units[]` | none | Parallel lists; read by the daemon, never passed to a subprocess |
