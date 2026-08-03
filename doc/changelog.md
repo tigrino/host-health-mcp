@@ -129,6 +129,16 @@ client may be rolled independently.
   selector's results. `units[]` continues to carry the exact selector's
   results, unchanged in shape and content.
 
+  > **Correction (2026-08-04).** The compatibility claim in the two
+  > paragraphs below was **false as shipped in 2.2.0 and 2.2.1**. Those
+  > releases also sorted `units[]` alphabetically, whereas it had
+  > previously come back in manifest order, so the array *was* reordered
+  > for every existing consumer — including on hosts with no patterns
+  > configured. Everything else in the claim held: no unit was added,
+  > dropped, or changed in shape. 2.2.2 restored manifest order and the
+  > text below is accurate from that release onward. Anyone who took
+  > 2.2.0 or 2.2.1 and depends on array order should upgrade.
+
   The two are kept separate rather than merged so the change is additive
   by construction: a consumer written before 2.2.0 reads `units[]` and
   sees exactly what it saw before, and pattern-discovered units cannot
