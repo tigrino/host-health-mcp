@@ -19,6 +19,23 @@ set -eu
 HERE=$(cd -- "$(dirname -- "$0")" && pwd)
 GEN="$HERE/../caps-template.sh"
 WORK=$(mktemp -d)
+# Guard BEFORE installing the cleanup trap. The trap is rm -rf "$WORK";
+# if WORK ever points somewhere real, the trap alone is destructive the
+# moment the script exits — before a single test body has run. Checking
+# after the trap is installed is checking too late. (Learned the hard
+# way: an early version of this guard sat below the trap, and testing
+# it fired rm -rf at /etc/systemd/system.)
+guard() {
+    for v in "$WORK" "$WORK/d" "$WORK/dd"; do
+        case "$v" in
+            ''|/|/etc|/usr|/var|/run|/lib|/boot|/etc/*|/usr/*|/var/*|/run/*|/lib/*|/boot/*)
+                echo "REFUSING: a test path points at a real system directory: $v" >&2
+                exit 3 ;;
+        esac
+    done
+}
+guard
+
 trap 'rm -rf "$WORK"' EXIT
 
 fail=0
