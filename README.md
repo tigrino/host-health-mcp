@@ -245,19 +245,23 @@ Compatibility cells C1–C4 and the upgrade ordering:
 
 Per-release deltas: [`doc/changelog.md`](doc/changelog.md).
 
-Current release: **2.2.2** (wire schema **1.1.0**).
+Current release: **2.3.0** (wire schema **1.1.0**).
 
 Upgrade procedure on a single host:
 
-1. Stop the daemon. The helper can keep running.
-   `systemctl stop host-health-mcp.service`.
-2. `apt install --only-upgrade host-health-mcp-server`.
-3. Re-run the caps templating if `enabled_tools[]` changed:
-   `/usr/sbin/host-health-mcp-caps-template`,
-   `systemctl daemon-reload`,
-   `systemctl restart host-health-mcp-helper.service`.
-4. Start the daemon.
-5. Confirm with `curl … /v1/manifest`.
+1. `apt install --only-upgrade host-health-mcp-server`.
+2. Confirm with `curl … /v1/manifest`.
+
+From 2.3.0 the postinst regenerates the capability drop-in, reloads
+systemd, and restarts whichever of the two units was already running,
+so an upgrade needs no manual steps — including the upgrade *to*
+2.3.0, since it is the incoming package's postinst that `dpkg` runs on
+`configure`. It does not start anything that was stopped, and it never
+enables a unit.
+
+Before 2.3.0 nothing in the package reloaded systemd or restarted
+anything, so an upgrade installed a new binary that the running units
+went on ignoring until someone restarted them by hand.
 
 There is no SIGHUP / SIGUSR1 reload path on either binary;
 configuration and TLS material changes are applied via

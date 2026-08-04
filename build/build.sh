@@ -35,6 +35,10 @@ echo "==> go vet"
 echo "==> go test"
 ( cd "$REPO/daemon" && go test ./... )
 ( cd "$REPO/plugin" && go test ./... )
+# The linter is the mechanism enforcing the read-only property, so its
+# own regression tests run in the release path too. Untested
+# enforcement is indistinguishable from none.
+( cd "$REPO/build/linter" && go test ./... )
 
 # Custom forbidden-call linter (REQ 10.2). Required.
 echo "==> forbidden-call linter"

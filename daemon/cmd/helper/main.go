@@ -62,6 +62,7 @@ func main() {
 		SocketGID:  gid,
 		SocketMode: 0o660,
 		Registry:   reg,
+		OpDeadline: cfg.OpDeadline,
 	})
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -82,6 +83,8 @@ func main() {
 		log.Printf("helper: sd_notify stopping: %v", err)
 	}
 
+	// forbidden:allow — the helper's own listening socket, unlinked on
+	// clean shutdown so the next start does not have to.
 	_ = os.Remove(cfg.SocketPath)
 }
 

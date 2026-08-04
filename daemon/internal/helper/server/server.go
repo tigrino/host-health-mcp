@@ -39,6 +39,12 @@ type Config struct {
 	SocketMode os.FileMode
 	// Registry is the dispatch table.
 	Registry *dispatch.Registry
+	// OpDeadline resolves the deadline to apply to one op, given the
+	// caller's remaining budget in milliseconds from the request
+	// frame. Nil selects fallbackOpDeadline; it must never resolve to
+	// zero, since a handler running on an undeadlined context is what
+	// this exists to prevent.
+	OpDeadline func(op string, callerMS int) time.Duration
 }
 
 // Server accepts daemon connections on a unix socket and routes each
@@ -60,6 +66,9 @@ func New(cfg Config) *Server {
 // cancelled. The socket is removed before bind if a stale file is
 // present and re-removed on shutdown.
 func (s *Server) Serve(ctx context.Context) error {
+	// forbidden:allow — the helper's own listening socket under its
+	// systemd RuntimeDirectory=; a stale file from an unclean stop
+	// makes bind fail. Not a health-check code path.
 	if err := os.Remove(s.cfg.SocketPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("server: stale socket remove: %w", err)
 	}
@@ -67,6 +76,9 @@ func (s *Server) Serve(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("server: listen: %w", err)
 	}
+	// forbidden:allow — mode 0660 on the socket this process just
+	// created, so the daemon's group can connect. Bind leaves it at
+	// 0777&~umask otherwise.
 	if err := os.Chmod(s.cfg.SocketPath, s.cfg.SocketMode); err != nil {
 		ln.Close()
 		return fmt.Errorf("server: chmod socket: %w", err)
@@ -81,10 +93,15 @@ func (s *Server) Serve(ctx context.Context) error {
 	// otherwise be empty.
 	if s.cfg.SocketGID != 0 {
 		parent := filepath.Dir(s.cfg.SocketPath)
+		// forbidden:allow — the helper's own RuntimeDirectory=, which
+		// systemd creates root:root; the unprivileged daemon cannot
+		// traverse it otherwise. Group only, never mode.
 		if err := os.Chown(parent, 0, int(s.cfg.SocketGID)); err != nil {
 			ln.Close()
 			return fmt.Errorf("server: chown runtime dir %s: %w", parent, err)
 		}
+		// forbidden:allow — same handoff, on the socket this process
+		// just created.
 		if err := os.Chown(s.cfg.SocketPath, 0, int(s.cfg.SocketGID)); err != nil {
 			ln.Close()
 			return fmt.Errorf("server: chown socket: %w", err)
@@ -184,6 +201,9 @@ func (s *Server) checkPeer(c net.Conn) bool {
 	return ucred.Uid == s.cfg.AllowedUID
 }
 
+// fallbackOpDeadline applies when Config.OpDeadline is nil.
+const fallbackOpDeadline = 9500 * time.Millisecond
+
 func (s *Server) dispatch(ctx context.Context, req *proto.Request) *proto.Response {
 	if !proto.IsKnownOp(req.Op) {
 		return errResp(proto.CodeBadOp, "unknown op token")
@@ -193,11 +213,40 @@ func (s *Server) dispatch(ctx context.Context, req *proto.Request) *proto.Respon
 		return errResp(proto.CodeBadOp, "op not compiled into this helper")
 	}
 
-	result, err := h(ctx, req.Param)
+	// The single chokepoint where every op acquires a bound. The
+	// process-lifetime context handed in by Serve carries no deadline,
+	// so without this the exec.CommandContext cancel path — and the
+	// whole SIGTERM/KillGrace/SIGKILL chain behind it — never fires.
+	// A smartctl blocked on a failing SATA device (exactly the state
+	// the storage tool exists to report) leaked a subprocess and a
+	// goroutine per poll, forever.
+	d := fallbackOpDeadline
+	if s.cfg.OpDeadline != nil {
+		d = s.cfg.OpDeadline(req.Op, req.DeadlineMS)
+	}
+	opCtx, cancel := context.WithTimeout(ctx, d)
+	defer cancel()
+
+	result, err := h(opCtx, req.Param)
 	if err != nil {
 		var de *dispatch.Error
 		if errors.As(err, &de) {
 			return errRespFromDispatch(de)
+		}
+		// exec.classify already maps a subprocess deadline to a typed
+		// dispatch.Error, which the branch above keeps intact along
+		// with its argv and stderr summary. This catches the other
+		// shape: a handler that honours a context directly (a bounded
+		// read, a socket dial) and returns the raw error.
+		//
+		// Usually that is opCtx, since the parent carries no deadline
+		// of its own — but a handler with its own inner WithTimeout
+		// lands here too. CodeDeadline is the right answer either way.
+		// Note os.ErrDeadlineExceeded, which a net.Conn read deadline
+		// produces, is a DIFFERENT sentinel and does not match here; it
+		// falls through to CodeInternal below.
+		if errors.Is(err, context.DeadlineExceeded) {
+			return errResp(proto.CodeDeadline, "op exceeded its deadline")
 		}
 		return errResp(proto.CodeInternal, err.Error())
 	}

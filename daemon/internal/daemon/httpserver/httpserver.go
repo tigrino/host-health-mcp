@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"host-health-mcp/daemon/internal/daemon/audit"
@@ -31,6 +32,40 @@ import (
 // short strings). 4 KiB is more than ample.
 const MaxRequestBody = 4 * 1024
 
+// Listener timeouts. ReadHeaderTimeout alone leaves the body read
+// unbounded: net/http resets the read deadline to wholeReqDeadline
+// once headers are in, and that is the zero value when ReadTimeout is
+// 0. A caller that sends complete headers and then trickles the body
+// pins a cappedListener slot for as long as it likes, so
+// max_concurrent_handshakes connections from one certificate deny the
+// listener to everyone else.
+//
+// ReadTimeout bounds headers plus body together. WriteTimeout is set
+// from the end of the header read, so it has to cover the body read,
+// the tool call (REQ 5.1 caps a per-tool timeout at 10 s) and the
+// response write.
+//
+// idleTimeout is the one value here that must be kept SHORT, and the
+// reason is not obvious. A cappedListener slot is released in
+// cappedConn.Close — at connection close, not at end of handshake — so
+// an idle keep-alive connection holds one of max_concurrent_handshakes
+// slots (default 16) for the whole idle window. With no ReadTimeout
+// and no IdleTimeout, net/http fell back to ReadHeaderTimeout and that
+// window was 5 s. Setting a long IdleTimeout would widen it and hand
+// back the availability attack this block exists to close: holding all
+// 16 slots costs one request per connection per window, i.e.
+// 16*60/idleTimeout requests a minute, and that has to stay well above
+// the caller's sustained rate-limit budget (30/min by default) for the
+// limiter to reject it. At 10 s that is 96/min — refused. At 60 s it
+// would be 16/min, under budget and therefore permitted indefinitely.
+const (
+	readHeaderTimeout = 5 * time.Second
+	readTimeout       = 10 * time.Second
+	writeTimeout      = 30 * time.Second
+	idleTimeout       = 10 * time.Second
+	maxHeaderBytes    = 16 * 1024
+)
+
 // Server is the daemon's HTTP listener.
 type Server struct {
 	cfg      config.Daemon
@@ -41,8 +76,47 @@ type Server struct {
 	limiter  *ratelimit.Limiter
 	auditor  audit.Logger
 
+	// mu guards listener and srv, which Start assigns from the
+	// goroutine that calls it while tests (and any future readiness
+	// probe) read them from another. Polling them without
+	// synchronisation is a data race, and reading srv through a
+	// barrier that only covers listener can observe a nil.
+	mu       sync.Mutex
 	listener net.Listener
 	srv      *http.Server
+	// serving is closed once both listener and srv are assigned.
+	serving chan struct{}
+}
+
+// Serving returns a channel closed once the listener is bound and the
+// http.Server is constructed. Start assigns both before closing it.
+func (s *Server) Serving() <-chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.serving == nil {
+		s.serving = make(chan struct{})
+	}
+	return s.serving
+}
+
+// Addr reports the bound listener address, or "" before Start binds.
+func (s *Server) Addr() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.listener == nil {
+		return ""
+	}
+	return s.listener.Addr().String()
+}
+
+func (s *Server) setServing(ln net.Listener, srv *http.Server) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.listener, s.srv = ln, srv
+	if s.serving == nil {
+		s.serving = make(chan struct{})
+	}
+	close(s.serving)
 }
 
 // New constructs a Server. enabled is the set of tool names that
@@ -74,27 +148,33 @@ func (s *Server) Start(ctx context.Context) error {
 		underlying = newCappedListener(tcpLn, s.cfg.MaxConcurrentHandshakes)
 	}
 	ln := tls.NewListener(underlying, tlsCfg)
-	s.listener = ln
 
-	mux := http.NewServeMux()
-	// Single catch-all so the server's own error envelope (not
-	// net/http's plain-text "404 page not found") covers every
-	// /v1/... path.
-	mux.HandleFunc("/v1/", s.handleRequest)
-
-	s.srv = &http.Server{
-		Handler:           mux,
-		ReadHeaderTimeout: 5 * time.Second,
+	// No ServeMux: every request reaches handleRequest whatever its
+	// path. Routing through a mux registered on "/v1/" left everything
+	// outside that prefix to net/http's default NotFoundHandler, which
+	// answers in plain text, consumes no rate-limit token, and emits no
+	// audit record at all. Path validation belongs inside the audited
+	// path, not in front of it.
+	srv := &http.Server{
+		Handler:           http.HandlerFunc(s.handleRequest),
+		ReadHeaderTimeout: readHeaderTimeout,
+		ReadTimeout:       readTimeout,
+		WriteTimeout:      writeTimeout,
+		IdleTimeout:       idleTimeout,
+		MaxHeaderBytes:    maxHeaderBytes,
 	}
+	// Publish both fields together, then signal. A reader that waited
+	// on the listener alone could observe srv still nil.
+	s.setServing(ln, srv)
 
 	errCh := make(chan error, 1)
-	go func() { errCh <- s.srv.Serve(ln) }()
+	go func() { errCh <- srv.Serve(ln) }()
 
 	select {
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		_ = s.srv.Shutdown(shutdownCtx)
+		_ = srv.Shutdown(shutdownCtx)
 		return nil
 	case err := <-errCh:
 		if errors.Is(err, http.ErrServerClosed) {
@@ -104,15 +184,50 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 }
 
-// handleRequest is the single entry point for every /v1/... request.
-// It validates the URL shape, extracts the tool name, and dispatches
-// through the registry; unknown tools surface as the structured
-// unknown_tool error rather than net/http's plain-text 404.
+// handleRequest is the single entry point for every request, whatever
+// its path. It authenticates, meters, validates the URL shape,
+// extracts the tool name, and dispatches through the registry;
+// unknown tools surface as the structured unknown_tool error rather
+// than net/http's plain-text 404.
 func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 
-	toolName := strings.TrimPrefix(r.URL.Path, "/v1/")
-	if toolName == "" || strings.Contains(toolName, "/") {
+	// Authenticate first, then meter, then decide anything else. Every
+	// rejection below writeError's call site emits an audit line; when
+	// the limiter sat further down (inside handleToolBody) each of
+	// those lines was free, so a caller looping on any malformed
+	// request could flood journald at connection speed and rotate
+	// genuine audit records away — erasing the REQ 6.5 trail without
+	// ever invoking a tool.
+	caller := callerIdentity(r)
+	if caller == "" {
+		s.writeError(w, r, "", http.StatusUnauthorized,
+			schema.ErrCodeAuthRequired, schema.MsgAuthRequired, start, "no_client_cert")
+		return
+	}
+
+	// Empty for any path outside /v1/. The limiter only buckets
+	// per-tool for the expensive set, so an unroutable path meters
+	// against the caller's global bucket alone — which is the bucket
+	// that has to bound this.
+	//
+	// Truncated because this value reaches the audit log and, for an
+	// unroutable path, it is whatever the caller sent. The audit
+	// logger %q-quotes it so control bytes cannot mangle a log line,
+	// but a request line is only bounded by MaxHeaderBytes and a
+	// multi-KiB "tool name" is no more diagnostic than its first 128
+	// bytes. Registered names are far shorter, so a real tool call is
+	// never affected.
+	toolName, hasPrefix := strings.CutPrefix(r.URL.Path, "/v1/")
+	toolName = truncateToolName(toolName)
+
+	if allowed, reason := s.limiter.Allow(caller, toolName); !allowed {
+		s.writeError(w, r, toolName, http.StatusTooManyRequests,
+			schema.ErrCodeRateLimited, schema.MsgRateLimited, start, "rate_"+reason)
+		return
+	}
+
+	if !hasPrefix || toolName == "" || strings.Contains(toolName, "/") {
 		s.writeError(w, r, toolName, http.StatusNotFound,
 			schema.ErrCodeUnknownTool, schema.MsgUnknownTool, start, "bad_path")
 		return
@@ -121,13 +236,6 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		s.writeError(w, r, toolName, http.StatusMethodNotAllowed,
 			schema.ErrCodeBadArgument, "POST required", start, "method")
-		return
-	}
-
-	caller := callerIdentity(r)
-	if caller == "" {
-		s.writeError(w, r, toolName, http.StatusUnauthorized,
-			schema.ErrCodeAuthRequired, schema.MsgAuthRequired, start, "no_client_cert")
 		return
 	}
 
@@ -149,16 +257,10 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	s.handleToolBody(w, r, tool, toolName, caller, start)
 }
 
-// handleToolBody handles the post-routing portion of a request:
-// rate-limit check, body read, cache lookup, tool invocation,
-// envelope write.
+// handleToolBody handles the post-routing portion of a request: body
+// read, cache lookup, tool invocation, envelope write. The caller has
+// already been authenticated and metered by handleRequest.
 func (s *Server) handleToolBody(w http.ResponseWriter, r *http.Request, tool tools.Tool, toolName, caller string, start time.Time) {
-	if allowed, reason := s.limiter.Allow(caller, toolName); !allowed {
-		s.writeError(w, r, toolName, http.StatusTooManyRequests,
-			schema.ErrCodeRateLimited, schema.MsgRateLimited, start, "rate_"+reason)
-		return
-	}
-
 	body, err := io.ReadAll(io.LimitReader(r.Body, MaxRequestBody+1))
 	if err != nil {
 		s.writeError(w, r, toolName, http.StatusBadRequest,
@@ -238,6 +340,17 @@ func (s *Server) handleToolBody(w http.ResponseWriter, r *http.Request, tool too
 		Duration:       time.Since(start),
 		Result:         "ok",
 	})
+}
+
+// maxAuditToolName bounds the tool name carried into the audit log and
+// the error envelope. No registered tool comes close.
+const maxAuditToolName = 128
+
+func truncateToolName(name string) string {
+	if len(name) <= maxAuditToolName {
+		return name
+	}
+	return name[:maxAuditToolName] + "…"
 }
 
 // extractAuditArgs runs the tool's optional AuditArgs hook (REQ 6.5).

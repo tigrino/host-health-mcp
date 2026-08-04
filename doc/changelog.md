@@ -3,6 +3,276 @@ title: Host Health MCP - Changelog
 author: Albert 'Tigr' Zenkoff <albert@tigr.net>
 ---
 
+# 2.3.0 — security audit remediation, first tranche (2026-08-04)
+
+The five "fix before the next release" findings from the 2026-08-02
+audit of the published source, plus one packaging change requested by
+the fleet architect. No schema change; `schema_version` stays `1.1.0`.
+
+Two changes alter observable daemon behaviour without changing any
+response field — read the first two entries before upgrading a client
+that parses HTTP status codes.
+
+- **Request bodies are now bounded (audit B-1).** The listener set only
+  `ReadHeaderTimeout`. Go's `net/http` resets the read deadline to
+  `wholeReqDeadline` once headers are in, and that is the zero value
+  when `ReadTimeout` is 0 — so the body read had no deadline at all. A
+  caller holding one valid certificate could open
+  `max_concurrent_handshakes` connections (default 16), send complete
+  headers promising a body, then trickle one byte per minute. Each
+  stalled request pinned a `cappedListener` slot, which is released
+  only on connection close. The listener was then fully saturated and
+  every subsequent connection, including from other legitimate
+  callers, was accepted and immediately closed — indefinite
+  availability denial from a single low-trust credential, at a
+  one-time cost of 16 rate-limit tokens.
+
+  `ReadTimeout` (10 s), `WriteTimeout` (30 s), `IdleTimeout` (10 s) and
+  an explicit `MaxHeaderBytes` (16 KiB, against Go's 1 MiB default) are
+  now set. `WriteTimeout` is sized to cover the body read plus the
+  slowest permitted tool call — REQ 5.1 caps a per-tool timeout at
+  10 s — plus the response write.
+
+  `IdleTimeout` is the value to be careful with, and a review of this
+  release caught it set to 60 s. A `cappedListener` slot is released at
+  connection close, not at end of handshake, so an idle keep-alive
+  connection holds one for the whole idle window. With both timeouts
+  previously unset, net/http fell back to `ReadHeaderTimeout` and that
+  window was 5 s; 60 s would have widened it twelvefold and handed back
+  a quieter version of the same attack. Pinning all 16 slots costs one
+  request per connection per window — 16/min at a 60 s idle timeout,
+  comfortably inside the 30/min sustained budget and therefore
+  permitted indefinitely, while looking like a mildly confused client
+  in the audit log. At 10 s the same attack costs 96/min and the
+  limiter refuses it. A test now pins that arithmetic rather than the
+  constant.
+
+- **Every post-authentication request is metered and audited (audit
+  B-2).** `limiter.Allow` ran inside `handleToolBody`. Five rejection
+  paths returned before reaching it — bad path, non-POST,
+  unauthenticated, unknown tool, tool disabled in the manifest — and
+  each wrote an audit entry without consuming a token. An
+  authenticated caller looping on `GET /v1/system` therefore emitted
+  one journald line per request at connection speed, for free. That is
+  worse than plain CPU exhaustion: journald fills, rotates, and evicts
+  genuine audit records, so the REQ 6.5 trail is destroyed by a caller
+  that never successfully invoked a tool.
+
+  Separately, the mux was registered on `/v1/` alone, so anything
+  outside that prefix (`GET /`, `POST /metrics`) reached `net/http`'s
+  default `NotFoundHandler`. Those requests answered in plain text
+  rather than the error envelope, consumed no token, and produced **no
+  audit record at all**.
+
+  Authentication now runs first, the limiter immediately after it, and
+  every routing decision after that. The `ServeMux` is gone; the
+  handler is reached by every request whatever its path.
+
+  Two consequences for clients: a request to an unroutable path now
+  returns the JSON error envelope with `Content-Type: application/json`
+  instead of plain text, and any of the five rejection paths can now
+  return `429` where it previously returned `404` or `405`. No response
+  field changed, so this is not a schema bump under REQ 7.3.
+
+  One consequence for operators: unroutable paths are audited where
+  they previously were not, and the `tool=` field on those entries is
+  the caller's own path text. The audit logger already `%q`-quotes
+  every caller-influenced field, so control bytes cannot mangle a log
+  line; the name is now also truncated at 128 bytes, since a request
+  line is otherwise bounded only by `MaxHeaderBytes` and a multi-KiB
+  "tool name" is no more diagnostic than its first 128. No registered
+  tool name comes close to the cap.
+
+- **Helper ops now run under a deadline (audit A-1).** `OpDeadlineMS`
+  was declared in `helper.yml`, defaulted in `Defaults()`, and read
+  nowhere — the token appeared in no other file in the tree.
+  `handleConn` passed the process-lifetime context, which carries no
+  deadline and is cancelled only at shutdown, straight to the handler.
+  The consequence reached all the way down: `exec.CommandContext`'s
+  cancel path and the whole `SIGTERM` → `KillGrace` → `SIGKILL` chain
+  never fired, and `proto.CodeDeadline` was dead code on the helper
+  side. The comment in `exec.go` describing a "helper deadline +
+  500 ms" relationship documented a mechanism that did not exist.
+
+  The failure mode was non-adversarial and likely: `storage` polls
+  `smart_summary` per device on a 60 s TTL, and `smartctl` blocks for
+  minutes on a failing SATA device — precisely the condition the tool
+  exists to detect. The daemon's own timeout fired and it closed the
+  socket, but the helper goroutine was inside the handler rather than
+  in a read, so it noticed nothing. The subprocess and the goroutine
+  leaked, and the next poll started another. Same shape for `nft`
+  blocked on a netlink lock, `fail2ban-client` on its unix socket, and
+  `doveadm who` on the dovecot auth socket.
+
+  `Server.dispatch` is now the single chokepoint where every op
+  acquires a bound. `proto.Request` gains an optional `deadline_ms`
+  carrying the daemon's remaining budget; the helper honours it only
+  when it is *shorter* than the locally configured deadline, so a peer
+  can ask for less time but never for more. Absent or zero selects the
+  configured value. `helper.yml`'s `op_deadline_ms` now does what it
+  always claimed to: it overrides the 9500 ms default per op, clamped
+  to [250 ms, 15 s]. The ceiling is deliberately close to the daemon's
+  own 10 s cap — a far larger one would let a `helper.yml` typo
+  reproduce the exact symptom A-1 removed, just finitely. The daemon
+  and helper ship in the same package and are always upgraded together,
+  so the frame addition needs no migration.
+
+  Two edge cases from the review of this release: the daemon's budget
+  is now rounded up rather than truncated, since a sub-millisecond
+  remainder yielded 0, which the helper reads as "no budget supplied"
+  and would have started a subprocess on the 9.5 s fallback *after* the
+  daemon had given up; and a millisecond count large enough to overflow
+  `time.Duration`'s int64 nanoseconds now saturates instead of going
+  negative. The negative value was rescued by the minimum clamp, so the
+  behaviour was already correct — but by accident, and the "a peer may
+  only shorten, never extend" property was one refactor from
+  inverting.
+
+- **The forbidden-call linter now enforces what it documents (audit
+  C-1).** Its symbol table was seven entries: `os.Create`,
+  `os.OpenFile`, `os.StartProcess`, `syscall.ForkExec`, `syscall.Exec`,
+  `syscall.StartProcess`, `unix.Exec`. Unguarded, and therefore
+  shipping clean through `build.sh`: `os.WriteFile` — the most
+  idiomatic write call in modern Go — along with `Remove`, `RemoveAll`,
+  `Rename`, `Chmod`, `Chown`, `Lchown`, `Symlink`, `Link`, `Truncate`,
+  `Mkdir`, `MkdirAll`, `Chtimes`, and `syscall.Kill`. A future tool
+  doing `os.WriteFile("/etc/cron.d/x", ...)` would have passed.
+
+  This mattered beyond the individual gaps. `doc/design-overview.md`
+  §7.4 presents the linter as the mechanism enforcing the read-only
+  property (REQ 6.1), and contributors were told to treat it as such.
+  It was not. What actually held that property was the systemd
+  hardening — `ProtectSystem=strict`, `ReadWritePaths=`, empty
+  `CapabilityBoundingSet`, `SystemCallFilter=` — which is a genuine
+  backstop but thinner on the helper, which runs as root with a
+  writable `/run/host-health-mcp`.
+
+  Four further weaknesses in the same file are closed. It failed open
+  on a parse error, printing to stderr and returning no finding, so
+  under `set -euo pipefail` an unparseable file produced a green
+  release. Dot-imports evaded the selector checks entirely, since a
+  bare `Create(...)` after `import . "os"` is an `*ast.Ident` and never
+  an `*ast.SelectorExpr`; `os`, `syscall`, `os/exec` and
+  `golang.org/x/sys/unix` may no longer be dot-imported. Suppression
+  was `strings.Contains(c.Text, "forbidden:allow")`, so any comment
+  merely mentioning the token disabled every finding on its line; the
+  directive must now start the comment.
+
+  And the mechanism had never worked at all: `parser.ParseComments` was
+  never passed, so `file.Comments` was always empty and no
+  `// forbidden:allow` could ever match. That went unnoticed because
+  the old table matched nothing in the tree, so no call site had ever
+  needed exempting. Five now carry justified exemptions — the helper
+  creating, chmod-ing, chown-ing and unlinking its own unix socket
+  under its systemd `RuntimeDirectory=`.
+
+  `_test.go` files were skipped outright and are now scanned, but for
+  the process-spawning and system-state rules only, not the filesystem
+  ones: a parser test legitimately writes fixtures into `t.TempDir()`,
+  and no `_test.go` is compiled into a shipped binary. That split is a
+  review aid, not a security boundary — `build.sh` runs `go test`
+  before the linter, so for test files this is detection after
+  execution either way, and the code now says so. The linter's own
+  regression tests run in `build.sh`; untested enforcement is
+  indistinguishable from none.
+
+  Two further holes were found by a review of this release and are
+  closed here. `filepath.WalkDir` calls back on the root itself first,
+  and the directory filter skipped any name starting with `.` — so
+  `-root .` terminated the walk immediately and exited 0 having read no
+  files at all, in a tool whose entire purpose is failing closed.
+  (`build.sh` passes `-root daemon`, so no release was affected; a
+  contributor running it by hand from the repo root got a false green.)
+  And the `syscall`/`x/sys/unix` tables listed the convenience wrappers
+  but not the primitives underneath them: `syscall.Open` plus
+  `syscall.Write` reconstructs `os.WriteFile` in two calls, and
+  `syscall.Syscall` reconstructs anything, which left the rest of the
+  table decorative. The primitives, the `*at` variants, the credential
+  calls and the namespace calls are all listed now, and a test asserts
+  the two tables cannot drift apart.
+
+  Two limits are documented rather than left to be inferred: matching
+  is syntactic, so a call through a value rather than an import name
+  (`(*os.Process).Kill`) is invisible without type information; and
+  only the root passed to `-root` is scanned, which is the daemon
+  module.
+
+- **`caps-template` no longer prints an activation instruction unless
+  asked.** Requested by the fleet architect. The script ended with a
+  line telling the reader to run `systemctl daemon-reload && systemctl
+  restart`. It is invoked non-interactively from the postinst, and on a
+  fleet upgraded by `unattended-upgrades` that text lands in an
+  automated report with no human in it. A line phrased as a required
+  manual step, in a channel where nobody can act on it, is
+  indistinguishable from a genuine action-required notice and trains
+  the reader to ignore the channel.
+
+  The line is now behind `--hint`, which the postinst does not pass and
+  which `doc/install.md` uses in the by-hand procedures. A flag rather
+  than a TTY check: explicit and testable. Exit status, the generated
+  drop-in, and the two informational lines are unchanged. An unknown
+  argument exits 2.
+
+- **The package now tells systemd about its own unit files
+  (pre-existing).** Found while implementing the `--hint` change above,
+  which removed the only thing that had been compensating for it.
+
+  Nothing in the package had ever run `systemctl daemon-reload` or
+  restarted anything. The postinst said so explicitly, on the grounds
+  that `dh_installsystemd` generates the equivalents — true of a
+  debhelper build, but these artefacts are built with `nfpm`, which
+  emits no maintainer-script fragments at all. So an upgrade installed
+  a new binary that the running units went on ignoring, and a
+  capability drop-in regenerated from an edited `manifest.yml` never
+  took effect. The only signal was the advisory line printed by
+  `caps-template` — the line the fleet architect asked to remove,
+  correctly, on the grounds that the caller now discharges activation.
+  In this repository the caller did not.
+
+  The postinst now reloads systemd and restarts whichever units were
+  already active. It does not start a unit that was stopped, and it
+  still does not enable anything: whether a network listener comes up
+  at boot is the operator's decision.
+
+  Removal was missing the same way, so the package also gains a
+  `prerm` and a `postrm`. Before this, `apt remove` deleted the unit
+  files from under two running services — systemd kept the old
+  definitions in memory, the daemon carried on serving from a binary
+  no longer on disk, and the helper kept its root privileges and its
+  socket. The package looked removed and was still listening. `purge`
+  additionally removes the generated drop-ins, which are written at
+  install time, are not in dpkg's file list, and would otherwise
+  outlive the package and apply a stale `CapabilityBoundingSet` to any
+  later reinstall.
+
+  `systemctl disable` remains the operator's step, for the same reason
+  the package never enables.
+
+- **Audit B-4 needed no change.** The postinst drop-in that denied the
+  daemon's own inbound traffic, and the non-existent `dns:`/`resolvers:`
+  config key it read, were both fixed in 2.1.0 by the `ip_filter_allow`
+  rework. Re-verified against `config.Daemon`, `caps-template.sh` and
+  `doc/install.md`.
+
+- **A pre-existing data race in the test harness is fixed.** The
+  httpserver tests polled `Server.listener` without synchronisation
+  while `Start` assigned it from another goroutine, and the new
+  timeout assertions read `Server.srv` through a barrier that only ever
+  covered `listener` — so a sufficiently unlucky schedule read a nil
+  pointer. `go test -race` on the daemon module failed. `Start` now
+  publishes both fields under a mutex and closes a `Serving()` channel,
+  and the two test helpers wait on that instead of spinning. The module
+  is race-clean.
+
+Every fix in this release is mutation-verified: each defect was
+reintroduced and the corresponding test confirmed to fail. Three tests
+were rewritten after mutation showed they could not fail — one drove
+`handleRequest` directly and so could not observe the routing defect;
+one asserted merely that a deadline existed rather than what it was,
+which a 146-year deadline satisfies; and one re-parsed its fixture with
+its own flags instead of the production parse entry point, so it could
+not have caught the missing `ParseComments`.
+
 # 2.2.2 — corrections to 2.2.0 and 2.2.1 (2026-08-03)
 
 Findings from a review of the two preceding releases. No schema change;

@@ -4,8 +4,20 @@
 daemon_user: host-health-mcp
 socket_path: /run/host-health-mcp/helper.sock
 
-# Per-op deadline overrides (milliseconds). Missing keys keep the
-# daemon-supplied default (per-tool timeout minus the 500 ms grace).
+# Per-op deadline overrides (milliseconds). Missing keys use the
+# built-in default of 9500 ms, which is the daemon's 10 s per-tool cap
+# (REQ 5.1) less the 500 ms the helper needs to escalate SIGTERM to
+# SIGKILL on a subprocess that ignores the first signal.
+#
+# The daemon also sends its own remaining budget with each request.
+# The effective deadline is the smaller of the two, so an override
+# longer than the calling tool's timeout has no effect: it raises the
+# ceiling, it does not extend any individual call. Values are clamped
+# to [250 ms, 15 s]; 0 or negative falls back to the default.
+#
+# Lower a value when a tool should give up sooner than the daemon
+# would. Raising one only matters alongside a matching
+# timeout_overrides entry in daemon.yml.
 op_deadline_ms:
   smart_summary: 8000
   zpool_status: 5000

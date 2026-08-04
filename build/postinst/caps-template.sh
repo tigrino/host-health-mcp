@@ -3,8 +3,42 @@
 # operator's manifest.yml. Run by the .deb's post-install scriptlet
 # and re-run by the operator after editing manifest.yml. See
 # design-overview.md section 7 (capability templating).
+#
+# Usage: host-health-mcp-caps-template [--hint]
+#
+#   --hint  Print how to activate the generated drop-in. Off by
+#           default. The script is run non-interactively from the
+#           postinst, and on a fleet upgraded by unattended-upgrades
+#           its stdout lands in an automated report with no human in
+#           it. A line phrased as a required manual step, in a channel
+#           where nobody can act on it, is indistinguishable from a
+#           genuine action-required notice and trains the reader to
+#           ignore the channel. Everything this script prints by
+#           default states a fact about what it did.
+#
+#           A flag rather than a TTY check: explicit, testable, and
+#           the postinst simply does not pass it.
 
 set -eu
+
+HINT=0
+for arg in "$@"; do
+    case "$arg" in
+        --hint) HINT=1 ;;
+        -h|--help)
+            # Print the header comment block: everything from line 2
+            # until the first line that is not a comment. Deriving the
+            # range beats hardcoding it, which silently truncates or
+            # over-prints whenever the header changes length.
+            awk 'NR==1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"
+            exit 0
+            ;;
+        *)
+            echo "caps-template: unknown argument '$arg'" >&2
+            exit 2
+            ;;
+    esac
+done
 
 MANIFEST=${MANIFEST:-/etc/host-health-mcp/manifest.yml}
 DROPIN_DIR=/etc/systemd/system/host-health-mcp-helper.service.d
@@ -206,4 +240,6 @@ mkdir -p "$DROPIN_DIR"
 } > "$DROPIN"
 
 echo "caps-template: wrote $DROPIN" >&2
-echo "caps-template: run 'systemctl daemon-reload && systemctl restart host-health-mcp-helper.service' to apply" >&2
+if [ "$HINT" -eq 1 ]; then
+    echo "caps-template: run 'systemctl daemon-reload && systemctl restart host-health-mcp-helper.service' to apply" >&2
+fi

@@ -42,6 +42,14 @@ var (
 type Request struct {
 	Op    string `json:"op"`
 	Param string `json:"param,omitempty"`
+	// DeadlineMS is the caller's remaining budget in milliseconds. It
+	// is advisory and can only ever SHORTEN the helper's own per-op
+	// deadline, never extend it — the peer is the thing being defended
+	// against. Zero or absent means "use the helper's configured
+	// deadline for this op". Without it the helper cannot align its
+	// SIGTERM/SIGKILL escalation with the daemon giving up, and a
+	// subprocess outlives the request that started it.
+	DeadlineMS int `json:"deadline_ms,omitempty"`
 }
 
 // Response is the body the helper returns to the daemon per call.

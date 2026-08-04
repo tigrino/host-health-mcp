@@ -324,11 +324,17 @@ The generator is installed at
 `manifest.yml`:
 
 ```
-sudo /usr/sbin/host-health-mcp-caps-template
+sudo /usr/sbin/host-health-mcp-caps-template --hint
 sudo systemctl daemon-reload
 sudo systemctl restart host-health-mcp-helper.service
 sudo systemctl restart host-health-mcp.service
 ```
+
+`--hint` appends a reminder of the two `systemctl` lines above. It is
+off by default because the postinst runs the generator
+non-interactively, where an instruction nobody can act on is noise.
+The flag changes nothing else: same exit status, same drop-in, same
+informational output.
 
 The drop-in adds caps only for ops the manifest enables. Operators
 not running ZFS do not pay `CAP_SYS_ADMIN`; not running WireGuard
@@ -372,7 +378,7 @@ ip_filter_allow:
 After editing the key, re-run the generator and restart the daemon:
 
 ```
-sudo /usr/sbin/host-health-mcp-caps-template
+sudo /usr/sbin/host-health-mcp-caps-template --hint
 sudo systemctl daemon-reload
 sudo systemctl restart host-health-mcp.service
 ```
@@ -504,26 +510,31 @@ deviations:
 # 8. Uninstall
 
 ```
-sudo systemctl disable --now host-health-mcp.service host-health-mcp-helper.service
+sudo systemctl disable host-health-mcp.service host-health-mcp-helper.service
 sudo apt purge host-health-mcp-server
-sudo rm -rf /etc/systemd/system/host-health-mcp.service.d \
-            /etc/systemd/system/host-health-mcp-helper.service.d
-sudo systemctl daemon-reload
 sudo deluser --system host-health-mcp
 sudo rm -rf /var/lib/host-health-mcp /etc/host-health-mcp
 ```
 
-The package ships no `prerm` and no `postrm`, so removal disables
-nothing. `systemctl disable --now` above is what stops the units and
-drops their enablement symlinks; without it systemd is left with
-symlinks pointing at unit files that no longer exist.
+From 2.3.0 the package stops both units in its `prerm` and reloads
+systemd in its `postrm`, and `purge` also removes the generated
+drop-ins (`caps.conf`, `10-ip-filter.conf`, and the obsolete
+`10-ip-egress.conf`) together with their `.d` directories. Before
+2.3.0 the package shipped neither script: removal deleted the unit
+files from under two running services, so the daemon carried on
+serving from a binary no longer on disk and the helper kept its root
+privileges and its socket.
 
-The drop-ins the capability generator wrote — `caps.conf` under
-`/etc/systemd/system/host-health-mcp-helper.service.d/` and, if
-`ip_filter_allow` was set, `10-ip-filter.conf` under
-`/etc/systemd/system/host-health-mcp.service.d/` — are generated at
-install time, not package-owned, and survive `purge`. Remove both
-directories explicitly, as above.
+`systemctl disable` is still yours to run, and still first. The
+package deliberately never enables these units, so it does not
+presume to drop the enablement symlinks either; left behind, they
+point at unit files that no longer exist and systemd will complain on
+every reload.
+
+Removing rather than purging leaves the generated drop-ins in place,
+which is the right behaviour for a reinstall — `caps.conf` matches the
+`manifest.yml` still under `/etc/host-health-mcp/`. Use `purge` when
+the host is done with the package.
 
 `purge` does **not** remove `/etc/host-health-mcp/`: the live
 configuration and the PKI material there are operator-created, not

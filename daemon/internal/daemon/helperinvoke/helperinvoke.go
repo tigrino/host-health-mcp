@@ -90,6 +90,12 @@ func (c *Client) Call(ctx context.Context, op string, param string) (json.RawMes
 	// helper's reply. Without this subtraction both timers fired
 	// simultaneously and the helper's tail responses could lose
 	// the race.
+	// deadlineMS travels in the request frame so the helper can bound
+	// its own handler and its subprocess to the same budget. A socket
+	// deadline only unblocks THIS side: the helper goroutine sits in
+	// its handler, not in a read, and notices nothing when the daemon
+	// hangs up.
+	deadlineMS := 0
 	if deadline, ok := ctx.Deadline(); ok {
 		helperDL := deadline.Add(-HelperDeadlineBudget)
 		if !helperDL.After(time.Now()) {
@@ -98,6 +104,17 @@ func (c *Client) Call(ctx context.Context, op string, param string) (json.RawMes
 			helperDL = deadline
 		}
 		_ = conn.SetDeadline(helperDL)
+		// Round UP. Milliseconds() truncates, so a sub-millisecond
+		// remainder would yield 0 — which the helper reads as "no
+		// budget supplied, use your configured deadline", i.e. 9.5 s
+		// starting after the daemon has already given up. The one
+		// input path that could silently discard the budget instead of
+		// propagating it.
+		if ns := time.Until(helperDL).Nanoseconds(); ns > 0 {
+			deadlineMS = int((ns + int64(time.Millisecond) - 1) / int64(time.Millisecond))
+		} else {
+			deadlineMS = 1
+		}
 	}
 
 	// Watch ctx.Done(): closing the conn from a watcher unblocks
@@ -116,7 +133,7 @@ func (c *Client) Call(ctx context.Context, op string, param string) (json.RawMes
 		}
 	}()
 
-	if err := proto.WriteFrame(conn, proto.Request{Op: op, Param: param}); err != nil {
+	if err := proto.WriteFrame(conn, proto.Request{Op: op, Param: param, DeadlineMS: deadlineMS}); err != nil {
 		return nil, fmt.Errorf("helperinvoke: write: %w", err)
 	}
 

@@ -111,6 +111,16 @@ not at first call.
 | 1.0.0          | 2.0.0                         | **First major bump — breaking.** `security.ssh_logins` renamed `accepted_since_boot` / `failed_since_boot` to `accepted_recent` / `failed_recent` (both nullable) and added the required `window` discriminator (`last_24h` / `since_log_rotation` / `unavailable`). The journal source is now bounded to the last 24h instead of walking since boot. A field rename is major per REQ 7.3; a `0.x` plugin fails closed against a `2.0.0` daemon per cell C4. Roll daemon and plugin together. |
 | 1.1.0          | 2.2.0                         | Additive minor. Tool 4.2 `systemd_units` gains `pattern_units[]`, the result of the new manifest `whitelisted_unit_patterns` glob selector; `units[]` keeps the exact selector's results, unchanged in shape and content. (Correction: 2.2.0 and 2.2.1 also re-sorted `units[]` alphabetically, where it had previously been returned in manifest order; 2.2.2 restored that ordering. No unit was added, dropped, or changed in shape.) The `manifest` response gains a matching `whitelisted_unit_patterns` array. No field renamed or removed, so a `1.0.0` plugin keeps working against a `2.2.0` daemon and simply does not see the new arrays (cell C2). |
 
+`2.3.0` ships no schema change and stays at `1.1.0`. It alters two
+things a client can observe without touching any response field: a
+request to a path outside `/v1/` now returns the JSON error envelope
+instead of `net/http`'s plain-text 404, and the five pre-dispatch
+rejection paths are rate-limited, so any of them can return `429`
+where it previously returned `404` or `405`. Neither is a field
+rename or removal, so REQ 7.3 keeps this out of a major bump and no
+compatibility cell changes. A client that keys on `error.code` rather
+than on the HTTP status is unaffected.
+
 A plugin compiled against `0.7.0` that decoded `recent_4xx` /
 `recent_5xx` as a plain `int` may surface a parse error on an
 `0.8.0` daemon reporting `recent_coverage = unavailable`. The

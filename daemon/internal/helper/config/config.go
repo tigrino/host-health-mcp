@@ -8,9 +8,11 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"os/user"
 	"strconv"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -32,9 +34,83 @@ type Config struct {
 	SocketPath string `yaml:"socket_path"`
 
 	// OpDeadlineMS overrides the per-op deadline in milliseconds.
-	// Missing keys keep the daemon-supplied default (per-tool timeout
-	// minus exec.KillGrace).
+	// Missing keys use DefaultOpDeadline. Values are clamped to
+	// [MinOpDeadline, MaxOpDeadline] by OpDeadline.
 	OpDeadlineMS map[string]int `yaml:"op_deadline_ms"`
+}
+
+// Per-op deadline bounds.
+//
+// DefaultOpDeadline applies only when the request frame carries no
+// budget. On a normal call the daemon sends its own remaining budget,
+// which is 500 ms less than whatever per-tool timeout applies — room
+// for the SIGTERM -> KillGrace -> SIGKILL chain in helper/exec to
+// finish before the daemon stops waiting, which is the relationship
+// exec.go documents. 9500 ms is that subtraction applied to the 10 s
+// ceiling REQ 5.1 puts on any per-tool timeout, so the fallback is
+// never longer than the longest real call.
+//
+// MaxOpDeadline bounds an operator typo in helper.yml, not an attack:
+// the helper's peer is the daemon, checked by SO_PEERCRED. It is
+// deliberately close to the daemon's own ceiling — a value far above
+// it would let a typo reproduce the symptom this deadline was added to
+// remove (a subprocess outliving the request that started it), just
+// finitely.
+const (
+	DefaultOpDeadline = 9500 * time.Millisecond
+	MinOpDeadline     = 250 * time.Millisecond
+	MaxOpDeadline     = 15 * time.Second
+)
+
+// maxDeadlineMS is the largest millisecond count that survives
+// conversion to a time.Duration. Beyond it the multiply overflows
+// int64 nanoseconds and goes negative; the Min clamp below would
+// rescue the result, but by accident rather than by construction, and
+// the "a peer may only shorten" property would be one refactor from
+// inverting.
+const maxDeadlineMS = int64(math.MaxInt64) / int64(time.Millisecond)
+
+// OpDeadline returns the deadline to apply to op. callerMS is the
+// daemon's remaining budget from the request frame; it is honoured
+// only when it is shorter than the locally configured deadline, so a
+// peer can ask for less time but never for more.
+//
+// The result is always in [MinOpDeadline, MaxOpDeadline]. It is never
+// zero — context.WithTimeout treats a zero duration as already
+// expired, which would fail every op rather than bounding it.
+func (c Config) OpDeadline(op string, callerMS int) time.Duration {
+	d := DefaultOpDeadline
+	if v, ok := c.OpDeadlineMS[op]; ok && v > 0 {
+		d = msToDuration(int64(v), MaxOpDeadline)
+	}
+	if d > MaxOpDeadline {
+		d = MaxOpDeadline
+	}
+	// Narrowing only. The Min clamp comes after, so a peer asking for
+	// 1 ms gets MinOpDeadline rather than a deadline that has already
+	// expired.
+	if callerMS > 0 {
+		if caller := msToDuration(int64(callerMS), MaxOpDeadline); caller < d {
+			d = caller
+		}
+	}
+	if d < MinOpDeadline {
+		d = MinOpDeadline
+	}
+	return d
+}
+
+// msToDuration converts a millisecond count to a Duration, saturating
+// at ceiling rather than overflowing.
+func msToDuration(ms int64, ceiling time.Duration) time.Duration {
+	if ms > maxDeadlineMS {
+		return ceiling
+	}
+	d := time.Duration(ms) * time.Millisecond
+	if d > ceiling {
+		return ceiling
+	}
+	return d
 }
 
 // Defaults returns the conservative defaults applied when helper.yml is
@@ -99,4 +175,3 @@ func (c Config) ResolveGID() (uint32, error) {
 	}
 	return uint32(gid), nil
 }
-

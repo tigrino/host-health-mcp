@@ -34,9 +34,9 @@ type testTool struct {
 	name string
 }
 
-func (t *testTool) Name() string                  { return t.name }
-func (*testTool) DefaultTTL() time.Duration       { return 1 * time.Second }
-func (*testTool) DefaultTimeout() time.Duration   { return 1 * time.Second }
+func (t *testTool) Name() string                { return t.name }
+func (*testTool) DefaultTTL() time.Duration     { return 1 * time.Second }
+func (*testTool) DefaultTimeout() time.Duration { return 1 * time.Second }
 func (*testTool) Handle(ctx context.Context, body []byte) (any, []string, error) {
 	return map[string]string{"ok": "yes"}, nil, nil
 }
@@ -208,20 +208,25 @@ func startTestServer(t *testing.T) (s *Server, addr string, clientTLS *tls.Confi
 
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
+	serving := srv.Serving()
 	go func() {
 		errCh <- srv.Start(ctx)
 	}()
 
-	// Wait for the listener to bind.
-	deadline := time.Now().Add(2 * time.Second)
-	for srv.listener == nil && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
-	if srv.listener == nil {
+	// Wait for the listener to bind AND the http.Server to exist.
+	// Polling the fields directly is a data race: Start assigns them
+	// from another goroutine, and a barrier covering only the listener
+	// can still observe a nil srv.
+	select {
+	case <-serving:
+	case err := <-errCh:
+		cancel()
+		t.Fatalf("server exited before serving: %v", err)
+	case <-time.After(5 * time.Second):
 		cancel()
 		t.Fatal("listener did not bind in time")
 	}
-	return srv, srv.listener.Addr().String(), ctls, func() { cancel(); <-errCh }
+	return srv, srv.Addr(), ctls, func() { cancel(); <-errCh }
 }
 
 func TestServerRequiresClientCert(t *testing.T) {
@@ -347,17 +352,19 @@ func TestAuditArgsPopulated(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
+	serving := srv.Serving()
 	go func() { errCh <- srv.Start(ctx) }()
-	deadline := time.Now().Add(2 * time.Second)
-	for srv.listener == nil && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
-	if srv.listener == nil {
+	select {
+	case <-serving:
+	case err := <-errCh:
+		cancel()
+		t.Fatalf("server exited before serving: %v", err)
+	case <-time.After(5 * time.Second):
 		cancel()
 		t.Fatal("listener did not bind in time")
 	}
 	defer func() { cancel(); <-errCh }()
-	addr := srv.listener.Addr().String()
+	addr := srv.Addr()
 	c := &http.Client{Transport: &http.Transport{TLSClientConfig: ctls}}
 	// First call — fresh, exercises the cache-miss branch of the
 	// audit-args plumbing.

@@ -453,8 +453,28 @@ the **only** place `os/exec` is permitted. The package exposes
 enum-typed Go calls (one function per helper op); the subcommand
 token strings are constructed inside the package from a closed Go
 enum, never from any caller-influenced value. The custom
-forbidden-call linter rejects `os/exec`, `syscall.ForkExec`, and
-write-mode `os.OpenFile`/`os.Create` from every other package.
+forbidden-call linter rejects `os/exec`, every process-spawning and
+signalling call, and every filesystem mutator (`os.WriteFile`,
+`Remove`, `RemoveAll`, `Rename`, `Chmod`, `Chown`, `Mkdir*`,
+`Symlink`, `Link`, `Truncate`, `Create`, `OpenFile`, plus the
+`syscall` and `golang.org/x/sys/unix` equivalents, including the raw primitives
+`Open`, `Write` and `Syscall` that would otherwise reconstruct them)
+from every other package **in the daemon module**, which is the root
+`build/build.sh` scans. It also rejects dot-imports of `os`,
+`syscall`, and `golang.org/x/sys/unix`, which would otherwise hide
+the package qualifier the selector check depends on, and it fails
+closed on a file it cannot parse. Individual read-only call sites are
+exempted with a justified `// forbidden:allow` comment.
+
+Two limits are worth stating rather than leaving to be inferred from
+the symbol table. Matching is syntactic, so a call reached through a
+value rather than an import name — `(*os.Process).Kill` being the
+clearest example — is not seen; catching those would need type
+information. And the `plugin` module is a separate root that the
+build does not currently pass to the linter. It contains no
+state-changing call today, and the systemd hardening does not cover
+it because the plugin runs on the operator's workstation rather than
+under the daemon's unit.
 
 Concurrency control:
 
@@ -631,10 +651,11 @@ pinned Go toolchain. The script:
    The Go linker and `nfpm` honour this for embedded timestamps;
    it is included for hygiene, not as a guarantee of byte-identical
    output.
-3. Runs `go vet`, `go test ./...`, and the architect-chosen linter
-   set (REQ 10.2): `staticcheck`, `govulncheck`, and a custom
-   forbidden-call linter that rejects `os/exec`,
-   `syscall.ForkExec`, and write-mode `os.OpenFile`/`os.Create` from
+3. Runs `go vet`, `go test ./...` (all three modules, including the
+   linter's own regression tests), and the architect-chosen linter
+   set (REQ 10.2): `staticcheck`, `govulncheck`, and the custom
+   forbidden-call linter described in §7.4, which rejects `os/exec`,
+   the process-spawning calls, and the filesystem mutators from
    every package except `internal/helperinvoke/` (in the daemon
    source tree) and `internal/exec/` (in the helper source tree).
 4. Builds **both** the daemon and the helper for
