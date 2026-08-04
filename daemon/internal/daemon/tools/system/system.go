@@ -326,8 +326,14 @@ func mayBlockOnStatfs(fs string) bool {
 	return fs == "fuse" || strings.HasPrefix(fs, "fuse.")
 }
 
+// procMountsPath is the mount table source. A package var, not a
+// constant, so tests can point it at a fixture — the same seam
+// procRootForTest uses in the nginx_apache op. Never written outside
+// tests.
+var procMountsPath = "/proc/mounts"
+
 func readMounts() (measured, skipped []mountEntry, err error) {
-	f, err := os.Open("/proc/mounts")
+	f, err := os.Open(procMountsPath)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -346,7 +352,7 @@ func readMounts() (measured, skipped []mountEntry, err error) {
 // for procfs, whereas a missing NFS volume is a monitoring blind spot
 // the operator has to be told about.
 func parseMounts(r io.Reader) (measured, skipped []mountEntry, err error) {
-	scanner := linescan.New(r, "/proc/mounts")
+	scanner := linescan.New(r, procMountsPath)
 	seen := make(map[string]bool)
 	for scanner.Scan() {
 		fields := strings.Fields(scanner.Text())

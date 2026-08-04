@@ -39,6 +39,12 @@ echo "==> go test"
 # own regression tests run in the release path too. Untested
 # enforcement is indistinguishable from none.
 ( cd "$REPO/build/linter" && go test ./... )
+# Same reasoning for the capability generator: it runs from the
+# postinst under `set -eu` on every install, it decides what the root
+# helper is allowed to do, and it is shell parsing YAML with awk. It
+# gets a test suite and the suite runs here.
+echo "==> caps-template tests"
+sh "$REPO/build/postinst/tests/caps-template-test.sh"
 
 # Custom forbidden-call linter (REQ 10.2). Required.
 echo "==> forbidden-call linter"

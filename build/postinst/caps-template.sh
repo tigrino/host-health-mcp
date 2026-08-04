@@ -41,13 +41,15 @@ for arg in "$@"; do
 done
 
 MANIFEST=${MANIFEST:-/etc/host-health-mcp/manifest.yml}
-DROPIN_DIR=/etc/systemd/system/host-health-mcp-helper.service.d
+# Overridable so the generator can be exercised without root; the
+# postinst never sets it.
+DROPIN_DIR=${DROPIN_DIR:-/etc/systemd/system/host-health-mcp-helper.service.d}
 DROPIN=${DROPIN_DIR}/caps.conf
 
 # Retiring the <= 2.0.0 daemon drop-in happens before anything can exit
 # early: it denied inbound traffic and left the listener unreachable, so
 # it must go even on a host with no manifest.
-DAEMON_DROPIN_DIR=/etc/systemd/system/host-health-mcp.service.d
+DAEMON_DROPIN_DIR=${DAEMON_DROPIN_DIR:-/etc/systemd/system/host-health-mcp.service.d}
 DAEMON_STALE_DROPIN="$DAEMON_DROPIN_DIR/10-ip-egress.conf"
 if [ -f "$DAEMON_STALE_DROPIN" ]; then
     rm -f "$DAEMON_STALE_DROPIN"

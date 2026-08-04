@@ -110,8 +110,11 @@ func looksLikeAideDB(path string) bool {
 // parses its tail for change_count and exit code. The Debian package
 // writes aide.log on each scheduled run; logrotate then produces
 // aide.log.1.gz, aide.log.2.gz, etc.
+// aideLogDir is the AIDE log directory; overridden by tests.
+var aideLogDir = "/var/log/aide"
+
 func readAideLog() (*int, *int) {
-	logDir := "/var/log/aide"
+	logDir := aideLogDir
 	entries, err := os.ReadDir(logDir)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {

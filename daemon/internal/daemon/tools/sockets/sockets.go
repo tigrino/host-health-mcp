@@ -42,19 +42,28 @@ func (*Tool) DefaultTTL() time.Duration { return 30 * time.Second }
 // DefaultTimeout caps the per-call duration.
 func (*Tool) DefaultTimeout() time.Duration { return 1 * time.Second }
 
+// procNetSource is one /proc/net file to enumerate.
+type procNetSource struct {
+	path        string
+	proto       string
+	family      string
+	listenState string
+}
+
+// procNetSources is the set of files the tool reads. A package var so
+// tests can point it at fixtures; never written outside tests.
+var procNetSources = []procNetSource{
+	{"/proc/net/tcp", "tcp", "inet", "0A"},
+	{"/proc/net/tcp6", "tcp", "inet6", "0A"},
+	{"/proc/net/udp", "udp", "inet", "07"},
+	{"/proc/net/udp6", "udp", "inet6", "07"},
+}
+
 // Handle reads all four files and returns the listeners.
 func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 	var warnings []string
 	d := Data{Listening: []ListeningSocket{}}
-	for _, src := range []struct {
-		path, proto, family string
-		listenState         string
-	}{
-		{"/proc/net/tcp", "tcp", "inet", "0A"},
-		{"/proc/net/tcp6", "tcp", "inet6", "0A"},
-		{"/proc/net/udp", "udp", "inet", "07"},
-		{"/proc/net/udp6", "udp", "inet6", "07"},
-	} {
+	for _, src := range procNetSources {
 		rows, err := readProcNet(src.path, src.proto, src.family, src.listenState)
 		if err != nil {
 			// Say so. Dropping the family silently turns "the read

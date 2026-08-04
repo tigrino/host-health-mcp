@@ -169,12 +169,15 @@ func readEDAC() (*int, *int) {
 	return &ce, &ue
 }
 
+// procVmstatPath is the OOM-kill counter source; overridden by tests.
+var procVmstatPath = "/proc/vmstat"
+
 func readOOMKills() int {
-	b, err := os.ReadFile("/proc/vmstat")
+	b, err := os.ReadFile(procVmstatPath)
 	if err != nil {
 		return -1
 	}
-	scanner := linescan.New(bytes.NewReader(b), "/proc/vmstat")
+	scanner := linescan.New(bytes.NewReader(b), procVmstatPath)
 	for scanner.Scan() {
 		fields := strings.Fields(scanner.Text())
 		if len(fields) == 2 && fields[0] == "oom_kill" {

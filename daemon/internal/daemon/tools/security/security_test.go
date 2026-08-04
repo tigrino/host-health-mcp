@@ -226,3 +226,69 @@ func TestAuthLogTruncationIsReported(t *testing.T) {
 			"label tail-only counts as covering the whole rotation period")
 	}
 }
+
+// NEGATIVE: the 8 MiB tail cap must not be published under
+// window: since_log_rotation.
+//
+// That discriminator was added in 2.0.0 so a count is never ambiguous
+// about what it spans. A sustained brute-force is what grows auth.log
+// past the cap, so the mislabel fires during exactly the event these
+// counters exist to surface: the number is capped while the label
+// asserts it covers the whole rotation period.
+func TestTruncatedAuthLogIsNotLabelledSinceRotation(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "auth.log")
+	line := "Apr 18 12:34:56 host sshd[1]: Failed password for root from 192.0.2.10 port 1 ssh2\n"
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for n := 0; n < maxAuthLogBytes+len(line); n += len(line) {
+		if _, err := f.WriteString(line); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.Close()
+
+	orig := authLogPaths
+	authLogPaths = []string{path}
+	t.Cleanup(func() { authLogPaths = orig })
+
+	_, _, found, truncated, err := readAuthLogCounters()
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if !found || !truncated {
+		t.Fatalf("found=%v truncated=%v; want both true", found, truncated)
+	}
+	// The caller must not assert a window the counts do not cover.
+	if sshWindowSinceLogRotation == sshWindowUnavailable {
+		t.Fatal("test premise broken: the two window values are identical")
+	}
+}
+
+// POSITIVE: a small auth.log is not flagged, so the normal path still
+// reports since_log_rotation.
+func TestSmallAuthLogIsNotTruncated(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "auth.log")
+	if err := os.WriteFile(path,
+		[]byte("Apr 18 12:34:56 host sshd[1]: Accepted password for ops from 192.0.2.10 port 1 ssh2\n"),
+		0o600); err != nil {
+		t.Fatal(err)
+	}
+	orig := authLogPaths
+	authLogPaths = []string{path}
+	t.Cleanup(func() { authLogPaths = orig })
+
+	a, _, found, truncated, err := readAuthLogCounters()
+	if err != nil || !found {
+		t.Fatalf("err=%v found=%v", err, found)
+	}
+	if truncated {
+		t.Error("a small file was flagged truncated; the tool would stop reporting a window it can support")
+	}
+	if a != 1 {
+		t.Errorf("accepted = %d, want 1", a)
+	}
+}
