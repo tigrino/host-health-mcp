@@ -37,6 +37,12 @@ type Config struct {
 	// Missing keys use DefaultOpDeadline. Values are clamped to
 	// [MinOpDeadline, MaxOpDeadline] by OpDeadline.
 	OpDeadlineMS map[string]int `yaml:"op_deadline_ms"`
+
+	// AccessLogPrefixes constrains which paths nginx_apache_status will
+	// read. The path arrives in the request from the daemon, so the
+	// allow-list has to live on the privileged side. Empty keeps the
+	// built-in default of /var/log/.
+	AccessLogPrefixes []string `yaml:"access_log_prefixes"`
 }
 
 // Per-op deadline bounds.

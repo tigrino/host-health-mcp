@@ -291,6 +291,20 @@ func (s *Server) handleConn(ctx context.Context, c net.Conn) {
 
 		_ = c.SetWriteDeadline(time.Now().Add(idleTimeout))
 		if err := proto.WriteFrameWithCap(c, resp, proto.MaxResponseFrame); err != nil {
+			// An oversized reply used to end the connection with no
+			// frame at all, so the daemon saw a bare EOF and reported a
+			// generic internal error — indistinguishable from a helper
+			// crash. This is reachable by arithmetic, not only by
+			// malice: the firewall element budget sits close enough to
+			// MaxResponseFrame that a large ban set plus table metadata
+			// can cross it. Say what happened.
+			if errors.Is(err, proto.ErrFrameTooLarge) {
+				_ = c.SetWriteDeadline(time.Now().Add(idleTimeout))
+				_ = proto.WriteFrameWithCap(c,
+					errResp(proto.CodeOutputTruncated,
+						"response exceeds the helper/daemon frame cap; narrow the request"),
+					proto.MaxResponseFrame)
+			}
 			return
 		}
 		_ = c.SetWriteDeadline(time.Time{})

@@ -21,3 +21,13 @@ socket_path: /run/host-health-mcp/helper.sock
 op_deadline_ms:
   smart_summary: 8000
   zpool_status: 5000
+
+# Which paths nginx_apache_status may read as an access log. The path
+# itself arrives in the request from the daemon, so the allow-list that
+# bounds it belongs here on the privileged side — the helper exists to
+# be separate from the network-facing half.
+#
+# Empty or absent keeps the built-in default of /var/log/. An empty
+# list does NOT mean "allow everything"; there is no such setting.
+access_log_prefixes:
+  - /var/log/

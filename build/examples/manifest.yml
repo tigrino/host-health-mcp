@@ -110,4 +110,16 @@ ipv6_policy: not-enforced
 # Tool 4.13 (btrfs_scrub) - the helper validates a caller-supplied
 # mountpoint via statfs(2) f_type == BTRFS_SUPER_MAGIC AND against
 # this list before invoking `btrfs scrub status`.
+# Which storage backends this host actually runs. Gates the two
+# dangerous capabilities individually at install time: CAP_SYS_RAWIO
+# for smart, CAP_SYS_ADMIN for zfs. Absent or empty defaults to
+# "smart lvm mdraid" — deliberately not "all", since defaulting an
+# allow-list to everything is what put CAP_SYS_ADMIN on every storage
+# host before 2.3.0.
+#   smart | lvm | mdraid | zfs | btrfs
+storage_backends:
+  - smart
+  - lvm
+  - mdraid
+
 btrfs_mountpoints: []

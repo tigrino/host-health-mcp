@@ -143,6 +143,10 @@ func (s *Server) Start(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("httpserver: listen %s: %w", s.cfg.BindAddr, err)
 	}
+	// Validate() rejects a non-positive value, so anything that came
+	// through LoadDaemon is capped. The guard remains for Servers
+	// constructed directly in tests; it is not a supported "uncapped"
+	// mode and there is no config that reaches it.
 	var underlying net.Listener = tcpLn
 	if s.cfg.MaxConcurrentHandshakes > 0 {
 		underlying = newCappedListener(tcpLn, s.cfg.MaxConcurrentHandshakes)
@@ -305,10 +309,32 @@ func (s *Server) handleToolBody(w http.ResponseWriter, r *http.Request, tool too
 	}
 
 	timeout := s.cfg.Timeout(toolName, tool.DefaultTimeout())
-	toolCtx, cancel := context.WithTimeout(r.Context(), timeout)
-	defer cancel()
 
-	entry, err := s.cache.Do(toolCtx, key, func() (cache.Entry, error) {
+	// Two contexts, deliberately. reqCtx bounds how long THIS request
+	// waits and dies with this request; the work below runs on its own
+	// context derived from Background.
+	//
+	// Only the singleflight leader's closure runs, so when the work was
+	// bound to the leader's request context a leader that disconnected
+	// mid-call aborted the shared tool run — and every follower that
+	// had coalesced into that flight got 502 tool_failed despite a
+	// healthy connection of its own. Caller A could POST to a 6-10 s
+	// tool and reset after 200 ms in a loop, failing everyone else's
+	// identical request, and the audit line recorded the VICTIM's CN.
+	//
+	// Detaching the work also means a disconnect no longer throws away
+	// a call that was nearly finished: it completes and populates the
+	// cache for whoever asks next.
+	reqCtx, reqCancel := context.WithTimeout(r.Context(), timeout)
+	defer reqCancel()
+
+	entry, err := s.cache.Do(reqCtx, key, func() (cache.Entry, error) {
+		// Detached from every request, but never unbounded: the same
+		// timeout applies, so the work — and the helper op and
+		// subprocess behind it — always terminates even if every
+		// caller has walked away. Nothing here outlives its deadline.
+		workCtx, workCancel := context.WithTimeout(context.Background(), timeout)
+		defer workCancel()
 		// Stamp before the tool runs, not after. Builtat drives both
 		// the TTL and the envelope's cache_age_s, and both describe how
 		// old the OBSERVATION is. Stamping at completion made a slow
@@ -318,7 +344,7 @@ func (s *Server) handleToolBody(w http.ResponseWriter, r *http.Request, tool too
 		// part of the wire contract, so this was a health checker
 		// reporting stale state as current.
 		observedAt := time.Now()
-		result, warnings, herr := tool.Handle(toolCtx, body)
+		result, warnings, herr := tool.Handle(workCtx, body)
 		if herr != nil {
 			return cache.Entry{}, herr
 		}

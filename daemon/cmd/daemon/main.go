@@ -98,6 +98,31 @@ func main() {
 			rules.IPv6Allow = append(rules.IPv6Allow, p)
 		}
 	}
+	// B-10: log_redaction_rules was parsed, documented and shipped in
+	// the example config while nothing read it. An operator writing
+	// custom rules got a silent no-op — precisely the compensating
+	// control they would reach for to scrub something the positive
+	// list keeps by design. A bad rules file is fatal: redaction that
+	// fails open without saying so is what this package exists to
+	// prevent.
+	scrub, err := redact.LoadRuleFile(cfg.LogRedactionRules)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		// Warn, do not die. The shipped daemon.yml names this path and
+		// nothing installs a file there, so making an absent file fatal
+		// would stop every deployment that copied the example — on
+		// upgrade as well as on fresh install. No file means the
+		// operator wrote no rules, so there is nothing to fail closed
+		// over; a broken file is a different matter and is fatal below.
+		log.Printf("daemon: WARNING: log_redaction_rules %s does not exist; "+
+			"no operator redaction patterns are in effect", cfg.LogRedactionRules)
+	case err != nil:
+		log.Fatalf("daemon: %v", err)
+	}
+	rules.ScrubPatterns = scrub
+	if len(scrub) > 0 {
+		log.Printf("daemon: loaded %d redaction pattern(s) from %s", len(scrub), cfg.LogRedactionRules)
+	}
 	redactor := redact.New(rules)
 
 	// Helper client. The in-flight cap (8) matches design §7.4; the
@@ -151,6 +176,13 @@ func main() {
 	registered := map[string]bool{"manifest": true}
 	for _, n := range reg.Names() {
 		registered[n] = true
+	}
+	// B-9: daemon.yml keys that name a tool are only checkable once the
+	// registry exists. A typo in expensive_tool_buckets used to drop
+	// that tool silently to the global bucket — the quiet failure of
+	// three neighbouring keys that otherwise warn or abort.
+	if err := cfg.ValidateToolNames(registered); err != nil {
+		log.Fatalf("daemon: %v", err)
 	}
 	var enforcedTools []string
 	enabledSet := map[string]bool{}

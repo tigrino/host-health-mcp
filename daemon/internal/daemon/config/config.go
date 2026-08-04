@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -73,19 +74,26 @@ type Manifest struct {
 	// operator meant should be stated, not guessed. (An earlier
 	// comment justified this by claiming a raw metacharacter is legal
 	// in a unit name; it is not, systemd escapes them.)
-	WhitelistedUnitPatterns []string                     `yaml:"whitelisted_unit_patterns"`
-	WorkloadPlugins         []string                     `yaml:"workload_plugins"`
-	WorkloadPluginConfig    map[string]map[string]string `yaml:"workload_plugin_config"`
-	CertPaths               []string                     `yaml:"cert_paths"`
-	CertRenewalUnits        []string                     `yaml:"cert_renewal_units"`
-	BackupLogPath           string                       `yaml:"backup_log_path"`
-	BackupBackend           string                       `yaml:"backup_backend"`
-	BackupStatePath         string                       `yaml:"backup_state_path"`
-	DebsumsLogPath          string                       `yaml:"debsums_log_path"`
-	AideLogPath             string                       `yaml:"aide_log_path"`
-	IPv6Policy              string                       `yaml:"ipv6_policy"`
-	BtrfsMountpoints        []string                     `yaml:"btrfs_mountpoints"`
-	Firewall                Firewall                     `yaml:"firewall"`
+	WhitelistedUnitPatterns []string `yaml:"whitelisted_unit_patterns"`
+
+	// StorageBackends declares which storage backends this host runs.
+	// Consumed by the install-time capability generator, not by the
+	// daemon: it gates CAP_SYS_RAWIO (smart) and CAP_SYS_ADMIN (zfs)
+	// individually instead of granting both to every storage operator.
+	// Declared here so the strict decoder accepts the key.
+	StorageBackends      []string                     `yaml:"storage_backends"`
+	WorkloadPlugins      []string                     `yaml:"workload_plugins"`
+	WorkloadPluginConfig map[string]map[string]string `yaml:"workload_plugin_config"`
+	CertPaths            []string                     `yaml:"cert_paths"`
+	CertRenewalUnits     []string                     `yaml:"cert_renewal_units"`
+	BackupLogPath        string                       `yaml:"backup_log_path"`
+	BackupBackend        string                       `yaml:"backup_backend"`
+	BackupStatePath      string                       `yaml:"backup_state_path"`
+	DebsumsLogPath       string                       `yaml:"debsums_log_path"`
+	AideLogPath          string                       `yaml:"aide_log_path"`
+	IPv6Policy           string                       `yaml:"ipv6_policy"`
+	BtrfsMountpoints     []string                     `yaml:"btrfs_mountpoints"`
+	Firewall             Firewall                     `yaml:"firewall"`
 }
 
 // Firewall is the manifest's host_firewall block. Empty (zero-value)
@@ -183,6 +191,39 @@ func (m Manifest) CheckWorkloadPluginConfig() []string {
 // a unit pattern.
 const unitGlobMetachars = "*?["
 
+// ValidateToolNames cross-checks every config key that names a tool
+// against the set actually registered. Validate() cannot do this — it
+// has no registry — so main calls this once the registry is built.
+//
+// A typo here used to be silent: `log:` for `logs:` dropped that tool
+// to the global bucket with no diagnostic, while the same typo in
+// enabled_tools is fatal and workload_plugin_config at least warns.
+// Three neighbouring keys, three different behaviours, and the quiet
+// one is the one that removes a rate limit.
+func (d Daemon) ValidateToolNames(registered map[string]bool) error {
+	var unknown []string
+	for tool := range d.ExpensiveToolBuckets {
+		if !registered[tool] {
+			unknown = append(unknown, "expensive_tool_buckets."+tool)
+		}
+	}
+	for tool := range d.TimeoutOverrides {
+		if !registered[tool] {
+			unknown = append(unknown, "timeout_overrides."+tool)
+		}
+	}
+	for tool := range d.CacheTTLOverrides {
+		if !registered[tool] {
+			unknown = append(unknown, "cache_ttl_overrides."+tool)
+		}
+	}
+	if len(unknown) == 0 {
+		return nil
+	}
+	sort.Strings(unknown)
+	return fmt.Errorf("config: %s names no registered tool", strings.Join(unknown, ", "))
+}
+
 // ValidateUnitSelectors checks the tool 4.2 selector lists. Exact names
 // carrying a metacharacter are rejected outright: passed to
 // ListUnitsByNames they would match nothing and come back as a
@@ -241,13 +282,37 @@ func (d Daemon) Validate() error {
 	if d.TLSCertPath == "" || d.TLSKeyPath == "" || d.ClientCAPath == "" {
 		return errors.New("config: tls_cert_path, tls_key_path, client_ca_path are all required")
 	}
+	// An explicit 0 or a negative value left the listener UNCAPPED,
+	// with no warning and no validation — the same fail-open class
+	// already closed for the rate-limit buckets below, where an opt-out
+	// must be spelled `enabled: false`. The cap is what bounds
+	// concurrent TLS handshakes, so silently removing it is not a
+	// setting anyone should reach by typing a zero.
+	if d.MaxConcurrentHandshakes <= 0 {
+		return fmt.Errorf("config: max_concurrent_handshakes must be positive, got %d; "+
+			"there is no uncapped mode", d.MaxConcurrentHandshakes)
+	}
 	for tool, b := range d.ExpensiveToolBuckets {
 		// REQ 6.6: an expensive_tool_bucket with sustained_per_min=0 AND
 		// burst=0 silently disabled the per-tool limit pre-1.17. The
 		// daemon now requires an explicit `enabled: false` for opt-out.
 		disabled := b.Enabled != nil && !*b.Enabled
-		if b.SustainedPerMin == 0 && b.Burst == 0 && !disabled {
+		if disabled {
+			continue
+		}
+		if b.SustainedPerMin == 0 && b.Burst == 0 {
 			return fmt.Errorf("config: rate limit for tool %q has sustained_per_min=0 and burst=0; set enabled: false to disable bucketing explicitly, or set positive values", tool)
+		}
+		// Each of these passed validation and produced a permanently
+		// broken tool with no signal at startup. burst=0 means the
+		// bucket can never hold a token, so the first call and every
+		// call after it is refused; sustained=0 means it never refills,
+		// so the tool works exactly burst times and is dead thereafter.
+		if b.Burst <= 0 {
+			return fmt.Errorf("config: rate limit for tool %q has burst=%d; the tool would refuse every call. Set a positive burst or enabled: false", tool, b.Burst)
+		}
+		if b.SustainedPerMin <= 0 {
+			return fmt.Errorf("config: rate limit for tool %q has sustained_per_min=%d; the bucket never refills and the tool dies after %d calls. Set a positive rate or enabled: false", tool, b.SustainedPerMin, b.Burst)
 		}
 	}
 	for i, r := range d.IPv4AllowlistRanges {

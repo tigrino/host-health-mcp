@@ -8,7 +8,14 @@ tls_key_path:  /etc/host-health-mcp/tls/key.pem
 client_ca_path: /etc/host-health-mcp/tls/ca.pem
 
 manifest_path: /etc/host-health-mcp/manifest.yml
-log_redaction_rules: /etc/host-health-mcp/redaction.yml
+# Optional. Extra regexps applied on top of the built-in redaction, for
+# anything the positive list keeps by design (email addresses being the
+# usual case). See examples/redaction.yml.
+#
+# Commented out deliberately: naming a path here requires the file to
+# exist. If you want operator rules, copy examples/redaction.yml into
+# /etc/host-health-mcp/ first, then uncomment.
+# log_redaction_rules: /etc/host-health-mcp/redaction.yml
 
 helper_socket_path: /run/host-health-mcp/helper.sock
 

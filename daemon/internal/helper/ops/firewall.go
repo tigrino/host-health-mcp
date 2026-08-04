@@ -40,7 +40,14 @@ const firewallSetListCap = 16 * 1024 * 1024
 // (4 MiB in schema 0.5.0). 40 000 ipv4_addr entries with
 // timeout/expires ≈ 90 bytes each ≈ 3.6 MiB; leaves room for
 // metadata of every other table/chain/set.
-const firewallHardElemCap = 40000
+// Lowered from 40000: the old figure was tuned to almost exactly the
+// frame cap and left nothing for the rest of the document. 40 000
+// entries at ~90 bytes is ~3.6 MiB against a 4 MiB MaxResponseFrame,
+// so every table, chain and set metadata entry plus warnings had to
+// fit in the remaining 0.4 MiB — and when they did not, the helper
+// had already completed the whole nft walk and every per-set fetch
+// before discovering the reply would not fit.
+const firewallHardElemCap = 24000
 
 // firewallElemBudget is the total inline elements (across every
 // reported set) the helper will include. Beyond this, sets get
@@ -48,7 +55,7 @@ const firewallHardElemCap = 40000
 // serialised response stays under MaxResponseFrame on pathological
 // inputs (an operator naming 10 ban_sets all with full inclusion
 // would otherwise sum past the frame cap).
-const firewallElemBudget = 40000
+const firewallElemBudget = 24000
 
 // firewallHardRuleTextCap is the absolute ceiling on the per-chain rule
 // text budget, regardless of the manifest's max_rule_text_bytes. That

@@ -132,10 +132,18 @@ func (c *Cache) Store(key string, e Entry) {
 // out from under a running leader, starting a second concurrent
 // invocation of the same tool each time. That is a fork storm onto the
 // helper, which is the exact thing this package exists to prevent (REQ
-// 5.1). On a deadline the leader's own context has expired too, so no
-// overlap arises for any tool that observes ctx; overlap remains
-// possible only for tools that ignore it entirely, and those are cheap
-// local reads.
+// 5.1).
+//
+// On a deadline a narrow overlap window does remain, and it is worth
+// being exact about rather than claiming otherwise. Since the B-7 fix
+// the work runs on its own context created INSIDE fn, so its deadline
+// is strictly later than any caller's — by the scheduling delta
+// between this call and the closure body, sub-millisecond in practice.
+// A caller whose deadline fires in that gap calls Forget while the
+// leader is still live, and the next arrival starts a second
+// invocation. Bounded, rare, and preferable to the alternative:
+// forgetting on cancel instead would hand that same overlap to any
+// caller willing to disconnect on purpose.
 //
 // The residual cost is one abandoned goroutine per timed-out call
 // against a genuinely stuck fn. That is the deliberate trade — a leak

@@ -1,0 +1,25 @@
+# /etc/host-health-mcp/redaction.yml - example
+# Referenced by daemon.yml's log_redaction_rules. Optional: omit the
+# key and no extra rules apply.
+#
+# The redactor is a POSITIVE list — a token is kept only if it matches
+# a known-safe shape, and scrubbed otherwise. These patterns are the
+# other direction: a token matching any of them is scrubbed even when
+# the positive list would have kept it. They run ahead of every
+# built-in exemption, including the UUID one.
+#
+# Use them for anything the defaults deliberately pass. Email addresses
+# are the common case: the safe-token pattern keeps them by design, so
+# a deployment that treats a local-part as personal data has to say so
+# here.
+#
+# Go regexp syntax (RE2). Matching is match-anywhere, so anchor with
+# ^...$ when a whole-token match is intended. A pattern that does not
+# compile is fatal at daemon startup rather than silently skipped.
+scrub_patterns:
+  # Email addresses.
+  - '^[^@[:space:]]+@[^@[:space:]]+\.[A-Za-z]{2,}$'
+  # Internal hostnames under a private suffix.
+  # - '\.internal$'
+  # Anything that looks like an account number.
+  # - '^ACCT-[0-9]{6,}$'

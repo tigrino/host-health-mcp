@@ -128,8 +128,76 @@ enabled=$(awk '
     }
 ' "$MANIFEST")
 
+# storage_backends[] declares which storage backends this host actually
+# runs, so the two dangerous caps are granted only where needed. Absent
+# or empty means the conservative default below — never "all", because
+# defaulting an allow-list to everything is how CAP_SYS_ADMIN ended up
+# on every storage host in the first place.
+# Flow form is valid YAML to the daemon's decoder, so accepting it
+# silently here would generate the DEFAULT cap set from a non-empty
+# config — the same trap the ip_filter_allow guard below exists for,
+# and worse, because the fallback message would then say "absent".
+if grep -qE '^storage_backends:[[:space:]]*\[' "$MANIFEST"; then
+    echo "caps-template: storage_backends must use YAML block form (one '- entry' per line), not [a, b]" >&2
+    exit 1
+fi
+
+storage_backends=$(awk '
+    /^storage_backends:/ { in_b=1; next }
+    /^[A-Za-z0-9_-]+:/ { in_b=0; next }
+    in_b && /^[[:space:]]*-/ {
+        sub(/^[[:space:]]*-[[:space:]]*/, "")
+        sub(/[[:space:]]*#.*$/, "")
+        if (length($0)) print
+    }
+' "$MANIFEST")
+if [ -z "$storage_backends" ]; then
+    storage_backends="smart lvm mdraid"
+    # Only worth saying on a host that actually enables `storage`;
+    # elsewhere none of these caps are granted either way and the line
+    # is noise in an unattended-upgrade report.
+    if have storage; then
+        echo "caps-template: storage_backends absent; defaulting to '$storage_backends'" \
+             "(declare 'zfs' to grant CAP_SYS_ADMIN)" >&2
+    fi
+fi
+have_backend() { echo "$storage_backends" | grep -qw "$1"; }
+
+known_backends="smart lvm mdraid zfs btrfs"
+for b in ${storage_backends}; do
+    case " $known_backends " in
+        *" $b "*) ;;
+        *) echo "caps-template: warning: storage_backends contains unknown name '$b'" >&2 ;;
+    esac
+done
+
 have security  && { add CAP_AUDIT_CONTROL; add CAP_DAC_READ_SEARCH; }
-have storage   && { add CAP_SYS_RAWIO; add CAP_DAC_READ_SEARCH; add CAP_SYS_ADMIN; }
+# `storage` is one tool over five backends, and the caps they need are
+# not the same. CAP_SYS_ADMIN is required only by zpool_status and
+# CAP_SYS_RAWIO only by smart_summary, but granting both to every
+# storage operator put them in the AMBIENT set too — inherited across
+# execve by smartctl, lvs, mdadm and btrfs. CAP_SYS_ADMIN is broadly
+# equivalent to root and CAP_SYS_RAWIO permits raw device I/O, so a
+# memory-corruption bug in any of those parsers escalated from "root
+# under a narrow bounding set" to "full CAP_SYS_ADMIN". install.md
+# asserted the opposite: that operators not running ZFS do not pay
+# CAP_SYS_ADMIN. They did.
+#
+# storage_backends[] in manifest.yml now gates them individually.
+# Absent, it defaults to the conservative set (smart + lvm + mdraid):
+# an operator who has not declared ZFS does not get CAP_SYS_ADMIN.
+have storage && add CAP_DAC_READ_SEARCH
+have storage && have_backend smart && add CAP_SYS_RAWIO
+have storage && have_backend zfs   && add CAP_SYS_ADMIN
+# btrfs also needs CAP_SYS_ADMIN, and only for one case: `btrfs scrub
+# status` reads /var/lib/btrfs/scrub.status.<uuid> for a FINISHED scrub
+# but issues BTRFS_IOC_SCRUB_PROGRESS for a RUNNING one, and that ioctl
+# is capable(CAP_SYS_ADMIN)-gated in fs/btrfs/ioctl.c. Granting it to
+# every storage host previously masked this. Kept conservative rather
+# than dropped, because losing in-progress scrub reporting would be a
+# silent monitoring gap on exactly the hosts that care; narrowing it
+# further needs verification against a live btrfs scrub.
+have storage && have_backend btrfs && add CAP_SYS_ADMIN
 have mail      && true
 have updates   && true
 have workload  && have wireguard    && add CAP_NET_ADMIN

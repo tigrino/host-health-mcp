@@ -380,6 +380,174 @@ that parses HTTP status codes.
   and are left alone: correcting them means rewriting published
   history, which is not a trade this project makes.
 
+- **A disconnecting caller no longer fails everyone coalesced behind it
+  (audit B-7).** Only the singleflight leader's closure runs, and the
+  work was bound to the leader's request context — so a leader whose
+  TCP connection dropped mid-call aborted the shared tool run, and
+  every follower that had joined that flight got `502 tool_failed`
+  despite a healthy connection of its own. Caller A could POST to a
+  6-10 s tool and reset after 200 ms in a loop; the audit line recorded
+  the *victim's* CN.
+
+  The work now runs on a context derived from `Background` with the
+  same per-tool timeout, and each caller waits on its own. Nothing is
+  unbounded: the deadline still applies, so the tool call, the helper
+  op and its subprocess all terminate even when every caller has walked
+  away — and a call that was nearly finished now completes and warms
+  the cache instead of being discarded.
+
+- **`nginx_apache_status` has a parameter allow-list (audit A-3).** It
+  was the only op of 23 without one: `access_log_path` reached the
+  opener verbatim from the request, and the request comes from the
+  daemon — the network-facing half the helper exists to be separate
+  from. That gave a compromised daemon an existence-and-permission
+  oracle (the raw `os` error, path included, is promoted to an envelope
+  warning), a weak content oracle over any root-readable file, and a
+  TOCTOU: `IsRegular` was checked on a `Stat` result while `os.Open`
+  re-resolved the path, so swapping the target for a FIFO in between
+  blocked the root helper in `open(2)` indefinitely.
+
+  Paths are now constrained to `access_log_prefixes` in `helper.yml`,
+  defaulting to `/var/log/`; the check is directory-bounded and
+  traversal-safe, so neither `/var/logsecrets` nor
+  `/var/log/../etc/shadow` passes. The file is opened first and the
+  descriptor `fstat`ed, closing the TOCTOU window, with `O_NOFOLLOW` to
+  refuse a symlinked final component and `O_NONBLOCK` so a FIFO returns
+  rather than waits. The read buffer is sized to what will actually be
+  read rather than to the ceiling.
+
+- **WireGuard private-key stripping no longer depends on the column
+  count alone (audit A-5).** Design §7.3.1 states key stripping as a
+  hard constraint, but the guarantee rested entirely on interface rows
+  having exactly 5 fields: `wgPublicKeyRE` does not discriminate
+  between a private and a public key, since a base64 WireGuard private
+  key is 43 characters and matches it just as well. Had a future
+  `wg(8)` added columns to the interface row, `fields[1]` — the private
+  key — would have been read as the peer public key, passed the regex,
+  and been emitted as `public_key`, crossing the socket to the MCP
+  client unredacted, because workload data does not route through the
+  redactor.
+
+  The private key is now destroyed in place before anything else reads
+  the row, and only the two known shapes (exactly 5, exactly 9) are
+  accepted. Not triggerable on current `wg(8)` output; the point is
+  that it no longer depends on that.
+
+- **Subprocess binaries resolve through the sanitised PATH (audit
+  A-4).** `exec.Command` calls `LookPath` inside the constructor, using
+  the process's own PATH, so assigning `cmd.Env` afterwards governed
+  only the child's lookups and never our resolution of `nft`, `wg`,
+  `smartctl`, `systemctl` or `journalctl`. The helper unit sets no
+  `Environment=PATH`, so it inherited systemd's default, which on
+  Debian leads with `/usr/local/sbin` and `/usr/local/bin` — ahead of
+  every directory `safeEnv` names. Root-owned 0755 on a stock install,
+  so not directly exploitable, but the documented control was not the
+  effective one. The helper now pins its own PATH once at startup.
+
+- **An oversized helper reply says so (audit A-6).** Frame-cap overflow
+  returned without emitting anything, so the daemon saw a bare EOF and
+  reported a generic internal error — indistinguishable from a helper
+  crash. This is reachable by arithmetic rather than malice: the
+  firewall element budget was 40 000, about 3.6 MiB against a 4 MiB
+  frame cap, leaving 0.4 MiB for every table, chain and set metadata
+  entry plus warnings. The helper now sends a typed `output_truncated`
+  frame, and the element budget drops to 24 000.
+
+  The diagnostic frame is the real fix; the budget change is headroom,
+  not a bound. The rule-text axis is still estimated per chain at a
+  flat 128 bytes per rule rather than measured, with no cross-chain
+  total, so a detail-mode call on a host with very many chains can
+  still cross the frame cap — it now says so instead of hanging up.
+
+- **`CAP_SYS_ADMIN` is no longer granted to every `storage` operator
+  (audit B-6).** `storage` is one tool over five backends, and enabling
+  it granted `CAP_SYS_ADMIN` (needed only by `zpool_status`) and
+  `CAP_SYS_RAWIO` (needed only by `smart_summary`) together — into the
+  **ambient** set, so both were inherited across `execve` by
+  `smartctl`, `lvs`, `mdadm` and `btrfs`. `CAP_SYS_ADMIN` is broadly
+  equivalent to root; `CAP_SYS_RAWIO` permits raw device I/O. A
+  memory-corruption bug in any of those parsers escalated from "root
+  under a narrow bounding set" to full `CAP_SYS_ADMIN`.
+  `doc/install.md` asserted the opposite for several releases.
+
+  `storage_backends[]` in `manifest.yml` now gates them individually.
+  Absent, it defaults to `smart lvm mdraid` — deliberately not "all",
+  since defaulting an allow-list to everything is what produced the
+  problem. `btrfs` also grants `CAP_SYS_ADMIN`: `btrfs scrub status`
+  reads a status file for a finished scrub but issues
+  `BTRFS_IOC_SCRUB_PROGRESS` for a running one, and that ioctl is
+  `CAP_SYS_ADMIN`-gated — previously masked by every storage host
+  having it anyway. `doc/install.md` is corrected.
+
+  **Upgrade note, ZFS and btrfs hosts:** this is a functional change
+  applied by the postinst. A host running ZFS or btrfs that upgrades
+  without adding `storage_backends` to `manifest.yml` loses
+  `CAP_SYS_ADMIN`, and `zpool_status` or in-progress `btrfs_scrub`
+  reporting will fail. Declare the backends, re-run the generator, and
+  restart the helper. Flow form (`storage_backends: [a, b]`) is
+  rejected outright rather than silently falling back to the default.
+
+- **Three configuration fail-open gaps closed (audit B-8, B-9, B-10).**
+
+  `max_concurrent_handshakes: 0` — or any negative value — yielded an
+  *uncapped* listener with no warning, and `Validate()` did not check
+  the field at all. That is the same fail-open class already closed for
+  the rate-limit buckets, where opting out must be spelled `enabled:
+  false`. There is no uncapped mode now; the loader still supplies the
+  default of 16 when the key is absent.
+
+  `expensive_tool_buckets` keys were never cross-checked against the
+  registry, so `log:` for `logs:` silently dropped that tool to the
+  global bucket — while the same typo in `enabled_tools` is fatal and
+  `workload_plugin_config` at least warns. Three neighbouring keys,
+  three behaviours, and the quiet one was the one that removed a rate
+  limit. `timeout_overrides` and `cache_ttl_overrides` are checked too.
+  Separately, `{sustained_per_min: 30, burst: 0}` passed validation and
+  made the tool refuse every call, and `{sustained_per_min: 0, burst:
+  5}` made it work exactly five times and then die. Both are rejected.
+
+  `log_redaction_rules` was parsed, documented, shipped in the example
+  config pointing at `/etc/host-health-mcp/redaction.yml`, and read by
+  nothing. An operator writing custom rules got a silent no-op —
+  precisely the compensating control they would reach for to scrub
+  something the positive list keeps by design, which matters more now
+  that B-3 is accepted as designed. The file is now loaded and its
+  patterns applied ahead of every built-in rule — including the IP
+  allowlist, which returns early for any parseable address and would
+  otherwise have silently ignored "scrub one host inside an allowlisted
+  range", the second most obvious use of the knob after email.
+
+  The failure semantics are split deliberately. A file that is present
+  but unparseable, or that names a regexp that does not compile, is
+  **fatal**: rules were written and would otherwise be silently weaker
+  than asked for. A path that names a file which does not exist is a
+  **warning**, and the daemon starts. That distinction is not
+  fastidiousness — the shipped `daemon.yml` named
+  `/etc/host-health-mcp/redaction.yml` while nothing installed a file
+  there, so treating absence as fatal would have stopped every
+  deployment that copied the example, on upgrade as well as on fresh
+  install. The key now ships commented out, `redaction.yml` ships in
+  the package, and `doc/install.md` covers the optional copy.
+
+  **Upgrade note:** if your `daemon.yml` carries an uncommented
+  `log_redaction_rules` inherited from an earlier example, either
+  create the file it names or comment the key out. The daemon will
+  start either way and log which case it took.
+
+- **The linter scans the plugin module, and the scanners are required
+  (audit C-2, S-2).** `build.sh` passed only `-root daemon`; the plugin
+  is a separate module and a separate root, clean today but unenforced.
+  `staticcheck` and `govulncheck` ran only `if command -v` succeeded,
+  so a release could be cut with zero vulnerability scanning and still
+  print "Done" — the same silent-skip pattern that once produced a
+  package-less build when nfpm was missing. Both are now required;
+  `ALLOW_MISSING_SCANNERS=1` builds without them and says so loudly.
+
+- **Audit S-1 needed no change.** `build.sh` already pins
+  `GOTOOLCHAIN=go1.26.5` exactly, with a comment explaining that the
+  `go.mod` directive is a floor rather than a pin; that was fixed in
+  2.1.0.
+
 - **Audit B-4 needed no change.** The postinst drop-in that denied the
   daemon's own inbound traffic, and the non-existent `dns:`/`resolvers:`
   config key it read, were both fixed in 2.1.0 by the `ip_filter_allow`

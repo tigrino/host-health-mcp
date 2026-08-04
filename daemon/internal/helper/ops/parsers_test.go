@@ -1,6 +1,8 @@
 package ops
 
 import (
+	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -148,5 +150,63 @@ weird-pkg				hold
 	}
 	if !strings.Contains(strings.Join(got, ","), "libfoo-dev") {
 		t.Errorf("missing libfoo-dev: %v", got)
+	}
+}
+
+// Regression guard on the §7.3.1 invariant: a well-formed interface
+// row must never put the private key in the result. This held before
+// the A-5 change too — it is here so it keeps holding, not to
+// demonstrate that change. The test that actually exercises A-5 is
+// TestParseWGDumpRejectsUnexpectedColumnCounts below, which fails
+// against the old >= 8 peer branch.
+func TestParseWGDumpNeverEmitsThePrivateKey(t *testing.T) {
+	const priv = "aGVsbG93b3JsZGhlbGxvd29ybGRoZWxsb3dvcmxkMTI="
+	const pub = "cHVibGljcHVibGljcHVibGljcHVibGljcHVibGljMTI="
+	dump := "wg0\t" + priv + "\t" + pub + "\t51820\toff\n"
+
+	got, err := parseWGDump([]byte(dump))
+	if err != nil {
+		t.Fatalf("parseWGDump: %v", err)
+	}
+	if len(got.Interfaces) != 1 {
+		t.Fatalf("got %d interfaces", len(got.Interfaces))
+	}
+	if got.Interfaces[0].PublicKey != pub {
+		t.Errorf("PublicKey = %q, want the public key", got.Interfaces[0].PublicKey)
+	}
+	// The private key must appear nowhere in the marshalled result.
+	blob, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(blob, []byte(priv)) {
+		t.Fatalf("PRIVATE KEY LEAKED into the result: %s", blob)
+	}
+}
+
+// An unexpected column count must fail the op rather than be guessed
+// at: guessing is how fields[1] changes meaning underneath the
+// key-stripping guarantee.
+func TestParseWGDumpRejectsUnexpectedColumnCounts(t *testing.T) {
+	const priv = "aGVsbG93b3JsZGhlbGxvd29ybGRoZWxsb3dvcmxkMTI="
+	const pub = "cHVibGljcHVibGljcHVibGljcHVibGljcHVibGljMTI="
+
+	for _, n := range []int{4, 6, 7, 8, 10} {
+		fields := make([]string, n)
+		fields[0] = "wg0"
+		for i := 1; i < n; i++ {
+			fields[i] = pub
+		}
+		if n > 1 {
+			fields[1] = priv
+		}
+		out, err := parseWGDump([]byte(strings.Join(fields, "\t") + "\n"))
+		if err == nil {
+			t.Errorf("%d columns accepted; the row shape is unknown", n)
+		}
+		blob, _ := json.Marshal(out)
+		if bytes.Contains(blob, []byte(priv)) {
+			t.Errorf("%d columns: PRIVATE KEY LEAKED: %s", n, blob)
+		}
 	}
 }

@@ -68,18 +68,25 @@ sudo apt-get install -f          # if dependencies need resolution
 
 ## 1.3 What the server post-install does
 
-The post-install scriptlet does three things: it creates the
-`host-health-mcp` system group and user (no shell, no home other
-than the state directory), it establishes `/etc/host-health-mcp/tls`
-with mode `0750` owner `root:host-health-mcp`, and it runs the
-capability generator (section 4). That is the whole of it.
+The post-install scriptlet creates the `host-health-mcp` system group
+and user (no shell, no home other than the state directory),
+establishes `/etc/host-health-mcp/tls` with mode `0750` owner
+`root:host-health-mcp`, runs the capability generator (section 4),
+reloads systemd, and restarts whichever of the two units was already
+running.
 
-The scriptlet does **not** reload, enable, or start anything. The
-`.deb` artefacts built from this repository carry no `systemctl`
-call in any maintainer script, and they ship no `prerm` or
-`postrm` at all. Enabling the units is an operator step — see
-section 5. Until it is performed the services do not come back
-after a reboot.
+It does **not** enable or start anything. Restart-if-running makes an
+upgrade take effect; it never brings up a listener that was stopped,
+and whether these units start at boot stays an operator decision — see
+section 5. Until you enable them the services do not come back after a
+reboot.
+
+From 2.3.0 the package also ships a `prerm` that stops both units on
+removal and a `postrm` that reloads systemd, with `purge` additionally
+removing the generated drop-ins. Before 2.3.0 no maintainer script
+carried a `systemctl` call at all: an upgrade installed a new binary
+that the running units went on ignoring, and a removal deleted the unit
+files from under two running services.
 
 Beyond that directory the package owns nothing under
 `/etc/host-health-mcp/`. The example configurations ship as
@@ -98,6 +105,22 @@ sudo install -m 0644 -o root -g root \
     /usr/share/doc/host-health-mcp-server/examples/manifest.yml \
     /etc/host-health-mcp/manifest.yml
 ```
+
+`redaction.yml` is optional and deliberately not copied above. It is
+only read when `log_redaction_rules` in `daemon.yml` names it, and that
+key ships commented out. To use operator redaction patterns, copy the
+example and uncomment the key:
+
+```
+sudo install -m 0640 -o root -g host-health-mcp \
+    /usr/share/doc/host-health-mcp-server/examples/redaction.yml \
+    /etc/host-health-mcp/redaction.yml
+```
+
+If the key names a file that does not exist the daemon starts and logs
+a warning; a file that is present but contains an invalid regexp is
+fatal, because in that case rules were written and would otherwise be
+silently weaker than asked for.
 
 Because the live configuration is not package-owned, an upgrade
 never overwrites it and `dpkg` never raises a conffile prompt. The
@@ -336,9 +359,29 @@ non-interactively, where an instruction nobody can act on is noise.
 The flag changes nothing else: same exit status, same drop-in, same
 informational output.
 
-The drop-in adds caps only for ops the manifest enables. Operators
-not running ZFS do not pay `CAP_SYS_ADMIN`; not running WireGuard
-do not pay `CAP_NET_ADMIN`.
+The drop-in adds caps only for ops the manifest enables. Operators not
+running WireGuard do not pay `CAP_NET_ADMIN`.
+
+For storage this became true only in 2.3.0. `storage` is one tool over
+five backends, and until then enabling it granted `CAP_SYS_ADMIN` and
+`CAP_SYS_RAWIO` together — to every storage operator, in the **ambient**
+set, so both were inherited across `execve` by `smartctl`, `lvs`,
+`mdadm` and `btrfs`. `CAP_SYS_ADMIN` is broadly equivalent to root and
+`CAP_SYS_RAWIO` permits raw device I/O. This document asserted the
+opposite for several releases; it was wrong.
+
+`storage_backends[]` in `manifest.yml` now gates them individually:
+
+| Backend  | Capability granted   |
+|----------|----------------------|
+| `smart`  | `CAP_SYS_RAWIO`      |
+| `zfs`    | `CAP_SYS_ADMIN`      |
+| `lvm`, `mdraid`, `btrfs` | `CAP_DAC_READ_SEARCH` only |
+
+Absent or empty, it defaults to `smart lvm mdraid` — deliberately not
+"all", since defaulting an allow-list to everything is what produced
+the original problem. Declare `zfs` explicitly if the host runs ZFS;
+the generator prints which default it applied.
 
 ## 4.1 IP filtering
 

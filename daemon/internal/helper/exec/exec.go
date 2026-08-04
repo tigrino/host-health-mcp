@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"sync"
 	"syscall"
@@ -40,12 +41,37 @@ const MaxStdout = 256 * 1024
 // timeout tripping (design §7.2).
 const KillGrace = 500 * time.Millisecond
 
+// safePath is the search path for resolving tool binaries. It governs
+// BOTH our lookup and the child's own, which was not previously true —
+// see SetProcessPath.
+const safePath = "/usr/sbin:/usr/bin:/sbin:/bin"
+
 // safeEnv is the only environment passed to subprocesses. LD_*, GOROOT,
 // PYTHONPATH, and similar are deliberately absent.
 var safeEnv = []string{
-	"PATH=/usr/sbin:/usr/bin:/sbin:/bin",
+	"PATH=" + safePath,
 	"LANG=C",
 	"LC_ALL=C",
+}
+
+// SetProcessPath forces the helper's OWN PATH to safePath. Call once
+// from main before any subprocess is started.
+//
+// exec.Command resolves the binary with LookPath INSIDE the
+// constructor, using the current process's PATH. Assigning cmd.Env
+// afterwards changes only the child's environment — Go does not
+// re-resolve. So safeEnv's PATH governed lookups the child performs
+// and not our resolution of nft, wg, smartctl, systemctl or
+// journalctl, which is the opposite of what the constant is for and
+// invisible on inspection.
+//
+// The helper unit sets no Environment=PATH, so it inherited systemd's
+// DefaultEnvironment, which on Debian leads with /usr/local/sbin and
+// /usr/local/bin — both ahead of every directory safePath names. Those
+// are root-owned 0755 on a stock install, so this was not directly
+// exploitable, but the documented control was not the effective one.
+func SetProcessPath() error {
+	return os.Setenv("PATH", safePath) // forbidden:allow — the helper's own PATH, pinned once at startup so LookPath cannot consult an inherited one.
 }
 
 // Run invokes name with args and waits for completion under ctx. On

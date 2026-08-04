@@ -99,7 +99,20 @@ func parseWGDump(stdout []byte) (WireguardShowResult, error) {
 		}
 		if len(fields) == 5 {
 			// fields: iface, private-key, public-key, listen-port, fwmark
-			// We DELIBERATELY do not touch fields[1] (private key).
+			//
+			// fields[1] is the PRIVATE key. It is never read in this
+			// branch, and zeroing it is belt-and-braces against a
+			// future edit here — NOT the enforcement point. What
+			// actually holds the §7.3.1 guarantee is the exact column
+			// count: wgPublicKeyRE cannot tell a private key from a
+			// public one (a base64 WireGuard private key is 43 chars
+			// and matches it just as well), so if a future wg(8) added
+			// columns to the interface row and this parser accepted a
+			// range instead of exact counts, fields[1] would be read as
+			// the peer public key and emitted as public_key — crossing
+			// the socket to the MCP client unredacted, since workload
+			// data does not route through the redactor.
+			fields[1] = ""
 			pub := fields[2]
 			if !wgPublicKeyRE.MatchString(pub) {
 				return out, &dispatch.Error{
@@ -116,7 +129,12 @@ func parseWGDump(stdout []byte) (WireguardShowResult, error) {
 			}
 			continue
 		}
-		if len(fields) >= 8 {
+		// Exactly 9, not ">= 8". wg(8) emits exactly 5 columns for an
+		// interface row and exactly 9 for a peer row; anything else is
+		// an output format this parser was not written against, and
+		// guessing at it is how fields[1] changes meaning underneath
+		// the key-stripping guarantee above. Fail closed instead.
+		if len(fields) == 9 {
 			// fields: iface, public-key, preshared-key, endpoint,
 			//         allowed-ips, latest-handshake, rx, tx,
 			//         persistent-keepalive
@@ -144,7 +162,7 @@ func parseWGDump(stdout []byte) (WireguardShowResult, error) {
 			if v, err := strconv.ParseInt(fields[7], 10, 64); err == nil {
 				peer.TxBytes = v
 			}
-			if len(fields) >= 9 && fields[8] != "off" {
+			if fields[8] != "off" {
 				if v, err := strconv.Atoi(fields[8]); err == nil {
 					peer.PersistentKA = v
 				}

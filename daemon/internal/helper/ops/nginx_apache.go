@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -103,6 +104,12 @@ func NginxApacheStatus(ctx context.Context, param string) (any, error) {
 		return out, nil
 	}
 
+	if err := checkAccessLogPath(p.AccessLogPath); err != nil {
+		out.RecentCoverage = "unavailable"
+		out.Warning = "access_log_path: " + err.Error()
+		return out, nil
+	}
+
 	tail, statErr := readAccessLogTail(p.AccessLogPath, p.AccessLogTailBytes)
 	if statErr != nil {
 		out.RecentCoverage = "unavailable"
@@ -155,7 +162,22 @@ func NginxApacheStatus(ctx context.Context, param string) (any, error) {
 // past the start of the file, the first (necessarily partial) line is
 // discarded so the caller sees only well-formed lines.
 func readAccessLogTail(path string, tailBytes int) ([]byte, error) {
-	info, err := os.Stat(path)
+	// Open FIRST, then fstat the descriptor. Stat-then-open re-resolves
+	// the path, so the regular-file check applied to one object and the
+	// read to another: swapping the target for a FIFO in between
+	// blocked the root helper in open(2) indefinitely. Checking the fd
+	// we actually hold removes the window.
+	//
+	// O_NOFOLLOW refuses a symlinked final component, and O_NONBLOCK
+	// makes open(2) on a FIFO return instead of waiting for a writer —
+	// belt and braces, since the fstat below rejects it anyway.
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0) // forbidden:allow — read-only; O_NOFOLLOW and the fstat below are the point.
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
 	if err != nil {
 		return nil, err
 	}
@@ -166,11 +188,6 @@ func readAccessLogTail(path string, tailBytes int) ([]byte, error) {
 	if size == 0 {
 		return nil, nil
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
 
 	var (
 		off       int64
@@ -185,7 +202,13 @@ func readAccessLogTail(path string, tailBytes int) ([]byte, error) {
 			return nil, err
 		}
 	}
-	buf := make([]byte, tailBytes)
+	// Allocate what will actually be read, not the ceiling. A 1-byte
+	// log with a 1 MiB tail request allocated 1 MiB per call.
+	want := int64(tailBytes)
+	if size-off < want {
+		want = size - off
+	}
+	buf := make([]byte, want)
 	n, err := io.ReadFull(f, buf)
 	if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
 		return nil, err
@@ -361,4 +384,60 @@ func allDigits(s string) bool {
 		}
 	}
 	return true
+}
+
+// accessLogAllowedPrefixes constrains which paths nginx_apache_status
+// will read. This was the only op of the 23 with no parameter
+// allow-list: access_log_path reached the opener verbatim from the
+// request, and the request comes from the daemon — the network-facing
+// half the helper exists to be separate from.
+//
+// A compromised daemon had three primitives. An existence and
+// permission oracle, since the raw os error string (including the
+// path) is promoted to an envelope warning. A weak content oracle, as
+// any root-readable regular file gets parsed and its combined-log-
+// shaped lines tallied. And, before the open-then-fstat fix above, a
+// TOCTOU into an indefinite block on a FIFO.
+//
+// Operator-settable via helper.yml because "where the web server keeps
+// its logs" is a deployment fact, and the privileged side is the right
+// place to hold that list.
+var accessLogAllowedPrefixes = []string{"/var/log/"}
+
+// SetAccessLogPrefixes replaces the allow-list. Empty input keeps the
+// default rather than allowing everything: an empty allow-list that
+// means "permit all" is the fail-open shape this is here to remove.
+func SetAccessLogPrefixes(prefixes []string) {
+	var clean []string
+	for _, p := range prefixes {
+		p = strings.TrimSpace(p)
+		if p == "" || !strings.HasPrefix(p, "/") {
+			continue
+		}
+		if !strings.HasSuffix(p, "/") {
+			p += "/"
+		}
+		clean = append(clean, p)
+	}
+	if len(clean) > 0 {
+		accessLogAllowedPrefixes = clean
+	}
+}
+
+// checkAccessLogPath rejects anything outside the allow-list. The path
+// is cleaned first so "/var/log/../etc/shadow" cannot walk out, and
+// compared against the cleaned prefix so "/var/logsecrets" does not
+// pass as "/var/log".
+func checkAccessLogPath(path string) error {
+	if !filepath.IsAbs(path) {
+		return errors.New("access_log_path must be absolute")
+	}
+	clean := filepath.Clean(path)
+	for _, pre := range accessLogAllowedPrefixes {
+		if strings.HasPrefix(clean, filepath.Clean(pre)+"/") {
+			return nil
+		}
+	}
+	return fmt.Errorf("access_log_path %s is outside the permitted prefixes %v",
+		clean, accessLogAllowedPrefixes)
 }

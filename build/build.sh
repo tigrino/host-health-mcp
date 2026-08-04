@@ -46,16 +46,39 @@ LINTER_BIN=$(mktemp)
 trap 'rm -f "$LINTER_BIN"' EXIT
 ( cd "$REPO/build/linter" && go build -o "$LINTER_BIN" ./forbidden )
 ( cd "$REPO" && "$LINTER_BIN" -root daemon )
+# The plugin is a separate module and a separate root. It is clean
+# today, but "clean today" and "enforced" are different properties.
+( cd "$REPO" && "$LINTER_BIN" -root plugin )
 
-# Optional linters: only run if installed. Production CI should
-# require these per REQ 10.2.
+# REQ 10.2 scanners. These are REQUIRED, not best-effort: running them
+# only "if command -v" succeeds meant a release could be cut with zero
+# vulnerability scanning and still print Done — the same silent-skip
+# pattern that once produced a package-less build when nfpm was
+# missing. Set ALLOW_MISSING_SCANNERS=1 to build without them
+# deliberately; the build then says so, loudly, instead of implying a
+# scan happened.
+for scanner in staticcheck govulncheck; do
+    if command -v "$scanner" >/dev/null 2>&1; then
+        continue
+    fi
+    if [ "${ALLOW_MISSING_SCANNERS:-0}" = "1" ]; then
+        echo "==> WARNING: $scanner not installed and ALLOW_MISSING_SCANNERS=1;" \
+             "this build was NOT scanned" >&2
+    else
+        echo "build.sh: $scanner is required (REQ 10.2) but not installed." >&2
+        echo "  install it, or set ALLOW_MISSING_SCANNERS=1 to build without scanning." >&2
+        exit 1
+    fi
+done
 if command -v staticcheck >/dev/null 2>&1; then
     echo "==> staticcheck"
     ( cd "$REPO/daemon" && staticcheck ./... )
+    ( cd "$REPO/plugin" && staticcheck ./... )
 fi
 if command -v govulncheck >/dev/null 2>&1; then
     echo "==> govulncheck"
     ( cd "$REPO/daemon" && govulncheck ./... )
+    ( cd "$REPO/plugin" && govulncheck ./... )
 fi
 
 # Step 4: build both binaries for each arch.

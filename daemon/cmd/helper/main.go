@@ -23,6 +23,7 @@ import (
 
 	"host-health-mcp/daemon/internal/helper/config"
 	"host-health-mcp/daemon/internal/helper/dispatch"
+	helperexec "host-health-mcp/daemon/internal/helper/exec"
 	"host-health-mcp/daemon/internal/helper/ops"
 	"host-health-mcp/daemon/internal/helper/server"
 )
@@ -52,6 +53,19 @@ func main() {
 	if err != nil {
 		log.Fatalf("helper: %v", err)
 	}
+
+	// Pin the helper's own PATH before anything can spawn a subprocess.
+	// exec.Command resolves the binary inside the constructor using the
+	// process PATH, so setting cmd.Env afterwards was governing only
+	// the child's lookups, not ours (audit A-4).
+	if err := helperexec.SetProcessPath(); err != nil {
+		log.Fatalf("helper: pin PATH: %v", err)
+	}
+
+	// The daemon supplies access_log_path in the request; the
+	// allow-list that bounds it belongs here, on the privileged side
+	// (audit A-3).
+	ops.SetAccessLogPrefixes(cfg.AccessLogPrefixes)
 
 	reg := dispatch.New()
 	ops.RegisterAll(reg)
