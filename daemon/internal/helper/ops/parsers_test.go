@@ -76,7 +76,7 @@ Summary:
 `
 
 func TestParseAideLog(t *testing.T) {
-	cnt, _ := parseAideLog([]byte(fakeAideLog))
+	cnt, _, _ := parseAideLog([]byte(fakeAideLog))
 	if cnt == nil {
 		t.Fatal("change count not detected")
 	}
@@ -87,7 +87,7 @@ func TestParseAideLog(t *testing.T) {
 
 func TestParseAideLogFallbackToDifferencesLine(t *testing.T) {
 	in := `Total number of differences: 7`
-	cnt, _ := parseAideLog([]byte(in))
+	cnt, _, _ := parseAideLog([]byte(in))
 	if cnt == nil || *cnt != 7 {
 		t.Errorf("differences fallback: got %v want 7", cnt)
 	}
@@ -110,7 +110,7 @@ The attributes of the (uncompressed) database(s):
  GOST      : BBBBBBBBBBBBBBBBBBBBBB==
 End timestamp: 2024-01-01 03:00:20 +0000 (run time: 0m 19s)
 `
-	cnt, exit := parseAideLog([]byte(clean))
+	cnt, exit, _ := parseAideLog([]byte(clean))
 	if cnt == nil || *cnt != 0 {
 		t.Errorf("clean-run change_count = %v, want 0", cnt)
 	}

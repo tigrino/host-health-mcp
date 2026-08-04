@@ -115,13 +115,26 @@ add()  { case " $caps " in *" $1 "*) ;; *) caps="$caps $1" ;; esac; }
 # the daemon can connect. Keep it in the union always.
 add CAP_CHOWN
 
+# enabled_tools and workload_plugins drive the ENTIRE capability union,
+# so the same flow-form trap applies to them and matters more: a
+# `enabled_tools: [storage, security]` line parses fine for the daemon,
+# yields nothing here, and the helper ends up with CAP_CHOWN only —
+# every privileged op failing EPERM. Harmless while nothing applied the
+# drop-in; the postinst now restarts on the spot.
+for k in enabled_tools workload_plugins; do
+    if grep -qE "^${k}:[[:space:]]*\[[[:space:]]*[^]][[:space:]]*" "$MANIFEST"; then
+        echo "caps-template: $k must use YAML block form (one '- entry' per line), not [a, b]" >&2
+        exit 1
+    fi
+done
+
 # Crude YAML extraction: the lines we care about are flat arrays under
 # enabled_tools: and workload_plugins:. python3 -c is an option if
 # more rigour is needed; this script keeps to POSIX sh.
 enabled=$(awk '
     /^enabled_tools:/ { in_tools=1; next }
     /^workload_plugins:/ { in_plug=1; next }
-    /^[a-z_]+:/ { in_tools=0; in_plug=0; next }
+    /^[A-Za-z0-9_-]+:/ { in_tools=0; in_plug=0; next }
     (in_tools || in_plug) && /^[[:space:]]*-/ {
         sub(/^[[:space:]]*-[[:space:]]*/, "")
         print
@@ -137,7 +150,15 @@ enabled=$(awk '
 # silently here would generate the DEFAULT cap set from a non-empty
 # config — the same trap the ip_filter_allow guard below exists for,
 # and worse, because the fallback message would then say "absent".
-if grep -qE '^storage_backends:[[:space:]]*\[' "$MANIFEST"; then
+# Match a NON-EMPTY flow form only. `storage_backends: []` is the
+# natural spelling for "none" — five neighbouring keys in the shipped
+# example use it, the daemon's decoder accepts it, and this script's
+# own comment tells operators that empty is fine. Rejecting it aborted
+# the package configure, which on an unattended-upgrades fleet leaves
+# dpkg half-configured and the old binary running from replaced disk.
+# A maintainer script must not fail the install over the shape of a
+# value it can safely treat as empty.
+if grep -qE '^storage_backends:[[:space:]]*\[[[:space:]]*[^]][[:space:]]*' "$MANIFEST"; then
     echo "caps-template: storage_backends must use YAML block form (one '- entry' per line), not [a, b]" >&2
     exit 1
 fi

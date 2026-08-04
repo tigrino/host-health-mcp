@@ -173,11 +173,9 @@ func readMdstatProgress(name string) (float64, bool) {
 		}
 		return pct, true
 	}
-	// A truncated read yields a confidently wrong number. Report
-	// "unknown" instead — for a health check the two are not the
-	// same thing.
-	if scanner.Err() != nil {
-		return 0, false
-	}
+	// Both outcomes are "no progress figure available", which is what
+	// the false return means: either the scan was truncated before the
+	// progress line or /proc/mdstat has none. Neither justifies
+	// inventing a percentage.
 	return 0, false
 }

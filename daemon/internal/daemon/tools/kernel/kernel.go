@@ -17,14 +17,14 @@ import (
 
 // Data is the response data for tool kernel.
 type Data struct {
-	TaintedMask                     int      `json:"tainted_mask"`
-	TaintedFlags                    []string `json:"tainted_flags"`
-	MCECount                        *int     `json:"mce_count"`
-	EDACCorrectableErrorsTotal      *int     `json:"edac_correctable_errors_total"`
-	EDACUncorrectableErrorsTotal    *int     `json:"edac_uncorrectable_errors_total"`
-	OOMKillsSinceBoot               int      `json:"oom_kills_since_boot"`
-	LastPanicTS                     *time.Time `json:"last_panic_ts"`
-	CmdlineKeysPresent              []string `json:"cmdline_keys_present"`
+	TaintedMask                  int        `json:"tainted_mask"`
+	TaintedFlags                 []string   `json:"tainted_flags"`
+	MCECount                     *int       `json:"mce_count"`
+	EDACCorrectableErrorsTotal   *int       `json:"edac_correctable_errors_total"`
+	EDACUncorrectableErrorsTotal *int       `json:"edac_uncorrectable_errors_total"`
+	OOMKillsSinceBoot            int        `json:"oom_kills_since_boot"`
+	LastPanicTS                  *time.Time `json:"last_panic_ts"`
+	CmdlineKeysPresent           []string   `json:"cmdline_keys_present"`
 }
 
 // taintBits maps single-letter taint flags from /proc/sys/kernel/tainted
@@ -183,11 +183,12 @@ func readOOMKills() int {
 			}
 		}
 	}
-	// A truncated read yields a confidently wrong number. Report
-	// "unknown" instead — for a health check the two are not the
-	// same thing.
+	// A truncated read yields a confidently wrong number, so report
+	// unknown. The sentinel here is -1, not 0: the caller tests
+	// `kills >= 0`, so returning 0 would assert "this host has had
+	// zero OOM kills" on the strength of a read that failed.
 	if scanner.Err() != nil {
-		return 0
+		return -1
 	}
 	return 0
 }

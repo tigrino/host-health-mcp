@@ -53,10 +53,17 @@ func AptPending(ctx context.Context, _ string) (any, error) {
 	holdOut, err := helperexec.Run(ctx, "dpkg", "--get-selections")
 	if err == nil {
 		held, herr := extractHeld(holdOut)
-		if herr != nil {
-			return nil, &dispatch.Error{Code: proto.CodeToolFailed, Message: herr.Error()}
+		if herr == nil {
+			out.HeldPackages = held
 		}
-		out.HeldPackages = held
+		// A truncated dpkg --get-selections leaves held_packages nil
+		// and nothing else. Deliberately the SAME treatment the branch
+		// above gives dpkg failing to run at all: held_packages is
+		// advisory, the update counts are the load-bearing fields, and
+		// they were parsed from a different command that succeeded.
+		// Failing the whole op here would discard those counts — an
+		// understated pending-update count is bad, but no count at all
+		// reads as "this host is fine".
 	}
 
 	return out, nil

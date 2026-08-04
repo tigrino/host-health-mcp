@@ -162,9 +162,12 @@ that parses HTTP status codes.
   never passed, so `file.Comments` was always empty and no
   `// forbidden:allow` could ever match. That went unnoticed because
   the old table matched nothing in the tree, so no call site had ever
-  needed exempting. Five now carry justified exemptions — the helper
-  creating, chmod-ing, chown-ing and unlinking its own unix socket
-  under its systemd `RuntimeDirectory=`.
+  needed exempting. Seven now carry justified exemptions: five are the
+  helper creating, chmod-ing, chown-ing and unlinking its own unix
+  socket under its systemd `RuntimeDirectory=`; one is the read-only
+  `O_NOFOLLOW` open added for A-3; and one sits in `helper/exec`,
+  which is a whole-directory chokepoint skip, so that comment is
+  inert and kept only so the line does not read as unguarded.
 
   `_test.go` files were skipped outright and are now scanned, but for
   the process-spawning and system-state rules only, not the filesystem
@@ -428,9 +431,12 @@ that parses HTTP status codes.
   client unredacted, because workload data does not route through the
   redactor.
 
-  The private key is now destroyed in place before anything else reads
-  the row, and only the two known shapes (exactly 5, exactly 9) are
-  accepted. Not triggerable on current `wg(8)` output; the point is
+  Only the two known row shapes (exactly 5, exactly 9) are accepted;
+  that column check is the enforcement. `fields[1]` is also blanked
+  before anything else reads the row, but that is belt-and-braces
+  against a future edit rather than the mechanism — Go strings are
+  immutable, so the key bytes still exist in the captured stdout
+  buffer until it is collected. Not triggerable on current `wg(8)` output; the point is
   that it no longer depends on that.
 
 - **Subprocess binaries resolve through the sanitised PATH (audit
@@ -543,10 +549,13 @@ that parses HTTP status codes.
   package-less build when nfpm was missing. Both are now required;
   `ALLOW_MISSING_SCANNERS=1` builds without them and says so loudly.
 
-- **Audit S-1 needed no change.** `build.sh` already pins
-  `GOTOOLCHAIN=go1.26.5` exactly, with a comment explaining that the
-  `go.mod` directive is a floor rather than a pin; that was fixed in
-  2.1.0.
+- **Audit S-1 needed no change to `build.sh`,** which has set
+  `GOTOOLCHAIN=go1.26.5` since 2.1.0. Stated precisely, because the
+  earlier wording overstated it: the line is
+  `${GOTOOLCHAIN:-go1.26.5}`, a default that an exported environment
+  variable overrides, and no `go.mod` in the tree carries a
+  `toolchain` directive. A build that does not go through `build.sh`
+  uses whatever Go is installed.
 
 - **Every line-oriented read is now bounded and error-checked (audit
   A-9, C-10).** `bufio.Scanner` caps a line at 64 KiB by default and
@@ -562,10 +571,19 @@ that parses HTTP status codes.
   The same bug was fixed in `security.go` for 2.0.0 and never carried
   across. It is now a shared `internal/shared/linescan` package rather
   than a convention: one buffer limit, one error path, named source in
-  the message. Every scanner in the tree routes through it, including
-  eleven the audit did not list, and each caller either propagates the
-  error or degrades to "unknown" rather than reporting a confident
-  wrong number.
+  the message. Every line-oriented reader in a tool or op path routes
+  through it, including twelve the audit did not list. Four sites keep
+  a bare `bufio.Scanner` deliberately — `helper/exec`'s streaming
+  reader, and three that already carried an explicit buffer and error
+  check — and each of those checks `Err()`.
+
+  Each caller either propagates the error or degrades to a value that
+  means "unknown". Getting that second half right took a second pass:
+  the first attempt inserted the guard immediately before a `return`
+  with the *same* value in four functions, so the check did nothing
+  while the comment above it claimed otherwise, and in `readOOMKills`
+  it returned `0` — "this host has had zero OOM kills" — where the
+  caller's unknown sentinel is `-1`.
 
 - **`SystemCallFilter` was inert (found while fixing B-14).** The
   daemon unit carried
@@ -1963,6 +1981,15 @@ see the changelog detail per commit.
   message bodies that named a specific fleet host and referenced an
   external ansible repository commit; tags 1.6.0 → 1.9.3 remapped
   onto the rewritten commits.
+
+  **Correction (2026-08-05).** The remap did not take. Those tags
+  still point at the pre-rewrite commits, which are unreachable from
+  `main` — `git merge-base --is-ancestor` fails for every one of
+  them. 78 tag refs exist on the remote against a much smaller set of
+  reachable releases. Retagging them now would move published SHAs,
+  which fleet verification treats as tampering, so the tags are being
+  left exactly as they are; this note corrects the record instead.
+  Recorded as audit finding C-6.
 
 # 1.9.3 (2026-05-15)
 

@@ -91,7 +91,16 @@ func DovecotStatus(ctx context.Context, _ string) (any, error) {
 		}
 		return out, nil
 	}
-	out.ConnectionCount = parseDoveadmWho(whoOut)
+	n, parseErr := parseDoveadmWho(whoOut)
+	if parseErr != nil {
+		// Same shape as the exec-failure branch above: no count, and
+		// say why. A silent 0 would read as "nobody is connected".
+		if out.ProcessState == "active" {
+			out.Warning = "doveadm who: " + parseErr.Error()
+		}
+		return out, nil
+	}
+	out.ConnectionCount = n
 	return out, nil
 }
 
@@ -100,7 +109,7 @@ func DovecotStatus(ctx context.Context, _ string) (any, error) {
 // header, but old versions may. The header is detected by checking
 // whether the first non-empty line's first token is the literal
 // "username" (case-insensitive).
-func parseDoveadmWho(b []byte) int {
+func parseDoveadmWho(b []byte) (int, error) {
 	count := 0
 	first := true
 	scanner := linescan.New(bytes.NewReader(b), "doveadm who")
@@ -125,11 +134,13 @@ func parseDoveadmWho(b []byte) int {
 		}
 		count++
 	}
-	// A truncated read yields a confidently wrong number. Report
-	// "unknown" instead — for a health check the two are not the
-	// same thing.
-	if scanner.Err() != nil {
-		return -1
+	// The count is only meaningful if the whole listing was read.
+	// -1 is NOT available here: connection_count is a required,
+	// non-nullable integer with minimum 0 in the wire schema, and a
+	// strict client is entitled to reject a negative. Report the
+	// failure to the caller instead and let it decide.
+	if err := scanner.Err(); err != nil {
+		return 0, err
 	}
-	return count
+	return count, nil
 }

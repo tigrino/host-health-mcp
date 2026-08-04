@@ -93,12 +93,15 @@ func TestReadAuthLogCountersEndToEnd(t *testing.T) {
 	authLogPaths = []string{path}
 	t.Cleanup(func() { authLogPaths = orig })
 
-	accepted, failed, found, err := readAuthLogCounters()
+	accepted, failed, found, truncated, err := readAuthLogCounters()
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
 	if !found {
 		t.Fatal("found=false on a present file")
+	}
+	if truncated {
+		t.Fatal("truncated=true on a file well under the cap")
 	}
 	if accepted != 2 {
 		t.Errorf("accepted = %d, want 2", accepted)
@@ -129,7 +132,7 @@ func TestReadAuthLogCountersScanError(t *testing.T) {
 	authLogPaths = []string{path}
 	t.Cleanup(func() { authLogPaths = orig })
 
-	_, _, found, err := readAuthLogCounters()
+	_, _, found, _, err := readAuthLogCounters()
 	if err == nil {
 		t.Fatal("expected a scan error on an over-long line, got nil")
 	}
@@ -183,5 +186,43 @@ func TestShortDuration(t *testing.T) {
 		if got := shortDuration(c.d); got != c.want {
 			t.Errorf("shortDuration(%s) = %q, want %q", c.d, got, c.want)
 		}
+	}
+}
+
+// M3: the 8 MiB tail cap must not be reported under
+// window: since_log_rotation. That discriminator was added in 2.0.0 so
+// a count is never ambiguous about what it spans, and a sustained
+// brute-force — the event these counters exist to surface — is exactly
+// what grows auth.log past the cap.
+func TestAuthLogTruncationIsReported(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "auth.log")
+
+	line := "Apr 18 12:34:56 host sshd[1]: Failed password for root from 192.0.2.10 port 1 ssh2\n"
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for written := 0; written < maxAuthLogBytes+len(line); written += len(line) {
+		if _, err := f.WriteString(line); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.Close()
+
+	orig := authLogPaths
+	authLogPaths = []string{path}
+	t.Cleanup(func() { authLogPaths = orig })
+
+	_, _, found, truncated, err := readAuthLogCounters()
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if !found {
+		t.Fatal("found=false on a present file")
+	}
+	if !truncated {
+		t.Error("a file over the cap did not report truncated; the caller would " +
+			"label tail-only counts as covering the whole rotation period")
 	}
 }

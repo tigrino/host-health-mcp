@@ -54,13 +54,35 @@ if [ -d /run/systemd/system ]; then
     # and on build hosts; plain systemctl does not. Restart the helper
     # first: the daemon dials its socket per call and reconnects.
     for unit in host-health-mcp-helper.service host-health-mcp.service; do
+        if ! systemctl is-active --quiet "$unit" 2>/dev/null; then
+            continue
+        fi
+        # `|| true` is required, not sloppiness: this runs under
+        # `set -eu`, and a package that fails to configure because a
+        # service would not start is a worse fleet outcome than a
+        # configured package with a stopped service. The outcome is
+        # reported below instead of being asserted.
+        if command -v deb-systemd-invoke >/dev/null 2>&1; then
+            deb-systemd-invoke restart "$unit" >/dev/null 2>&1 || true
+        else
+            systemctl restart "$unit" >/dev/null 2>&1 || true
+        fi
+        # Report what happened, not what was attempted. The success
+        # line used to print unconditionally after a `|| true`, so a
+        # daemon that failed to come back — bad config, missing TLS
+        # material, a validation tightened in this very release —
+        # produced "restarted", exit 0, and a clean dpkg record over a
+        # dead listener. On a fleet that converts a detectable failure
+        # into an invisible one.
+        #
+        # Still not fatal: a package that refuses to configure because
+        # a service will not start is its own kind of fleet hazard.
+        # Loud and non-zero-free is the right middle.
         if systemctl is-active --quiet "$unit" 2>/dev/null; then
-            if command -v deb-systemd-invoke >/dev/null 2>&1; then
-                deb-systemd-invoke restart "$unit" >/dev/null 2>&1 || true
-            else
-                systemctl restart "$unit" >/dev/null 2>&1 || true
-            fi
             echo "host-health-mcp-server: restarted $unit" >&2
+        else
+            echo "host-health-mcp-server: WARNING: $unit did not come back after" \
+                 "restart; check 'systemctl status $unit' and 'journalctl -u $unit'" >&2
         fi
     done
 fi

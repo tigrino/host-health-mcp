@@ -140,9 +140,12 @@ Quick orientation:
    repository. The post-install scriptlet creates the
    `host-health-mcp` system user and group, establishes
    `/etc/host-health-mcp/tls`, and runs the capability
-   generator. It does not reload, enable, or start the units —
-   the packages built here carry no `systemctl` call in any
-   maintainer script.
+   generator, then reloads systemd and restarts whichever units
+   were already running. It does not ENABLE or START anything —
+   whether these units come up at boot stays your decision. From
+   2.3.0 the packages also ship a `prerm` that stops both units on
+   removal and a `postrm` that reloads; before 2.3.0 no maintainer
+   script called `systemctl` at all.
 2. Copy the example configurations out of
    `/usr/share/doc/host-health-mcp-server/examples/` into
    `/etc/host-health-mcp/`. They ship as documentation, not as
@@ -253,11 +256,19 @@ Upgrade procedure on a single host:
 2. Confirm with `curl … /v1/manifest`.
 
 From 2.3.0 the postinst regenerates the capability drop-in, reloads
-systemd, and restarts whichever of the two units was already running,
-so an upgrade needs no manual steps — including the upgrade *to*
-2.3.0, since it is the incoming package's postinst that `dpkg` runs on
-`configure`. It does not start anything that was stopped, and it never
-enables a unit.
+systemd, and restarts whichever of the two units was already running —
+including on the upgrade *to* 2.3.0, since `dpkg` runs the incoming
+package's postinst on `configure`. It does not start anything that was
+stopped, and it never enables a unit.
+
+**One manual step is required when upgrading to 2.3.0 on a host
+running ZFS or btrfs.** Capabilities are now granted per storage
+backend, so a host that does not declare `storage_backends: [zfs]` or
+`[btrfs]` in `manifest.yml` loses `CAP_SYS_ADMIN` — and the postinst
+restarts the helper, so `zpool_status` and in-progress `btrfs_scrub`
+break at upgrade time. Declare the backends, re-run
+`/usr/sbin/host-health-mcp-caps-template`, and restart the helper.
+See `doc/install.md` §4.
 
 Before 2.3.0 nothing in the package reloaded systemd or restarted
 anything, so an upgrade installed a new binary that the running units

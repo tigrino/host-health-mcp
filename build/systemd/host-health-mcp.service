@@ -16,15 +16,23 @@ User=host-health-mcp
 Group=host-health-mcp
 NoNewPrivileges=yes
 
-# The daemon speaks TLS over TCP and a unix socket to the helper, and
-# nothing else. Without this it kept AF_NETLINK and AF_PACKET — the
-# families a compromised listener would reach for to enumerate or
-# capture from the network stack.
+# AF_NETLINK is REQUIRED, not an oversight. The network tool reads
+# per-interface addresses via net.Interface.Addrs(), which Go
+# implements over netlink RTM_GETADDR — see readInterfaceAddrs in
+# tools/network. Omitting it does not fail loudly: the call returns
+# "address family not supported by protocol", the tool swallows it, and
+# every interface reports addrs: [] with status ok and no warning. A
+# silent data regression on every host, which is exactly the shape of
+# defect this hardening pass exists to remove.
 #
-# ProcSubset=pid is deliberately NOT set: it hides /proc/meminfo,
-# /proc/pressure, /proc/net/* and /proc/vmstat, which would break the
-# system, pressure, sockets and kernel tools outright.
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# AF_PACKET stays out — nothing in the daemon opens a raw socket, and
+# it is the family a compromised listener would reach for to capture
+# from the wire.
+#
+# ProcSubset=pid is deliberately NOT set either: it hides
+# /proc/meminfo, /proc/pressure, /proc/net/* and /proc/vmstat, which
+# would break the system, pressure, sockets and kernel tools outright.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 UMask=0077
 
 CapabilityBoundingSet=

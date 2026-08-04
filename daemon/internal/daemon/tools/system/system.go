@@ -19,32 +19,32 @@ import (
 // Data is the response data for tool system. Mirrors SystemData in
 // doc/schema-draft.yaml.
 type Data struct {
-	UptimeS         int64        `json:"uptime_s"`
-	Load1           float64      `json:"load_1"`
-	Load5           float64      `json:"load_5"`
-	Load15          float64      `json:"load_15"`
-	CPUCount        int          `json:"cpu_count"`
-	MemTotalB       int64        `json:"mem_total_b"`
-	MemAvailableB   int64        `json:"mem_available_b"`
-	SwapTotalB      int64        `json:"swap_total_b"`
-	SwapUsedB       int64        `json:"swap_used_b"`
-	Disk            []DiskEntry  `json:"disk"`
-	KernelRelease   string       `json:"kernel_release"`
-	Distro          string       `json:"distro"`
-	DistroVersion   string       `json:"distro_version"`
-	TimeSyncSource  string       `json:"time_sync_source"`
-	TimeOffsetS     *float64     `json:"time_offset_s"`
-	RebootRequired  bool         `json:"reboot_required"`
+	UptimeS        int64       `json:"uptime_s"`
+	Load1          float64     `json:"load_1"`
+	Load5          float64     `json:"load_5"`
+	Load15         float64     `json:"load_15"`
+	CPUCount       int         `json:"cpu_count"`
+	MemTotalB      int64       `json:"mem_total_b"`
+	MemAvailableB  int64       `json:"mem_available_b"`
+	SwapTotalB     int64       `json:"swap_total_b"`
+	SwapUsedB      int64       `json:"swap_used_b"`
+	Disk           []DiskEntry `json:"disk"`
+	KernelRelease  string      `json:"kernel_release"`
+	Distro         string      `json:"distro"`
+	DistroVersion  string      `json:"distro_version"`
+	TimeSyncSource string      `json:"time_sync_source"`
+	TimeOffsetS    *float64    `json:"time_offset_s"`
+	RebootRequired bool        `json:"reboot_required"`
 }
 
 // DiskEntry mirrors the DiskEntry schema in schema-draft.yaml.
 type DiskEntry struct {
-	Mountpoint   string `json:"mountpoint"`
-	FS           string `json:"fs"`
-	SizeB        int64  `json:"size_b"`
-	UsedB        int64  `json:"used_b"`
-	InodesTotal  int64  `json:"inodes_total"`
-	InodesUsed   int64  `json:"inodes_used"`
+	Mountpoint  string `json:"mountpoint"`
+	FS          string `json:"fs"`
+	SizeB       int64  `json:"size_b"`
+	UsedB       int64  `json:"used_b"`
+	InodesTotal int64  `json:"inodes_total"`
+	InodesUsed  int64  `json:"inodes_used"`
 }
 
 // Tool is the registered tool.
@@ -100,7 +100,16 @@ func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 
 	// Disk usage on each currently-mounted filesystem from /proc/mounts.
 	measured, skipped, err := readMounts()
-	if err == nil {
+	if err != nil {
+		// Report what was read, and say the list is short. Returning
+		// here would emit an EMPTY disk[] with status: ok — strictly
+		// worse than the partial list this change set set out to stop
+		// being silent about, and indistinguishable from "this host
+		// has no filesystems".
+		warnings = append(warnings, "system: /proc/mounts: "+err.Error()+
+			"; disk[] is incomplete")
+	}
+	{
 		if len(skipped) > 0 {
 			// Never silent. A mail or file server whose largest volume
 			// is NFS- or virtiofs-backed would otherwise lose capacity

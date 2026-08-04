@@ -257,3 +257,39 @@ func (f *Filter) addrAllowed(addr netip.Addr) bool {
 	}
 	return false
 }
+
+// pathToken matches an absolute filesystem path appearing as a
+// whitespace-delimited token. Trailing punctuation is excluded from
+// the match so "…/key.pem: permission denied" keeps the colon that
+// separates the path from the reason — otherwise the replacement eats
+// the sentence structure along with the path.
+var pathToken = regexp.MustCompile(`(^|\s)(/\S*[^\s:,;.])`)
+
+const pathPlaceholder = "<path>"
+
+// Paths replaces absolute filesystem paths in s with a placeholder,
+// leaving everything else intact.
+//
+// This is deliberately NOT Redact. Redact is a positive-list filter
+// over whitespace tokens, and running it on a diagnostic message
+// destroys the diagnostic: every number and every colon-bearing token
+// collapses, so "stdout exceeded 1048576 bytes" becomes "stdout
+// exceeded <redacted> bytes" and "wg dump: row has unexpected column
+// count 9" loses both the subsystem and the count. Those messages are
+// what an operator reads to tell one failure from another.
+//
+// What actually needed suppressing (audit B-12) is narrower: an error
+// string built from a *os.PathError or a socket error carries an
+// absolute host path into a field that never passed through any
+// filter. That is a layout disclosure; the surrounding words are not.
+//
+// Pure and config-free, so the package-level OpErrorFrom — which has
+// no operator rules in scope — can use it too. That matters: B-12's
+// own example is the fallback branch, and a redactor-bound method
+// could never have covered it.
+func Paths(s string) string {
+	if s == "" {
+		return s
+	}
+	return pathToken.ReplaceAllString(s, "${1}"+pathPlaceholder)
+}

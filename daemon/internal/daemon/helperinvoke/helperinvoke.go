@@ -199,19 +199,20 @@ func (e *HelperError) Error() string {
 // crosses the daemon's outbound boundary (REQ 6.3, threat-model §6.7).
 func (e *HelperError) AsOpError() *schema.HelperOpError {
 	prefix := e.StderrPrefix
-	msg := e.Message
 	if e.redactor != nil {
 		prefix = e.redactor.Redact(prefix)
-		// Message travels the same path to the same client and was
-		// going out untouched. It is not a fixed catalogue string:
-		// OpErrorFrom's fallback stuffs a raw err.Error() into it, and
-		// a *os.PathError renders as "open /etc/host-health-mcp/...:
-		// permission denied" — an absolute host path reaching the
-		// caller through the one field the redactor never saw.
-		// threat-model R5 covers argv disclosure; this closes the same
-		// hole one field over.
-		msg = e.redactor.Redact(msg)
 	}
+	// Message gets the PATH scrubber, not the positive-list filter.
+	// Running Redact here destroyed the diagnostic it was meant to
+	// protect: every number and colon-bearing token collapses, so
+	// "stdout exceeded 1048576 bytes" and "wg dump: row has unexpected
+	// column count 9" came out unreadable. What B-12 actually needs
+	// suppressed is the absolute host path a *os.PathError drags in.
+	//
+	// redact.Paths is config-free on purpose — see OpErrorFrom below,
+	// which is where B-12's own example lives and which has no
+	// redactor in scope at all.
+	msg := redact.Paths(e.Message)
 	return &schema.HelperOpError{
 		Code:         e.Code,
 		Message:      schema.BoundMessage(msg),
@@ -233,7 +234,11 @@ func OpErrorFrom(err error) *schema.HelperOpError {
 	if errors.As(err, &he) {
 		return he.AsOpError()
 	}
-	return &schema.HelperOpError{Code: "tool_failed", Message: schema.BoundMessage(err.Error())}
+	// The branch B-12 actually named: a bare error, often a
+	// *os.PathError or a socket error carrying /run/host-health-mcp/…,
+	// going straight to the caller. Redacting only in AsOpError left
+	// this one open.
+	return &schema.HelperOpError{Code: "tool_failed", Message: schema.BoundMessage(redact.Paths(err.Error()))}
 }
 
 // CodeOf extracts the helper error code from err, or returns

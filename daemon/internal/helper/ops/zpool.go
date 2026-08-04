@@ -3,9 +3,7 @@ package ops
 import (
 	"bytes"
 	"context"
-	"host-health-mcp/daemon/internal/helper/dispatch"
 	"host-health-mcp/daemon/internal/shared/linescan"
-	"host-health-mcp/daemon/internal/shared/proto"
 	"strconv"
 	"strings"
 
@@ -47,7 +45,12 @@ func ZpoolStatus(ctx context.Context, _ string) (any, error) {
 		}
 		pool, perr := parseZpoolStatus(name, statusOut)
 		if perr != nil {
-			return nil, &dispatch.Error{Code: proto.CodeToolFailed, Message: perr.Error()}
+			// Skip this pool, keep the others. Failing the op here
+			// discarded every pool already parsed, so the daemon
+			// emitted zfs_pools: [] — which reads as "this host has no
+			// ZFS", the one answer that is certainly wrong. Matches how
+			// the exec-failure branch above treats a single bad pool.
+			continue
 		}
 		out.Pools = append(out.Pools, pool)
 	}

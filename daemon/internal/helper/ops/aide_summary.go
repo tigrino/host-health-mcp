@@ -19,10 +19,10 @@ import (
 
 // AideSummary is the typed result for op read_aide_summary.
 type AideSummary struct {
-	Present       bool       `json:"present"`
-	LastRunTS     *time.Time `json:"last_run_ts"`
-	LastExitCode  *int       `json:"last_exit_code"`
-	ChangeCount   *int       `json:"change_count"`
+	Present      bool       `json:"present"`
+	LastRunTS    *time.Time `json:"last_run_ts"`
+	LastExitCode *int       `json:"last_exit_code"`
+	ChangeCount  *int       `json:"change_count"`
 }
 
 // dbPaths lists the canonical AIDE database locations on Debian/Ubuntu.
@@ -139,7 +139,14 @@ func readAideLog() (*int, *int) {
 		if err != nil {
 			continue
 		}
-		cnt, exit := parseAideLog(body)
+		cnt, exit, perr := parseAideLog(body)
+		if perr != nil {
+			// Stop, do not fall through. Continuing would return the
+			// PREVIOUS rotated log's change_count as the current run's
+			// — a file-integrity checker reporting stale data as fresh.
+			// Nothing is better than the wrong thing here.
+			return nil, nil
+		}
 		if cnt != nil {
 			return cnt, exit
 		}
@@ -168,7 +175,7 @@ func readMaybeGzipped(path string) ([]byte, error) {
 
 // parseAideLog extracts (change_count, last_exit_code) from a single
 // log body. Conservative: returns nil pointers when nothing matches.
-func parseAideLog(body []byte) (*int, *int) {
+func parseAideLog(body []byte) (*int, *int, error) {
 	var cnt *int
 	var exit *int
 	scanner := linescan.New(bytes.NewReader(body), "aide log")
@@ -231,11 +238,14 @@ func parseAideLog(body []byte) (*int, *int) {
 		one := 1
 		exit = &one
 	}
-	// A truncated read yields a confidently wrong number. Report
-	// "unknown" instead — for a health check the two are not the
-	// same thing.
-	if scanner.Err() != nil {
-		return nil, nil
+	// A truncated read must NOT return (nil, nil): the caller walks
+	// the rotated logs newest-first and treats a nil count as "not in
+	// this file", so a truncated current aide.log would fall through
+	// and report the PREVIOUS run's change_count as the current one.
+	// For a file-integrity checker that is a false negative dressed as
+	// fresh data — worse than the understated count this guard is for.
+	if err := scanner.Err(); err != nil {
+		return nil, nil, err
 	}
-	return cnt, exit
+	return cnt, exit, nil
 }

@@ -29,36 +29,36 @@ import (
 // warnings[] in the envelope carries only the section + op + code
 // summary (1.11.0 structured-error refactor).
 type Data struct {
-	AideOrEquivalent     Aide                    `json:"aide_or_equivalent"`
-	Auditd               Auditd                  `json:"auditd"`
-	Rkhunter             Rkhunter                `json:"rkhunter"`
-	DebsumsOrEquivalent  Debsums                 `json:"debsums_or_equivalent"`
-	IntrusionPrevention  IPS                     `json:"intrusion_prevention"`
-	SSHLogins            SSHLogins               `json:"ssh_logins"`
-	Errors               []schema.HelperOpError  `json:"errors,omitempty"`
+	AideOrEquivalent    Aide                   `json:"aide_or_equivalent"`
+	Auditd              Auditd                 `json:"auditd"`
+	Rkhunter            Rkhunter               `json:"rkhunter"`
+	DebsumsOrEquivalent Debsums                `json:"debsums_or_equivalent"`
+	IntrusionPrevention IPS                    `json:"intrusion_prevention"`
+	SSHLogins           SSHLogins              `json:"ssh_logins"`
+	Errors              []schema.HelperOpError `json:"errors,omitempty"`
 }
 
 // Aide mirrors the aide_or_equivalent block.
 type Aide struct {
-	Present       bool       `json:"present"`
-	LastRunTS     *time.Time `json:"last_run_ts"`
-	LastExitCode  *int       `json:"last_exit_code"`
-	ChangeCount   *int       `json:"change_count"`
+	Present      bool       `json:"present"`
+	LastRunTS    *time.Time `json:"last_run_ts"`
+	LastExitCode *int       `json:"last_exit_code"`
+	ChangeCount  *int       `json:"change_count"`
 }
 
 // Auditd mirrors the auditd block.
 type Auditd struct {
-	Present         bool       `json:"present"`
-	QueueDepth      *int       `json:"queue_depth"`
-	LostEvents      *int       `json:"lost_events"`
-	LastRotationTS  *time.Time `json:"last_rotation_ts"`
+	Present        bool       `json:"present"`
+	QueueDepth     *int       `json:"queue_depth"`
+	LostEvents     *int       `json:"lost_events"`
+	LastRotationTS *time.Time `json:"last_rotation_ts"`
 }
 
 // Rkhunter mirrors the rkhunter block.
 type Rkhunter struct {
-	Present       bool       `json:"present"`
-	LastRunTS     *time.Time `json:"last_run_ts"`
-	WarningCount  *int       `json:"warning_count"`
+	Present      bool       `json:"present"`
+	LastRunTS    *time.Time `json:"last_run_ts"`
+	WarningCount *int       `json:"warning_count"`
 }
 
 // Debsums mirrors the debsums_or_equivalent block.
@@ -128,21 +128,21 @@ func (*Tool) DefaultTimeout() time.Duration { return 5 * time.Second }
 
 // helperAide mirrors the helper's AideSummary.
 type helperAide struct {
-	Present       bool       `json:"present"`
-	LastRunTS     *time.Time `json:"last_run_ts"`
-	LastExitCode  *int       `json:"last_exit_code"`
-	ChangeCount   *int       `json:"change_count"`
+	Present      bool       `json:"present"`
+	LastRunTS    *time.Time `json:"last_run_ts"`
+	LastExitCode *int       `json:"last_exit_code"`
+	ChangeCount  *int       `json:"change_count"`
 }
 
 // helperAudit mirrors the helper's AuditStatus. NetlinkError is the
 // soft-error channel for AUDIT_GET failures that should not suppress
 // the filesystem-derived LastRotationTS.
 type helperAudit struct {
-	Present         bool       `json:"present"`
-	QueueDepth      *int       `json:"queue_depth"`
-	LostEvents      *int       `json:"lost_events"`
-	LastRotationTS  *time.Time `json:"last_rotation_ts"`
-	NetlinkError    string     `json:"netlink_error,omitempty"`
+	Present        bool       `json:"present"`
+	QueueDepth     *int       `json:"queue_depth"`
+	LostEvents     *int       `json:"lost_events"`
+	LastRotationTS *time.Time `json:"last_rotation_ts"`
+	NetlinkError   string     `json:"netlink_error,omitempty"`
 }
 
 // helperFail2ban mirrors the helper's Fail2banStatusResult.
@@ -305,12 +305,22 @@ func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 	// (see SSHLogins and REQ 4.5). A partial file read (fileErr) is not
 	// reported as authoritative: it warns and falls through to the
 	// journal path.
-	a, f, fileOK, fileErr := readAuthLogCounters()
+	a, f, fileOK, fileTruncated, fileErr := readAuthLogCounters()
 	if fileErr != nil {
 		addWarning("security: auth log read incomplete (" + fileErr.Error() +
 			"); falling back to journal counters")
 	}
-	if fileOK {
+	if fileOK && fileTruncated {
+		// The counts cover the tail only, so do NOT label them
+		// since_log_rotation — that discriminator was added in 2.0.0
+		// precisely so a count is never ambiguous about what it spans.
+		// A sustained brute-force is what grows auth.log past the cap,
+		// so this fires during exactly the event the counters exist to
+		// surface.
+		addWarning("security: auth log exceeded the read cap; ssh_logins counts " +
+			"cover only the most recent portion of the file")
+		d.SSHLogins.Window = sshWindowUnavailable
+	} else if fileOK {
 		d.SSHLogins.AcceptedRecent = &a
 		d.SSHLogins.FailedRecent = &f
 		d.SSHLogins.Window = sshWindowSinceLogRotation
@@ -656,19 +666,21 @@ func isSSHFailedLine(line string) bool {
 	return false
 }
 
-// readAuthLogCounters returns (accepted, failed, found, err) counts
-// from the first existing path in authLogPaths. found=false means no
-// usable file-based source exists and the caller should fall back to
-// the helper's journal counter; err is non-nil when a file source
-// existed but could not be read to completion (see below). The counts
-// cover the live file, i.e. "since the last log rotation".
+// readAuthLogCounters returns (accepted, failed, found, truncated,
+// err) counts from the first existing path in authLogPaths.
+// found=false means no usable file-based source exists and the caller
+// should fall back to the helper's journal counter; err is non-nil
+// when a file source existed but could not be read to completion.
+//
+// truncated=true means the file exceeded maxAuthLogBytes and only its
+// tail was read, so the counts do NOT cover the whole rotation period
+// and the caller must not label them "since_log_rotation".
 // maxAuthLogBytes caps the tail read of auth.log. 8 MiB is far more
 // than a day of legitimate sshd chatter and bounds the cost of a
 // brute-force flood.
 const maxAuthLogBytes = 8 * 1024 * 1024
 
-func readAuthLogCounters() (accepted, failed int, found bool, err error) {
-	truncated := false
+func readAuthLogCounters() (accepted, failed int, found, truncated bool, err error) {
 	var path string
 	for _, p := range authLogPaths {
 		if _, statErr := os.Stat(p); statErr == nil {
@@ -677,11 +689,11 @@ func readAuthLogCounters() (accepted, failed int, found bool, err error) {
 		}
 	}
 	if path == "" {
-		return 0, 0, false, nil
+		return 0, 0, false, false, nil
 	}
 	f, openErr := os.Open(path)
 	if openErr != nil {
-		return 0, 0, false, nil
+		return 0, 0, false, false, nil
 	}
 	defer f.Close()
 	// Bound the read. auth.log is a file an EXTERNAL attacker grows,
@@ -721,7 +733,7 @@ func readAuthLogCounters() (accepted, failed int, found bool, err error) {
 		// partial. Return found=false with the error so the caller
 		// does not report them as authoritative "since_log_rotation"
 		// figures and instead falls back to the bounded journal path.
-		return accepted, failed, false, scanErr
+		return accepted, failed, false, truncated, scanErr
 	}
-	return accepted, failed, true, nil
+	return accepted, failed, true, truncated, nil
 }

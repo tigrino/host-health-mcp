@@ -58,23 +58,23 @@ func parsePostqueueOutput(stdout []byte) (PostqueueResult, error) {
 			fields := strings.Fields(line)
 			for i, f := range fields {
 				if f == "in" && i+1 < len(fields) {
+					// Saturate INSIDE the loop. Clamping afterwards was
+					// no protection at all: n*10+d wraps silently, and a
+					// wrapped value landing back inside [0, max] passed
+					// both guards. "18446744073709551617" reported a
+					// queue depth of 1. The digits come from postqueue's
+					// summary line, which is derived from queue contents
+					// an external sender influences.
 					var n int
 					for _, c := range fields[i+1] {
 						if c < '0' || c > '9' {
 							break
 						}
+						if n > (maxQueueDepth-int(c-'0'))/10 {
+							n = maxQueueDepth
+							break
+						}
 						n = n*10 + int(c-'0')
-					}
-					// Clamp. n comes from postqueue's own summary line,
-					// but that line is derived from queue contents an
-					// external sender influences; a 64-bit value here
-					// would overflow anything downstream that narrows
-					// it, and a negative depth is meaningless.
-					if n < 0 {
-						n = 0
-					}
-					if n > maxQueueDepth {
-						n = maxQueueDepth
 					}
 					out.QueueDepth = n
 					// Do not return here — defer counting may

@@ -18,11 +18,11 @@ import (
 // Data is the response data for tool pressure. Mirrors PressureData in
 // doc/schema-draft.yaml.
 type Data struct {
-	CPU         *Metric `json:"cpu"`
-	IOSome      *Metric `json:"io_some"`
-	IOFull      *Metric `json:"io_full"`
-	MemorySome  *Metric `json:"memory_some"`
-	MemoryFull  *Metric `json:"memory_full"`
+	CPU        *Metric `json:"cpu"`
+	IOSome     *Metric `json:"io_some"`
+	IOFull     *Metric `json:"io_full"`
+	MemorySome *Metric `json:"memory_some"`
+	MemoryFull *Metric `json:"memory_full"`
 }
 
 // Metric is one row of /proc/pressure/*.
@@ -74,12 +74,10 @@ func readSome(path string) *Metric {
 			return parsePressureLine(line)
 		}
 	}
-	// A truncated read yields a confidently wrong number. Report
-	// "unknown" instead — for a health check the two are not the
-	// same thing.
-	if scanner.Err() != nil {
-		return nil
-	}
+	// Both outcomes are "unknown", and nil is how this function says
+	// so: either the scan was truncated before reaching the `some`
+	// line, or the file genuinely has none. Neither justifies a
+	// fabricated zero.
 	return nil
 }
 

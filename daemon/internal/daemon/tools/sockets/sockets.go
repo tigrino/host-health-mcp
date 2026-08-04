@@ -44,6 +44,7 @@ func (*Tool) DefaultTimeout() time.Duration { return 1 * time.Second }
 
 // Handle reads all four files and returns the listeners.
 func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
+	var warnings []string
 	d := Data{Listening: []ListeningSocket{}}
 	for _, src := range []struct {
 		path, proto, family string
@@ -56,11 +57,17 @@ func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 	} {
 		rows, err := readProcNet(src.path, src.proto, src.family, src.listenState)
 		if err != nil {
+			// Say so. Dropping the family silently turns "the read
+			// failed" into "this host has no TCP listeners", which for
+			// a security inventory is a materially misleading answer —
+			// and worse than the partial list this replaced.
+			warnings = append(warnings, "sockets: "+src.path+": "+err.Error()+
+				"; listening[] is incomplete")
 			continue
 		}
 		d.Listening = append(d.Listening, rows...)
 	}
-	return d, nil, nil
+	return d, warnings, nil
 }
 
 // udpUnconnectedState is TCP_CLOSE (07) as reported in /proc/net/udp

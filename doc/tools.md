@@ -92,29 +92,44 @@ but they are the other half of what bounds a tool's behaviour.
 |------|-----|------------|------------------------|
 | `systemd_units` | `whitelisted_units[]` | exact names, startup-validated | Non-blank; no `*`, `?` or `[`. Unbounded in length |
 | `systemd_units` | `whitelisted_unit_patterns[]` | fnmatch globs, resolved by systemd | Non-blank; not composed solely of metacharacters. Result capped at 100 units |
-| `workload.nginx_apache` | `access_log_path` | **none** | Free string; see below |
+| `workload.nginx_apache` | `access_log_path` | prefix allow-list, helper-side | Must be absolute and under a prefix in `access_log_prefixes` (helper.yml, default `/var/log/`). Opened with `O_NOFOLLOW`; regular-file check is an `fstat` on the opened descriptor. See below |
 | `workload.nginx_apache` | `access_log_window_minutes` | bounded integer | `1`..`1440`; default 60. Out-of-range or non-numeric is a hard error from the plugin |
 | `workload.nginx_apache` | `access_log_tail_bytes` | bounded integer | Non-negative; default 256 KiB; hard-capped helper-side at 4 MiB |
 | `firewall` | `detail_mode_allowed` | boolean | Gates `mode: detail` irrespective of what the caller asks for |
-| `firewall` | `max_set_elements_per_set` | bounded integer | Default 2000; hard-capped helper-side at 40000 |
+| `firewall` | `max_set_elements_per_set` | bounded integer | Default 2000; hard-capped helper-side at 24000 since 2.3.0 (was 40000, which sat close enough to the 4 MiB frame cap that table and chain metadata could push a reply over it) |
 | `firewall` | `max_rule_text_bytes` | bounded integer | Default 65536 when unset or non-positive; hard-capped helper-side at 1 MiB since 2.2.1 (previously floor-only, so an arbitrarily large value removed the only bound on inline rules per chain) |
 | `firewall` | `ban_sets[]` | literal strings | Used as map keys (`family/table/name`); no per-field validation |
 | `storage` | `btrfs_mountpoints[]` | anchored regex plus a filesystem-type check | See `btrfsMountPathRE` below |
 | `certs` | `cert_paths[]`, `cert_renewal_units[]` | none | Parallel lists; read by the daemon, never passed to a subprocess |
 
-`workload.nginx_apache.access_log_path` is the one value in the whole
-surface with no allow-list. It is passed to the helper, which runs as
-root, and opened directly: `os.Stat` then `os.Open`, with no
-`O_NOFOLLOW`, no prefix constraint, and no canonicalisation. The only
-check is that the resolved target is a regular file — and because
-`os.Stat` follows symlinks, a symlink to a regular file is followed.
-An operator who misconfigures this key can therefore cause the helper
-to read the tail of any root-readable regular file on the host; the
-parsed 4xx/5xx counts, not the bytes, are what crosses the socket, but
-the read itself is unconstrained. This is accepted only because the
-value is operator-supplied and never caller-supplied: no request body
-can reach it. Treat it with the same care as any other root-context
-path in `manifest.yml`.
+`workload.nginx_apache.access_log_path` was, until 2.3.0, the one
+value in the whole surface with no allow-list: it reached the root
+helper and was opened with `os.Stat` then `os.Open` — no
+`O_NOFOLLOW`, no prefix constraint, no canonicalisation — so a
+misconfigured key could read the tail of any root-readable regular
+file on the host, and the stat/open pair left a window in which the
+target could be swapped for a FIFO to block the helper indefinitely.
+
+As of 2.3.0:
+
+  - The path must be absolute and lie under one of
+    `access_log_prefixes` in `helper.yml` (default `/var/log/`). The
+    comparison is against the cleaned path and is directory-bounded,
+    so neither `/var/log/../etc/shadow` nor `/var/logsecrets` passes.
+  - The file is opened first and the regular-file check is an `fstat`
+    on that descriptor, so there is no second path resolution to race.
+  - `O_NOFOLLOW` refuses a symlinked final component and `O_NONBLOCK`
+    stops a FIFO from blocking the open.
+
+Two limits are worth stating plainly rather than leaving to be
+inferred. `O_NOFOLLOW` covers the final component only, so a symlinked
+*intermediate* directory under an allowed prefix is still followed —
+the allow-list is a lexical check on the cleaned string, not a
+`RESOLVE_BENEATH` open. And the failure message still returns the
+underlying `os` error for a path inside the allow-list, which remains
+a narrow existence-and-permission oracle for paths under `/var/log/`.
+Both are bounded by the prefix list, which is why it lives on the
+privileged side.
 
 ## Helper-side validation
 

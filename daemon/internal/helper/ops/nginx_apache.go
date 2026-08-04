@@ -1,12 +1,12 @@
 package ops
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"host-health-mcp/daemon/internal/shared/linescan"
 	"io"
 	"os"
 	"path/filepath"
@@ -204,6 +204,14 @@ func readAccessLogTail(path string, tailBytes int) ([]byte, error) {
 	}
 	// Allocate what will actually be read, not the ceiling. A 1-byte
 	// log with a 1 MiB tail request allocated 1 MiB per call.
+	// Defend at the boundary, not by trusting the daemon's own
+	// validation. tailBytes arrives from the request; a negative value
+	// makes size-off negative too, so the comparison below leaves want
+	// negative and make() panics — killing the privileged process,
+	// which has no recover anywhere.
+	if tailBytes <= 0 {
+		return nil, errors.New("access_log_tail_bytes must be positive")
+	}
 	want := int64(tailBytes)
 	if size-off < want {
 		want = size - off
@@ -240,8 +248,7 @@ func parseAccessLogTail(tail []byte, now time.Time, window time.Duration) (recen
 	cutoff := now.Add(-window)
 	var c4, c5 int
 
-	scanner := bufio.NewScanner(bytes.NewReader(tail))
-	scanner.Buffer(make([]byte, maxAccessLogLineBytes), maxAccessLogLineBytes)
+	scanner := linescan.New(bytes.NewReader(tail), "access log")
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		ts, ok := extractLogTimestamp(line)
@@ -266,10 +273,20 @@ func parseAccessLogTail(tail []byte, now time.Time, window time.Duration) (recen
 			c5++
 		}
 	}
-	// bufio.Scanner returns bufio.ErrTooLong for over-long lines and
-	// io errors for malformed reads; counts gathered before the failure
-	// are still valid, so the err is intentionally ignored.
-	_ = scanner.Err()
+	// Do NOT ignore this. The access log is the one input in the tree a
+	// remote client fully controls — it writes the request URI and
+	// User-Agent into the line. One request with an over-long URI stops
+	// the scan, and because this is a TAIL read that line lands near the
+	// start of the window, so the counts come back near-zero, non-nil,
+	// with anyParsed true. The attacker suppresses the very counter
+	// meant to detect them, and the response says status: ok.
+	//
+	// "Counts gathered before the failure are still valid" was the old
+	// justification. They are not valid as COMPLETE counts, which is how
+	// they are published.
+	if scanner.Err() != nil {
+		return nil, nil, time.Time{}, false
+	}
 	if !anyParsed {
 		return nil, nil, time.Time{}, false
 	}

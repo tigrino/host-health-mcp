@@ -3,10 +3,10 @@ package ops
 import "testing"
 
 func TestParseDoveadmWho_Empty(t *testing.T) {
-	if got := parseDoveadmWho([]byte("")); got != 0 {
+	if got := mustParseDoveadmWho(t, []byte("")); got != 0 {
 		t.Fatalf("empty: got %d want 0", got)
 	}
-	if got := parseDoveadmWho([]byte("\n\n")); got != 0 {
+	if got := mustParseDoveadmWho(t, []byte("\n\n")); got != 0 {
 		t.Fatalf("blank-only: got %d want 0", got)
 	}
 }
@@ -15,7 +15,7 @@ func TestParseDoveadmWho_ThreeSessions(t *testing.T) {
 	in := []byte("alice  1 imap (127.0.0.1)\n" +
 		"bob    2 pop3 (127.0.0.1)\n" +
 		"carol  1 imap (10.0.0.1)\n")
-	if got := parseDoveadmWho(in); got != 3 {
+	if got := mustParseDoveadmWho(t, in); got != 3 {
 		t.Fatalf("three sessions: got %d want 3", got)
 	}
 }
@@ -26,7 +26,7 @@ func TestParseDoveadmWho_WithHeader(t *testing.T) {
 	in := []byte("username  #  proto (pids) (ips)\n" +
 		"alice  1 imap (127.0.0.1)\n" +
 		"bob    2 pop3 (127.0.0.1)\n")
-	if got := parseDoveadmWho(in); got != 2 {
+	if got := mustParseDoveadmWho(t, in); got != 2 {
 		t.Fatalf("with header: got %d want 2", got)
 	}
 }
@@ -39,14 +39,25 @@ func TestParseDoveadmWho_WithHeader(t *testing.T) {
 func TestParseDoveadmWho_UserNamedUsername(t *testing.T) {
 	in := []byte("username  1 imap (127.0.0.1)\n" +
 		"alice  2 imap (127.0.0.1)\n")
-	if got := parseDoveadmWho(in); got != 2 {
+	if got := mustParseDoveadmWho(t, in); got != 2 {
 		t.Fatalf("user named username: got %d want 2", got)
 	}
 }
 
 func TestParseDoveadmWho_TrailingBlankLine(t *testing.T) {
 	in := []byte("alice  1 imap (127.0.0.1)\n\n")
-	if got := parseDoveadmWho(in); got != 1 {
+	if got := mustParseDoveadmWho(t, in); got != 1 {
 		t.Fatalf("trailing blank: got %d want 1", got)
 	}
+}
+
+// mustParseDoveadmWho keeps the inline `if got := ...` form readable
+// now that the parser reports a truncated read.
+func mustParseDoveadmWho(t *testing.T, b []byte) int {
+	t.Helper()
+	n, err := parseDoveadmWho(b)
+	if err != nil {
+		t.Fatalf("parseDoveadmWho: %v", err)
+	}
+	return n
 }

@@ -31,8 +31,8 @@
 //     be a file, a function stored in a variable — is invisible here,
 //     because sel.X is an *ast.Ident bound to a variable and the
 //     import lookup misses. Catching those needs type information.
-//   - Only the root passed to -root is scanned. build.sh scans the
-//     daemon module; the plugin module is a separate root.
+//   - Only the root passed to -root is scanned. build.sh invokes it
+//     once per module root (daemon and plugin).
 //
 // Stdlib-only; runs from build/build.sh.
 package main

@@ -470,11 +470,11 @@ Two limits are worth stating rather than leaving to be inferred from
 the symbol table. Matching is syntactic, so a call reached through a
 value rather than an import name — `(*os.Process).Kill` being the
 clearest example — is not seen; catching those would need type
-information. And the `plugin` module is a separate root that the
-build does not currently pass to the linter. It contains no
-state-changing call today, and the systemd hardening does not cover
-it because the plugin runs on the operator's workstation rather than
-under the daemon's unit.
+information. And the `plugin` module is a separate
+root: `build/build.sh` passes it to the linter as its own invocation
+since 2.3.0. It contains no state-changing call today, and the
+systemd hardening does not cover it because the plugin runs on the
+operator's workstation rather than under the daemon's unit.
 
 Concurrency control:
 

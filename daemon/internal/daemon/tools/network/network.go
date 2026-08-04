@@ -30,21 +30,21 @@ import (
 // Data is the response data for tool network. Mirrors NetworkData in
 // doc/schema-draft.yaml.
 type Data struct {
-	Interfaces                  []NetworkInterface     `json:"interfaces"`
-	DefaultRoutes               []DefaultRoute         `json:"default_routes"`
-	NftTableCounts              map[string]NftTable    `json:"nft_table_counts"`
-	ResolvConfFirstNameserver   *string                `json:"resolv_conf_first_nameserver"`
-	IPv6PolicyCompliant         bool                   `json:"ipv6_policy_compliant"`
-	Errors                      []schema.HelperOpError `json:"errors,omitempty"`
+	Interfaces                []NetworkInterface     `json:"interfaces"`
+	DefaultRoutes             []DefaultRoute         `json:"default_routes"`
+	NftTableCounts            map[string]NftTable    `json:"nft_table_counts"`
+	ResolvConfFirstNameserver *string                `json:"resolv_conf_first_nameserver"`
+	IPv6PolicyCompliant       bool                   `json:"ipv6_policy_compliant"`
+	Errors                    []schema.HelperOpError `json:"errors,omitempty"`
 }
 
 // NetworkInterface mirrors the schema.
 type NetworkInterface struct {
-	Name      string         `json:"name"`
-	MAC       string         `json:"mac"`
-	MTU       int            `json:"mtu"`
-	OperState string         `json:"oper_state"`
-	Carrier   bool           `json:"carrier"`
+	Name      string          `json:"name"`
+	MAC       string          `json:"mac"`
+	MTU       int             `json:"mtu"`
+	OperState string          `json:"oper_state"`
+	Carrier   bool            `json:"carrier"`
 	Addrs     []InterfaceAddr `json:"addrs"`
 }
 
@@ -112,11 +112,15 @@ func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 	}
 	var warnings []string
 
+	// Keep what was read. readInterfaces now reports a per-interface
+	// address lookup failure alongside a populated list, so discarding
+	// on error would drop every interface because one of them could
+	// not be queried.
 	ifaces, err := readInterfaces()
+	d.Interfaces = ifaces
 	if err != nil {
-		warnings = append(warnings, "network: interfaces: "+err.Error())
-	} else {
-		d.Interfaces = ifaces
+		warnings = append(warnings, "network: interface addresses: "+err.Error()+
+			"; addrs[] may be incomplete")
 	}
 
 	if rs, err := readDefaultRoutes("/proc/net/route", "inet"); err == nil {
@@ -164,6 +168,7 @@ func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 
 // readInterfaces walks /sys/class/net for non-loopback interfaces.
 func readInterfaces() ([]NetworkInterface, error) {
+	var firstAddrErr error
 	entries, err := os.ReadDir("/sys/class/net")
 	if err != nil {
 		return nil, err
@@ -184,10 +189,14 @@ func readInterfaces() ([]NetworkInterface, error) {
 			OperState: operState, Carrier: carrier,
 			Addrs: []InterfaceAddr{},
 		}
-		iface.Addrs = readInterfaceAddrs(name)
+		addrs, addrErr := readInterfaceAddrs(name)
+		if addrErr != nil && firstAddrErr == nil {
+			firstAddrErr = addrErr
+		}
+		iface.Addrs = addrs
 		out = append(out, iface)
 	}
-	return out, nil
+	return out, firstAddrErr
 }
 
 // readInterfaceAddrs returns the configured addresses on iface for
@@ -196,15 +205,20 @@ func readInterfaces() ([]NetworkInterface, error) {
 // covers both families. Returns a non-nil empty slice when the
 // interface has no addresses so the JSON serialises as `[]` rather
 // than `null` (REQ 6.5 wire-shape contract).
-func readInterfaceAddrs(name string) []InterfaceAddr {
+// The error return matters more than it looks: both calls below go
+// over netlink, and a sandbox that omits AF_NETLINK makes them fail
+// while the tool happily emits addrs: []. That is indistinguishable
+// from an interface with no addresses configured, on every interface,
+// on every host. Surface it.
+func readInterfaceAddrs(name string) ([]InterfaceAddr, error) {
 	out := []InterfaceAddr{}
 	ifc, err := net.InterfaceByName(name)
 	if err != nil {
-		return out
+		return out, err
 	}
 	addrs, err := ifc.Addrs()
 	if err != nil {
-		return out
+		return out, err
 	}
 	for _, a := range addrs {
 		ipn, ok := a.(*net.IPNet)
@@ -223,7 +237,7 @@ func readInterfaceAddrs(name string) []InterfaceAddr {
 			Family: family, Addr: ip.String(), PrefixLen: plen,
 		})
 	}
-	return out
+	return out, nil
 }
 
 // readDefaultRoutes returns rows whose destination is the default

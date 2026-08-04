@@ -237,9 +237,13 @@ forms, RTL-override codepoints, embedded null bytes, base64 blobs
 of various lengths, redactor input that looks like a regex.
 
 Default scrub set is documented in `doc/install.md`. Operators may
-add patterns but cannot loosen the positive-list discipline; the
-filter accepts pattern names that map to compiled-in scrubbers,
-not user-supplied regex strings.
+add patterns but cannot loosen the positive-list discipline. Two
+mechanisms exist. The built-in classes are compiled-in scrubbers,
+selected by name. Since 2.3.0 an operator may additionally supply RE2
+patterns through `log_redaction_rules`; these are compiled at startup
+(a pattern that does not compile is fatal) and applied ahead of every
+built-in rule. They can only ever scrub MORE than the defaults — there
+is no syntax for exempting a token the positive list would drop.
 
 ## 6.4 Authentication and authorisation
 

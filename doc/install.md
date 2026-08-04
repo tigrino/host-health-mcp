@@ -376,12 +376,19 @@ opposite for several releases; it was wrong.
 |----------|----------------------|
 | `smart`  | `CAP_SYS_RAWIO`      |
 | `zfs`    | `CAP_SYS_ADMIN`      |
-| `lvm`, `mdraid`, `btrfs` | `CAP_DAC_READ_SEARCH` only |
+| `btrfs`  | `CAP_SYS_ADMIN`      |
+| `lvm`, `mdraid` | `CAP_DAC_READ_SEARCH` only |
+
+`btrfs` needs `CAP_SYS_ADMIN` because `btrfs scrub status` reads a
+status file for a finished scrub but issues `BTRFS_IOC_SCRUB_PROGRESS`
+for a running one, and that ioctl is capability-gated.
 
 Absent or empty, it defaults to `smart lvm mdraid` — deliberately not
 "all", since defaulting an allow-list to everything is what produced
-the original problem. Declare `zfs` explicitly if the host runs ZFS;
-the generator prints which default it applied.
+the original problem. Declare `zfs` or `btrfs` explicitly if the host
+runs them; the generator prints which default it applied when
+`storage` is enabled. Flow form (`storage_backends: [a, b]`) is
+rejected; an empty `[]` is accepted and means "the default".
 
 ## 4.1 IP filtering
 
@@ -432,10 +439,12 @@ that file when it runs; no operator action is required.
 
 # 5. First start
 
-The packages install no systemd maintainer-script fragments, so
-neither unit has been reloaded or enabled by this point. Do both
-before starting; skipping the `enable` step yields a host on which
-the service runs now but does not return after a reboot.
+The postinst has already run `daemon-reload` (and restarted any unit
+that was already running), so the reload below is a no-op on a fresh
+install and harmless to repeat. Neither unit is ENABLED, though — the
+package deliberately does not make that decision for you. Skipping the
+`enable` step yields a host on which the service runs now but does not
+return after a reboot.
 
 ```
 sudo systemctl daemon-reload
@@ -529,10 +538,29 @@ The daemon unit ships with `NoNewPrivileges=yes`, empty
 `RestrictNamespaces=yes`, `RestrictRealtime=yes`,
 `LockPersonality=yes`, `MemoryDenyWriteExecute=yes`,
 `RestrictSUIDSGID=yes`, `RemoveIPC=yes`, and
-`SystemCallFilter=@system-service ~@privileged ~@resources ~@mount
-~@swap ~@reboot ~@module`. The helper unit applies the same set of
-filesystem, namespace, and process directives. Two intentional
-deviations:
+`RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK`,
+`UMask=0077`, and a two-directive syscall filter:
+
+```
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @mount @swap @reboot @module
+```
+
+Two directives, not one line: a leading `~` makes the whole value a
+deny-list, but a `~` in the middle of a list is parsed as part of a
+syscall *name*. Releases up to 2.2.2 carried the single-line form, so
+systemd logged `System call ~@privileged is not known, ignoring` and
+applied only `@system-service` — every explicit denial was inert. Do
+not copy the single-line form into a drop-in.
+
+`AF_NETLINK` is required, not an oversight: the `network` tool reads
+per-interface addresses through `net.Interface.Addrs()`, which Go
+implements over netlink. Omitting it makes every interface report
+`addrs: []` with no error.
+
+The helper unit applies the same set of filesystem, namespace, and
+process directives, plus `TasksMax=512`, `MemoryHigh=768M`,
+`MemoryMax=1G` and `LimitNOFILE=8192`. Two intentional deviations:
 
   - **Capability sets.** The shipped helper base unit keeps
     `CapabilityBoundingSet=CAP_CHOWN` so the helper can chown its
