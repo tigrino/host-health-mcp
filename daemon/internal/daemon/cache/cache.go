@@ -9,6 +9,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -106,14 +110,70 @@ func (c *Cache) Store(key string, e Entry) {
 // Do executes fn under singleflight keyed by k. Concurrent callers of
 // Do with the same k will share one invocation of fn and one Entry.
 // fn is expected to populate the cache itself on success.
+//
+// ctx bounds the CALLER's wait, not fn. singleflight.Do offers no
+// cancellation, and this function used to accept ctx and never read
+// it — so the per-tool timeout only bit for tools whose Handle
+// observed ctx itself, i.e. the helper-backed ones. A tool that blocks
+// in a syscall instead (unix.Statfs on a stale NFS mount, in D-state
+// and uninterruptible) hung its handler goroutine forever, and because
+// the call was in flight under singleflight every later caller for the
+// same key joined the same stuck call. The tool was dead for the
+// process lifetime and only a restart cleared it.
+//
+// Forget on DEADLINE is what makes that recoverable: the next caller
+// starts a fresh call rather than joining the wedged one, so the tool
+// works again as soon as the underlying cause clears.
+//
+// Forget is deliberately NOT called on plain cancellation. ctx here
+// derives from the HTTP request, which net/http cancels when the
+// client disconnects — so forgetting on cancel would let a caller that
+// issues and aborts a request repeatedly drop the singleflight entry
+// out from under a running leader, starting a second concurrent
+// invocation of the same tool each time. That is a fork storm onto the
+// helper, which is the exact thing this package exists to prevent (REQ
+// 5.1). On a deadline the leader's own context has expired too, so no
+// overlap arises for any tool that observes ctx; overlap remains
+// possible only for tools that ignore it entirely, and those are cheap
+// local reads.
+//
+// The residual cost is one abandoned goroutine per timed-out call
+// against a genuinely stuck fn. That is the deliberate trade — a leak
+// that is visible in the goroutine count and self-heals, over a tool
+// that stays silently dead. Callers that can block in an
+// uninterruptible syscall should still avoid getting there; see
+// readMounts in the system tool.
 func (c *Cache) Do(ctx context.Context, k string, fn func() (Entry, error)) (Entry, error) {
-	v, err, _ := c.sf.Do(k, func() (any, error) {
+	ch := c.sf.DoChan(k, func() (v any, err error) {
+		// Contain panics inside fn. singleflight's DoChan path
+		// re-throws a panicking call with `go panic(e)` in a bare
+		// goroutine, which no recover can catch and which terminates
+		// the process — where the plain Do path used to run fn on the
+		// caller's goroutine and let net/http's per-connection recover
+		// contain it. Without this, any nil-deref in any of the 19
+		// tool handlers becomes a daemon outage reachable by a caller
+		// holding a valid certificate, and systemd's StartLimitBurst
+		// parks the unit after five hits.
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("cache: tool panicked: %v\n%s", r, debug.Stack())
+				err = fmt.Errorf("cache: tool panicked: %v", r)
+			}
+		}()
 		return fn()
 	})
-	if err != nil {
-		return Entry{}, err
+	select {
+	case res := <-ch:
+		if res.Err != nil {
+			return Entry{}, res.Err
+		}
+		return res.Val.(Entry), nil
+	case <-ctx.Done():
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			c.sf.Forget(k)
+		}
+		return Entry{}, ctx.Err()
 	}
-	return v.(Entry), nil
 }
 
 // Sweep evicts entries whose age exceeds their TTL. Called by a

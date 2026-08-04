@@ -309,6 +309,15 @@ func (s *Server) handleToolBody(w http.ResponseWriter, r *http.Request, tool too
 	defer cancel()
 
 	entry, err := s.cache.Do(toolCtx, key, func() (cache.Entry, error) {
+		// Stamp before the tool runs, not after. Builtat drives both
+		// the TTL and the envelope's cache_age_s, and both describe how
+		// old the OBSERVATION is. Stamping at completion made a slow
+		// call report its data as brand new: a tool that took ten
+		// seconds to gather host state returned it with cache_age_s 0
+		// and held it for a full TTL beyond that. The envelope field is
+		// part of the wire contract, so this was a health checker
+		// reporting stale state as current.
+		observedAt := time.Now()
 		result, warnings, herr := tool.Handle(toolCtx, body)
 		if herr != nil {
 			return cache.Entry{}, herr
@@ -320,7 +329,7 @@ func (s *Server) handleToolBody(w http.ResponseWriter, r *http.Request, tool too
 		e := cache.Entry{
 			Data:     raw,
 			Warnings: warnings,
-			Builtat:  time.Now(),
+			Builtat:  observedAt,
 			TTL:      ttl,
 		}
 		s.cache.Store(key, e)

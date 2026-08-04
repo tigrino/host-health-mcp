@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"runtime"
 	"strconv"
@@ -98,8 +99,22 @@ func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 	d.RebootRequired = fileExists("/var/run/reboot-required")
 
 	// Disk usage on each currently-mounted filesystem from /proc/mounts.
-	if mounts, err := readMounts(); err == nil {
-		for _, m := range mounts {
+	measured, skipped, err := readMounts()
+	if err == nil {
+		if len(skipped) > 0 {
+			// Never silent. A mail or file server whose largest volume
+			// is NFS- or virtiofs-backed would otherwise lose capacity
+			// reporting for the volume that matters most, with nothing
+			// in the response to say why.
+			names := make([]string, 0, len(skipped))
+			for _, m := range skipped {
+				names = append(names, m.Mountpoint+" ("+m.FS+")")
+			}
+			warnings = append(warnings, "system: disk usage not measured for "+
+				strings.Join(names, ", ")+
+				": statfs on these filesystems can block uninterruptibly")
+		}
+		for _, m := range measured {
 			var st unix.Statfs_t
 			if err := unix.Statfs(m.Mountpoint, &st); err != nil {
 				continue
@@ -252,21 +267,80 @@ type mountEntry struct {
 	FS         string
 }
 
-func readMounts() ([]mountEntry, error) {
+// blockingFSTypes are the /proc/mounts fstype values whose statfs can
+// block uninterruptibly. Two classes, deliberately in one list because
+// the consequence is identical: network filesystems whose server stops
+// answering, and locally-mounted filesystems serviced by a userspace
+// daemon that can die while the mount stays. Either way the caller
+// sits in D-state where no timeout and no signal reach it.
+//
+// Matched exactly; FUSE is additionally matched by prefix, since its
+// fstype carries the backing implementation ("fuse.sshfs").
+var blockingFSTypes = map[string]bool{
+	// Network.
+	"nfs": true, "nfs4": true, "nfsd": true,
+	"cifs": true, "smb3": true, "smbfs": true,
+	"afs": true, "coda": true, "ncpfs": true,
+	"9p": true, "ceph": true, "glusterfs": true,
+	"lustre": true, "beegfs": true, "orangefs": true,
+	"gfs2": true, "ocfs2": true, "davfs": true,
+	"gpfs": true, "mmfs": true,
+
+	// Serviced by a userspace daemon. virtiofs is the one that matters
+	// most now — it is FUSE-based but reports fstype "virtiofs", so
+	// neither the exact list nor the "fuse." prefix would catch it, and
+	// its statfs is answered by virtiofsd on the hypervisor. Common on
+	// KubeVirt, Kata and cloud-hypervisor guests.
+	"virtiofs": true,
+	"vboxsf":   true,
+	"prl_fs":   true,
+	// fuseblk backs ntfs-3g and exfat-fuse over a LOCAL block device.
+	// Listed because a SIGKILLed ntfs-3g leaves the mount hung, not
+	// because it is remote.
+	"fuseblk": true,
+}
+
+// mayBlockOnStatfs reports whether statfs on this filesystem type may
+// block on a remote or userspace server.
+func mayBlockOnStatfs(fs string) bool {
+	if blockingFSTypes[fs] {
+		return true
+	}
+	// "fuse", "fuse.sshfs", "fuse.rclone", ... The prefix carries the
+	// dot deliberately: without it "fusectl" would match. The
+	// pseudo-FUSE filesystems that never block (fusectl,
+	// fuse.gvfsd-fuse) are excluded by the switch above in any case.
+	return fs == "fuse" || strings.HasPrefix(fs, "fuse.")
+}
+
+func readMounts() (measured, skipped []mountEntry, err error) {
 	f, err := os.Open("/proc/mounts")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer f.Close()
-	var out []mountEntry
-	scanner := bufio.NewScanner(f)
+	measured, skipped = parseMounts(f)
+	return measured, skipped, nil
+}
+
+// parseMounts splits /proc/mounts into the filesystems safe to statfs
+// and the ones deliberately left alone. Taking an io.Reader keeps it
+// testable without a real /proc, matching how the helper's parsers are
+// structured (design §7.3).
+//
+// skipped carries only the mounts dropped for being unsafe to statfs.
+// Pseudo-filesystems are not reported: nobody expects a usage figure
+// for procfs, whereas a missing NFS volume is a monitoring blind spot
+// the operator has to be told about.
+func parseMounts(r io.Reader) (measured, skipped []mountEntry) {
+	scanner := bufio.NewScanner(r)
 	seen := make(map[string]bool)
 	for scanner.Scan() {
 		fields := strings.Fields(scanner.Text())
 		if len(fields) < 3 {
 			continue
 		}
-		mp := fields[1]
+		mp := unescapeMountField(fields[1])
 		fs := fields[2]
 		// Skip pseudo-filesystems and bind mounts we'd double-count.
 		switch fs {
@@ -280,7 +354,39 @@ func readMounts() ([]mountEntry, error) {
 			continue
 		}
 		seen[mp] = true
-		out = append(out, mountEntry{Mountpoint: mp, FS: fs})
+		// Anything whose statfs can block uninterruptibly is recorded
+		// but not measured. A stale NFS or CIFS mount, or a FUSE mount
+		// whose userspace daemon has died, puts the caller in D-state
+		// indefinitely: no timeout and no signal reaches it, because
+		// the block is in the kernel waiting on a server that is not
+		// answering. A health check must not wedge a goroutine to
+		// report one filesystem's usage — but it must say so.
+		if mayBlockOnStatfs(fs) {
+			skipped = append(skipped, mountEntry{Mountpoint: mp, FS: fs})
+			continue
+		}
+		measured = append(measured, mountEntry{Mountpoint: mp, FS: fs})
 	}
-	return out, nil
+	return measured, skipped
+}
+
+// unescapeMountField decodes the octal escapes the kernel writes into
+// /proc/mounts for space, tab, newline and backslash. Without this a
+// mountpoint containing a space is reported with a literal "\040".
+func unescapeMountField(s string) string {
+	if !strings.Contains(s, `\`) {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+3 < len(s) {
+			if v, err := strconv.ParseUint(s[i+1:i+4], 8, 8); err == nil {
+				b.WriteByte(byte(v))
+				i += 3
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
 }

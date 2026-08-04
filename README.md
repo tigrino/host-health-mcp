@@ -80,7 +80,7 @@ Full boundary statement: [`doc/REQUIREMENTS.txt`](doc/REQUIREMENTS.txt)
 operator workstation                target host
 +--------------------+               +--------------------------------+
 | MCP client         |               |  host-health-mcp-daemon        |
-|   (Claude, etc.)   |               |    unprivileged uid            |
+|                    |               |    unprivileged uid            |
 |                    |               |    NoNewPrivileges=yes         |
 |   host-health-mcp- |  mTLS HTTPS   |    empty cap set               |
 |   client <--------------+--------->|    /v1/<tool>                  |

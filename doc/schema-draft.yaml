@@ -18,7 +18,8 @@ info:
     name: Albert 'Tigr' Zenkoff
     email: albert@tigr.net
   license:
-    name: Proprietary - internal use
+    name: MIT
+    identifier: MIT
 
 servers:
   - url: https://{host}:{port}/v1

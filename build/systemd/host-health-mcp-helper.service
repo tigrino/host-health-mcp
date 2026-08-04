@@ -16,6 +16,40 @@ User=root
 Group=root
 NoNewPrivileges=yes
 
+# Resource ceilings on the ROOT half. The helper caps concurrent
+# daemon connections at maxConns = 16 in its accept loop, but that is
+# in-process self-restraint in a program the network-facing daemon
+# talks to; the kernel-enforced limits below hold even if that code is
+# wrong. These numbers and maxConns are derived from each other and
+# must be changed together.
+#
+# Memory: worst case per connection is firewall_inspect — 32 MiB of
+# captured ruleset plus 16 MiB per set fetch, and unmarshalling that
+# JSON costs several times the wire bytes again. 16 connections is
+# therefore ~768 MiB of captured bytes, which is what sets the 1 GiB
+# hard ceiling. MemoryHigh= throttles and reclaims first so the common
+# case is slow rather than fatal; MemoryMax= is the backstop. These are
+# ceilings, not reservations — they cost nothing on a host that never
+# approaches them.
+#
+# TasksMax counts kernel tasks: every OS thread plus every child. Each
+# in-flight op holds a thread blocked in wait4 plus its subprocess, and
+# the Go runtime spins up additional Ms toward GOMAXPROCS to keep Ps
+# running while those threads are blocked — so on a 64-core host the
+# thread count is dominated by GOMAXPROCS, not by maxConns. Exceeding
+# TasksMax is not graceful: clone() returning EAGAIN makes the runtime
+# throw an unrecoverable "failed to create new OS thread". 512 is a
+# runaway guard with room for any core count, not a tight budget.
+#
+# LimitNOFILE likewise: 16 connections plus subprocess pipes plus
+# journald is on the order of 200 fds. systemd sets soft=hard here,
+# and Go raises soft to hard at startup, so setting this too low is
+# what would make EMFILE reachable in the accept loop.
+TasksMax=512
+MemoryHigh=768M
+MemoryMax=1G
+LimitNOFILE=8192
+
 # Capability sets are templated at install time from manifest.yml.
 # The shipped base unit keeps only CAP_CHOWN in bounding so the helper
 # can chown its unix socket and runtime directory at startup; ambient

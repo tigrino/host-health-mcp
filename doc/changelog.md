@@ -248,11 +248,153 @@ that parses HTTP status codes.
   `systemctl disable` remains the operator's step, for the same reason
   the package never enables.
 
+- **A stuck tool no longer wedges itself permanently (audit C-3).**
+  `Cache.Do` accepted a `context.Context` and never read it.
+  `singleflight.Group.Do` has no cancellation, so the per-tool timeout
+  only bit for tools whose `Handle` observed the context itself — the
+  helper-backed ones. A tool that blocks in a syscall instead did not
+  come back.
+
+  The reachable case was `system`: it calls `unix.Statfs` on every
+  entry in `/proc/mounts`, and `readMounts` excluded the pseudo
+  filesystems but not `nfs`, `cifs`, or `fuse` — exactly the ones that
+  hang. On a host with a stale NFS mount, `Statfs` blocks in D-state
+  where no timeout and no signal reach it. The 3 s tool timeout could
+  not interrupt it, the handler goroutine blocked forever, and because
+  the call was in flight under singleflight, every later `system`
+  request joined the same stuck call. The tool was dead for the
+  process lifetime; only a daemon restart cleared it.
+
+  Both halves are fixed. `Cache.Do` now waits on `ctx.Done()` as well
+  as the result, and calls `Forget` **on deadline only** so the next
+  caller starts a fresh invocation instead of joining the wedged one —
+  which is what makes the tool recover on its own once the cause
+  clears. The trade is that a persistently stuck function leaves one
+  abandoned goroutine per timed-out call; that is deliberate, and
+  preferable to a tool that stays silently dead.
+
+  Forgetting on plain *cancellation* would have been a much worse bug
+  than the one being fixed, and a review of this release caught it
+  before release. The context here derives from the HTTP request, which
+  `net/http` cancels when the client disconnects — so a caller issuing
+  and aborting requests in a loop could drop the singleflight entry out
+  from under a running leader and start a fresh concurrent invocation
+  of the same tool each time. That is exactly the fork storm onto the
+  helper this package exists to prevent (REQ 5.1). On a deadline the
+  leader's own context has expired too, so no overlap arises.
+
+  The same review caught a second regression in the same six lines.
+  Moving from `singleflight.Do` to `DoChan` silently changed what
+  happens when a tool handler panics: the `Do` path ran the function on
+  the caller's goroutine, where `net/http`'s per-connection recover
+  contained it, while the `DoChan` path re-throws with `go panic(e)` in
+  a bare goroutine, which no recover can catch and which terminates the
+  process. Any nil-deref in any of the 19 tool handlers would have gone
+  from dropping one request to killing the daemon — and with systemd's
+  default `StartLimitBurst=5`, a repeatable panic would have parked the
+  unit permanently. The function passed to `DoChan` now recovers and
+  converts to an error. Verified by building both variants and
+  observing the process die without it.
+
+  `readMounts` also skips filesystems whose `statfs` can block, so the
+  realistic trigger does not arise: reporting one filesystem's usage is
+  never worth wedging a goroutine in a health check. The skip is
+  **reported** — an operator whose largest volume is NFS- or
+  virtiofs-backed gets a warning naming the omitted mountpoints, rather
+  than silently losing capacity reporting for the volume that matters
+  most. `virtiofs` is included explicitly: it is FUSE-based but reports
+  its own fstype, so neither an exact `fuse` match nor a `fuse.` prefix
+  catches it, and its `statfs` is answered by `virtiofsd` on the
+  hypervisor. The parser moved behind an `io.Reader` so it is testable
+  without a real `/proc`, and now decodes the kernel's octal escapes —
+  a mountpoint containing a space was previously reported as
+  `/mnt/my\040disk`.
+
+  Cache entries are now stamped when the observation *starts* rather
+  than when the tool returns. Stamping at completion meant a call that
+  took ten seconds to gather host state returned it with
+  `cache_age_s: 0` and held it a full TTL beyond that — a health
+  checker reporting stale state as current, in a field that is part of
+  the wire contract.
+
+- **The root helper bounds its accept loop (audit A-2).** It spawned a
+  goroutine per connection with no cap. The daemon limits its own
+  helper fan-out to 8, but daemon-side self-restraint is precisely what
+  a privilege boundary must not depend on — the helper exists because
+  the daemon is the network-facing half that may be compromised.
+  Per-connection cost is high in a root process: `firewall_inspect`
+  alone can allocate 32 MiB for a ruleset plus 16 MiB per set fetch.
+
+  Concurrent connections are now capped at 16 and excess ones are
+  closed rather than queued, so a caller over the limit learns
+  immediately instead of parking file descriptors on the kernel accept
+  queue. The SO_PEERCRED check runs before the semaphore, so an
+  unauthorised peer cannot occupy a slot for the duration of its own
+  rejection, and rejections are logged at most once a minute — the
+  daemon sees only EOF, so the condition would otherwise be invisible
+  on both sides.
+
+  The unit gains `TasksMax=512`, `MemoryHigh=768M`, `MemoryMax=1G` and
+  `LimitNOFILE=8192`, which hold even if the in-process cap is wrong.
+  The connection cap and the memory ceiling are derived from each
+  other and a test asserts the relation against the shipped unit file,
+  because a first attempt at this paired 32 connections with
+  `MemoryMax=512M` — short by a factor of three once
+  `firewall_inspect`'s 32 MiB ruleset plus 16 MiB per set fetch is
+  counted. On a host with the large nftables sets that op is
+  explicitly sized for, the *root* helper would have been OOM-killed
+  under ordinary operator polling. `TasksMax` was similarly too tight:
+  it counts kernel tasks, and the Go runtime spins up threads toward
+  `GOMAXPROCS` while others block in `wait4`, so on a many-core host
+  the count is dominated by core count rather than connection count —
+  and exceeding it makes the runtime abort unrecoverably rather than
+  degrade.
+
+  Separately, the loop returned a fatal error on any accept failure
+  other than `ErrClosed`, reaching `log.Fatalf`. `EMFILE` is reachable
+  from this very finding and clears by itself, so the privileged half
+  of the system exited on a transient condition. Resource-exhaustion
+  errnos are now retried with capped exponential backoff.
+
+- **The licence contradiction shipped in the package is resolved (audit
+  C-5).** `LICENSE` is MIT, `build/nfpm/copyright` declares MIT in
+  Debian format and installs to `/usr/share/doc/*/copyright` in both
+  packages, and the README repo map says MIT — while
+  `doc/schema-draft.yaml` declared `Proprietary - internal use` in its
+  OpenAPI `info` block, and that file installs as
+  `/usr/share/doc/host-health-mcp-server/schema.yaml`. Every package
+  therefore shipped both claims.
+
+  The schema now states MIT, with the SPDX `identifier` field OpenAPI
+  3.1 provides. MIT is what `LICENSE` has always said and what every
+  released tag has already published; the proprietary line was the
+  outlier.
+
+- **The last AI-tool references are out of the published tree (audit
+  C-4).** One in the README architecture diagram and one in a 1.19.x
+  changelog entry naming a file that is gitignored and therefore not in
+  the published tree at all. The repo-map entry the audit also listed
+  had already gone.
+
+  The two commit subjects the finding names are reachable from `main`
+  and are left alone: correcting them means rewriting published
+  history, which is not a trade this project makes.
+
 - **Audit B-4 needed no change.** The postinst drop-in that denied the
   daemon's own inbound traffic, and the non-existent `dns:`/`resolvers:`
   config key it read, were both fixed in 2.1.0 by the `ip_filter_allow`
   rework. Re-verified against `config.Daemon`, `caps-template.sh` and
   `doc/install.md`.
+
+- **Audit B-3 and B-5 are accepted as designed, not deferred.** B-3
+  observes that the redactor passes email addresses where REQ 6.3 names
+  them in the scrub set; B-5 that any certificate the configured CA
+  issued reaches the whole tool surface, with no per-caller
+  authorization tier. Both are deliberate: the tool surface is
+  read-only host telemetry, and the trust boundary is the operator's
+  PKI — who holds a certificate is the operator's decision, enforced
+  where operators already manage it. Recorded here so a later reader
+  does not mistake either for an oversight.
 
 - **A pre-existing data race in the test harness is fixed.** The
   httpserver tests polled `Server.listener` without synchronisation
@@ -684,7 +826,8 @@ ship them as separate patch releases:
 
 Documents updated:
 
-- `CLAUDE.md`: helper-op count refreshed (14 → 23) and listed in
+- Repository contributor brief (not published; see `.gitignore`):
+  helper-op count refreshed (14 → 23) and listed in
   full from `daemon/internal/shared/proto/ops.go`; workload-plugin
   status replaced with the accurate 1.18.0 / 1.19.0 description
   (all four implemented, `nginx_apache` reads the access log
