@@ -632,6 +632,47 @@ that parses HTTP status codes.
   swallowed the capability generator's exit status since 2.1.0, and the
   example ownership in `doc/install.md` matches the daemon user.
 
+- **Post-release audit corrections.** A four-way audit of the 2.3.0
+  commits found several remediations that were wrong, incomplete, or
+  had introduced regressions. Those are described in the commit that
+  fixed them; the tests that pin them landed in the commit after,
+  because mutation-checking showed five of six had no test at all —
+  reverting the fix left the suite green.
+
+  Further defects closed in the same pass:
+
+  `security` announced "rkhunter binary present but
+  /var/log/rkhunter.log absent" when the helper op had *failed while
+  scanning that file*. The op-error branch had no early return, so the
+  diagnosis was built from a zero-valued struct: a correct `errors[]`
+  entry with a false warning beside it, which is worse than silence.
+
+  `nfsd` was listed as a filesystem whose `statfs` can block. It is the
+  pseudo-filesystem at `/proc/fs/nfsd` and does not block, so every NFS
+  *server* emitted a skipped-mount warning for a mount it never needed
+  to skip.
+
+  The backup empty-state warning was worded as a parse error on a file
+  that parsed cleanly, sending the reader to look for JSON syntax that
+  was not there.
+
+  `build.sh` still printed "skipping .deb production" and continued to
+  "Done." when nfpm was missing — a release run producing no packages
+  and reporting success. That is the exact pattern the scanner gate
+  three blocks above cites as its own justification. Now required,
+  with `ALLOW_MISSING_NFPM=1` as the deliberate opt-out.
+
+  The `postrm` now disables both units before reloading. Leaving it to
+  the operator meant a dangling enablement symlink after `apt remove`
+  and a reinstall that came back silently enabled — a listener
+  starting at boot because of a decision nobody made.
+
+  The capability generator now has a 34-case regression suite that runs
+  from `build.sh`. It decides what the root helper may do, runs from
+  the postinst under `set -eu` on every install, and is shell parsing
+  YAML with awk; it had no tests, and that is where the
+  `storage_backends: []` critical came from.
+
 - **Audit B-4 needed no change.** The postinst drop-in that denied the
   daemon's own inbound traffic, and the non-existent `dns:`/`resolvers:`
   config key it read, were both fixed in 2.1.0 by the `ip_filter_allow`

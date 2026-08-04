@@ -267,13 +267,22 @@ func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 	// root:adm 0640 on Debian and the daemon user can stat but not
 	// read it. The helper (root, CAP_DAC_READ_SEARCH) covers both.
 	var rk helperRkhunter
+	rkFailed := false
 	if err := t.hc.CallJSON(ctx, proto.OpRkhunterSummary, "", &rk); err != nil {
 		addOpError(proto.OpRkhunterSummary, err)
+		rkFailed = true
 	}
 	d.Rkhunter.Present = rk.Present || existsOrWarn("rkhunter", addWarning, "/usr/bin/rkhunter", "/usr/sbin/rkhunter")
 	d.Rkhunter.LastRunTS = rk.LastRunTS
 	d.Rkhunter.WarningCount = rk.WarningCount
-	if d.Rkhunter.Present && rk.LastRunTS == nil {
+	// The diagnoses below read a ZERO-VALUED rk when the op failed, so
+	// they announced "the log is absent" for a call that reached the
+	// file and failed while scanning it. The errors[] entry was right
+	// and the warning next to it was wrong, which is worse than saying
+	// nothing.
+	if rkFailed {
+		// The op error is already recorded; do not diagnose on top of it.
+	} else if d.Rkhunter.Present && rk.LastRunTS == nil {
 		addWarning("security: rkhunter binary present but /var/log/rkhunter.log absent; " +
 			"last_run_ts and warning_count null")
 	} else if d.Rkhunter.Present && rk.LastRunTS != nil && rk.WarningCount == nil {

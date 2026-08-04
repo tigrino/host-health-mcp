@@ -210,7 +210,11 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Empty for any path outside /v1/. The limiter only buckets
+	// NOT empty for a path outside /v1/: strings.CutPrefix returns the
+	// original string when the prefix is absent, so toolName is the
+	// caller's whole path there. That is deliberate — it is what the
+	// audit line records — and it is why the value is truncated below.
+	// The limiter only buckets
 	// per-tool for the expensive set, so an unroutable path meters
 	// against the caller's global bucket alone — which is the bucket
 	// that has to bound this.

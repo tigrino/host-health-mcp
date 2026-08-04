@@ -87,3 +87,36 @@ func TestHandleReportsSkippedBlockingMounts(t *testing.T) {
 		t.Errorf("skipped mount not reported; warnings = %v", warnings)
 	}
 }
+
+// NEGATIVE: nfsd is the pseudo-filesystem at /proc/fs/nfsd, not a
+// mounted NFS share. statfs on it does not block, so listing it as
+// blocking made every NFS SERVER emit a skipped-mount warning for a
+// mount it never needed to skip — noise in the field, on exactly the
+// hosts most likely to also have real NFS mounts.
+func TestNfsdIsNotTreatedAsBlocking(t *testing.T) {
+	if mayBlockOnStatfs("nfsd") {
+		t.Error("nfsd classified as blocking; it is /proc/fs/nfsd and does not block")
+	}
+	// The real network filesystems still are.
+	for _, fs := range []string{"nfs", "nfs4"} {
+		if !mayBlockOnStatfs(fs) {
+			t.Errorf("%q must still be treated as blocking", fs)
+		}
+	}
+}
+
+// NEGATIVE: an NFS server's /proc/fs/nfsd must not appear in the
+// skipped list at all — it is dropped as a pseudo-filesystem.
+func TestNfsdProducesNoSkippedWarning(t *testing.T) {
+	withMounts(t, "/dev/sda1 / ext4 rw 0 0\nnfsd /proc/fs/nfsd nfsd rw 0 0\n")
+
+	_, warnings, err := (&Tool{}).Handle(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	for _, w := range warnings {
+		if strings.Contains(w, "nfsd") {
+			t.Errorf("spurious skipped-mount warning on an NFS server: %q", w)
+		}
+	}
+}

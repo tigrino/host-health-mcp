@@ -124,9 +124,23 @@ CHANGELOG_DATE=$(date -u -R -d "@$SOURCE_DATE_EPOCH" 2>/dev/null || date -u -R)
 } | gzip -9n > "$DIST/changelog.gz"
 
 # Step 5: nfpm per arch.
+#
+# Required, for the same reason the scanners above are. This block used
+# to print "skipping .deb production" and continue to "Done." — a
+# release run that produced no packages and reported success. The
+# comment on the scanner gate cites that very failure; leaving it in
+# place three blocks below would have been a joke at the reader's
+# expense. ALLOW_MISSING_NFPM=1 opts out deliberately and says so.
 if ! command -v nfpm >/dev/null 2>&1; then
-    echo "nfpm not installed; skipping .deb production." >&2
-    echo "Install from https://nfpm.goreleaser.com/ to produce packages." >&2
+    if [ "${ALLOW_MISSING_NFPM:-0}" = "1" ]; then
+        echo "==> WARNING: nfpm not installed and ALLOW_MISSING_NFPM=1;" \
+             "this run produced NO packages" >&2
+    else
+        echo "build.sh: nfpm is required to produce packages but is not installed." >&2
+        echo "  install from https://nfpm.goreleaser.com/, or set" >&2
+        echo "  ALLOW_MISSING_NFPM=1 to build binaries only." >&2
+        exit 1
+    fi
 else
     for ARCH in amd64 arm64; do
         for PKG in server client; do

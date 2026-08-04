@@ -19,6 +19,15 @@ case "${1:-}" in
 esac
 
 if [ -d /run/systemd/system ]; then
+    # Disable BEFORE the reload. The package never enables these units,
+    # so it has no business leaving an enablement symlink behind
+    # either: after `apt remove` an operator's own `systemctl enable`
+    # link dangles, systemd complains on every reload, and a later
+    # reinstall comes back silently enabled — a network listener
+    # starting at boot because of a decision nobody made this time.
+    # dh_installsystemd disables on remove for exactly this reason.
+    systemctl --system disable \
+        host-health-mcp.service host-health-mcp-helper.service >/dev/null 2>&1 || true
     systemctl --system daemon-reload >/dev/null 2>&1 || true
 fi
 

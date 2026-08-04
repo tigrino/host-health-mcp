@@ -291,7 +291,7 @@ type mountEntry struct {
 // fstype carries the backing implementation ("fuse.sshfs").
 var blockingFSTypes = map[string]bool{
 	// Network.
-	"nfs": true, "nfs4": true, "nfsd": true,
+	"nfs": true, "nfs4": true,
 	"cifs": true, "smb3": true, "smbfs": true,
 	"afs": true, "coda": true, "ncpfs": true,
 	"9p": true, "ceph": true, "glusterfs": true,
@@ -366,6 +366,11 @@ func parseMounts(r io.Reader) (measured, skipped []mountEntry, err error) {
 		case "proc", "sysfs", "cgroup", "cgroup2", "devpts", "tmpfs", "devtmpfs",
 			"mqueue", "debugfs", "tracefs", "securityfs", "pstore", "bpf",
 			"fusectl", "configfs", "fuse.gvfsd-fuse", "rpc_pipefs", "nsfs",
+			// nfsd is the pseudo-filesystem at /proc/fs/nfsd, not a
+			// mounted NFS share. statfs on it does not block, so
+			// listing it as blocking made every NFS SERVER report a
+			// skipped mount it never needed to skip.
+			"nfsd",
 			"autofs", "binfmt_misc", "overlay", "ramfs":
 			continue
 		}

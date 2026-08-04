@@ -123,7 +123,7 @@ func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 		// State file present but malformed — surface and fall through
 		// to the log-path branch so the operator at least gets the log
 		// timestamp.
-		warnings = append(warnings, "backup: state file "+t.statePath+" parse: "+err.Error())
+		warnings = append(warnings, "backup: state file "+t.statePath+": "+err.Error())
 	} else if used {
 		d.LastStartTS = state.LastStartTS
 		d.LastEndTS = state.LastEndTS

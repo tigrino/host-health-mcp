@@ -596,11 +596,14 @@ files from under two running services, so the daemon carried on
 serving from a binary no longer on disk and the helper kept its root
 privileges and its socket.
 
-`systemctl disable` is still yours to run, and still first. The
-package deliberately never enables these units, so it does not
-presume to drop the enablement symlinks either; left behind, they
-point at unit files that no longer exist and systemd will complain on
-every reload.
+The `systemctl disable` above is belt-and-braces: from 2.3.0 the
+`postrm` disables both units itself before reloading. It was left to
+the operator at first, on the reasoning that a package which never
+enables should not disable — but the consequence was a dangling
+enablement symlink after `apt remove`, a systemd complaint on every
+reload, and a later reinstall coming back silently enabled. A network
+listener starting at boot because of a decision nobody made this time
+is worse than the asymmetry.
 
 Removing rather than purging leaves the generated drop-ins in place,
 which is the right behaviour for a reinstall — `caps.conf` matches the
