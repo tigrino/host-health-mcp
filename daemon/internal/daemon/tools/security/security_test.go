@@ -19,7 +19,7 @@ func TestIsSSHDLine(t *testing.T) {
 		want bool
 	}{
 		{"Apr 18 12:34:56 host1 sshd[12345]: Accepted publickey for operator from 10.0.0.5", true},
-		{"Apr 18 12:34:56 host1 sshd-session[12345]: Disconnected from 1.2.3.4 port 54321 [preauth]", true},
+		{"Apr 18 12:34:56 host1 sshd-session[12345]: Disconnected from 192.0.2.10 port 54321 [preauth]", true},
 		{"Apr 18 12:34:56 host1 CRON[99]: pam_unix(cron:session): session opened", false},
 		{"Apr 18 12:34:56 host1 sshd-keygen[1]: regenerating host keys", false},
 	}
@@ -42,11 +42,11 @@ func TestIsSSHFailedLine(t *testing.T) {
 		line string
 		want bool
 	}{
-		{"Failed password for invalid user root from 1.2.3.4 port 12345 ssh2", true},
-		{"Disconnected from 1.2.3.4 port 54321 [preauth]", true},
-		{"Connection closed by 1.2.3.4 port 54321 [preauth]", true},
+		{"Failed password for invalid user root from 192.0.2.10 port 12345 ssh2", true},
+		{"Disconnected from 192.0.2.10 port 54321 [preauth]", true},
+		{"Connection closed by 192.0.2.10 port 54321 [preauth]", true},
 		{"error: kex_exchange_identification: read: Connection reset by peer", true},
-		{"Received disconnect from 1.2.3.4 port 54321:11: Bye Bye [preauth]", false}, // double-count guard
+		{"Received disconnect from 192.0.2.10 port 54321:11: Bye Bye [preauth]", false}, // double-count guard
 		{"Accepted publickey for operator from 10.0.0.5 port 12345 ssh2", false},
 		{"Disconnected from user operator 10.0.0.5 port 12345", false}, // post-auth normal logout, no [preauth]
 	}
@@ -68,12 +68,12 @@ func TestReadAuthLogCountersEndToEnd(t *testing.T) {
 	lines := []string{
 		"Apr 18 12:34:56 host1 sshd[10]: Accepted publickey for operator from 10.0.0.5 port 1 ssh2",
 		"Apr 18 12:34:57 host1 sshd-session[11]: Accepted publickey for operator from 10.0.0.5 port 2 ssh2",
-		"Apr 18 12:35:00 host1 sshd-session[20]: Failed password for invalid user root from 1.2.3.4 port 12345 ssh2",
-		"Apr 18 12:35:01 host1 sshd-session[21]: Disconnected from 1.2.3.4 port 54321 [preauth]",
-		"Apr 18 12:35:01 host1 sshd-session[21]: Received disconnect from 1.2.3.4 port 54321:11: Bye Bye [preauth]",
-		"Apr 18 12:35:02 host1 sshd-session[22]: Connection closed by 5.6.7.8 port 41234 [preauth]",
+		"Apr 18 12:35:00 host1 sshd-session[20]: Failed password for invalid user root from 192.0.2.10 port 12345 ssh2",
+		"Apr 18 12:35:01 host1 sshd-session[21]: Disconnected from 192.0.2.10 port 54321 [preauth]",
+		"Apr 18 12:35:01 host1 sshd-session[21]: Received disconnect from 192.0.2.10 port 54321:11: Bye Bye [preauth]",
+		"Apr 18 12:35:02 host1 sshd-session[22]: Connection closed by 192.0.2.20 port 41234 [preauth]",
 		"Apr 18 12:35:03 host1 sshd-session[23]: error: kex_exchange_identification: read: Connection reset by peer",
-		"Apr 18 12:35:04 host1 sshd[24]: Disconnected from 9.8.7.6 port 30303 [preauth]",
+		"Apr 18 12:35:04 host1 sshd[24]: Disconnected from 192.0.2.30 port 30303 [preauth]",
 		"Apr 18 12:35:05 host1 CRON[99]: pam_unix(cron:session): session opened for user root",
 	}
 

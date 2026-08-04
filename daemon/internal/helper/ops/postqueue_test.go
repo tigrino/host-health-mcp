@@ -4,7 +4,10 @@ import "testing"
 
 func TestParsePostqueueOutput_Empty(t *testing.T) {
 	in := []byte("Mail queue is empty\n")
-	got := parsePostqueueOutput(in)
+	got, err := parsePostqueueOutput(in)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got.QueueDepth != 0 || got.DeferredCount != 0 {
 		t.Fatalf("empty queue: got %+v want zero values", got)
 	}
@@ -20,7 +23,10 @@ GHIJKL5678     2345 Mon Jun  1 12:01:00  sender@example.com
 
 -- 3 Kbytes in 2 Requests.
 `)
-	got := parsePostqueueOutput(in)
+	got, err := parsePostqueueOutput(in)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got.QueueDepth != 2 {
 		t.Fatalf("queue_depth: got %d want 2", got.QueueDepth)
 	}
@@ -43,7 +49,10 @@ MNOPQR9012     8910 Mon Jun  1 12:02:00  s@example.com
 
 -- 11 Kbytes in 3 Requests.
 `)
-	got := parsePostqueueOutput(in)
+	got, err := parsePostqueueOutput(in)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got.QueueDepth != 3 {
 		t.Fatalf("queue_depth: got %d want 3", got.QueueDepth)
 	}
@@ -58,7 +67,10 @@ ABCDEFGHIJKL     42 Mon Jun  1 12:00:00  s@example.com
                                          r@example.com
 -- 0 Kbytes in 1 Requests.
 `)
-	got := parsePostqueueOutput(in)
+	got, err := parsePostqueueOutput(in)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got.QueueDepth != 1 {
 		t.Fatalf("queue_depth: got %d want 1", got.QueueDepth)
 	}

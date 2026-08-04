@@ -9,13 +9,13 @@ import (
 
 func TestSummariseScan(t *testing.T) {
 	cases := map[string]string{
-		"none requested":                                "idle",
-		"scrub in progress since Sun ...":               "scrubbing",
-		"resilver in progress since ...":                "resilvering",
-		"scrub repaired 0B in 00:30:00 with 0 errors":   "scrubbed",
-		"scrub completed":                               "scrubbed",
-		"resilver completed":                            "resilvered",
-		"something else entirely":                       "unknown",
+		"none requested":                              "idle",
+		"scrub in progress since Sun ...":             "scrubbing",
+		"resilver in progress since ...":              "resilvering",
+		"scrub repaired 0B in 00:30:00 with 0 errors": "scrubbed",
+		"scrub completed":                             "scrubbed",
+		"resilver completed":                          "resilvered",
+		"something else entirely":                     "unknown",
 	}
 	for in, want := range cases {
 		if got := summariseScan(in); got != want {
@@ -48,7 +48,10 @@ config:
 
 errors: No known data errors
 `
-	p := parseZpoolStatus("tank", []byte(in))
+	p, err := parseZpoolStatus("tank", []byte(in))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if p.State != "ONLINE" {
 		t.Errorf("State = %q want ONLINE", p.State)
 	}
@@ -128,7 +131,10 @@ Inst apt [2.6.1] (2.7.0 Debian:12.5/stable)
 Conf libssl3 (3.0.13-1)
 Conf curl (7.88.1-11)
 `
-	sec, reg := countUpgrades([]byte(in))
+	sec, reg, err := countUpgrades([]byte(in))
+	if err != nil {
+		t.Fatal(err)
+	}
 	// libssl3's pocket includes "security"; curl + apt do not.
 	if sec != 1 {
 		t.Errorf("security count = %d want 1", sec)
@@ -144,7 +150,10 @@ libfoo-dev				hold
 curl					install
 weird-pkg				hold
 `
-	got := extractHeld([]byte(in))
+	got, err := extractHeld([]byte(in))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(got) != 2 {
 		t.Fatalf("len = %d want 2; got %v", len(got), got)
 	}

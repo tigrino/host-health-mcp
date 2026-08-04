@@ -23,13 +23,13 @@ func TestClassifySshJournalLine(t *testing.T) {
 		want sshJournalClass
 	}{
 		{"Accepted publickey for operator from 10.0.0.5 port 1 ssh2", sshJournalAccepted},
-		{"Failed password for invalid user root from 1.2.3.4 port 1 ssh2", sshJournalFailed},
-		{"Disconnected from 1.2.3.4 port 54321 [preauth]", sshJournalFailed},
-		{"Connection closed by 5.6.7.8 port 41234 [preauth]", sshJournalFailed},
+		{"Failed password for invalid user root from 192.0.2.10 port 1 ssh2", sshJournalFailed},
+		{"Disconnected from 192.0.2.10 port 54321 [preauth]", sshJournalFailed},
+		{"Connection closed by 192.0.2.20 port 41234 [preauth]", sshJournalFailed},
 		{"error: kex_exchange_identification: read: Connection reset by peer", sshJournalFailed},
 
 		// double-count guard
-		{"Received disconnect from 1.2.3.4 port 54321:11: Bye Bye [preauth]", sshJournalOther},
+		{"Received disconnect from 192.0.2.10 port 54321:11: Bye Bye [preauth]", sshJournalOther},
 
 		// normal post-auth logout — no [preauth] suffix, must not count
 		{"Disconnected from user operator 10.0.0.5 port 12345", sshJournalOther},
@@ -56,9 +56,9 @@ func TestSshJournalTruncated(t *testing.T) {
 	const day = int64(24 * 3600)
 	cutoff := now - day // sshJournalWindowS
 	cases := []struct {
-		name           string
-		btime, oldest  int64
-		want           bool
+		name          string
+		btime, oldest int64
+		want          bool
 	}{
 		// Up 10 days; journal only retains ~6h → oldest far after cutoff.
 		{"rotated within window", now - 10*day, now - 6*3600, true},

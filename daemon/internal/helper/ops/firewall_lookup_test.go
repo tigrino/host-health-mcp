@@ -53,7 +53,7 @@ func TestAddrMatchesQuery(t *testing.T) {
 	if !addrMatchesQuery(netip.MustParseAddr("203.0.113.7"), q4cidr) {
 		t.Error("addr inside CIDR should hit")
 	}
-	if addrMatchesQuery(netip.MustParseAddr("203.0.114.1"), q4cidr) {
+	if addrMatchesQuery(netip.MustParseAddr("198.51.100.1"), q4cidr) {
 		t.Error("addr outside CIDR should miss")
 	}
 	if addrMatchesQuery(netip.MustParseAddr("203.0.113.7"), q6) {

@@ -5,10 +5,13 @@ import "testing"
 // TestParseFail2banJailListExtractsNames covers the happy path: the
 // list reflects what `fail2ban-client status` emits.
 func TestParseFail2banJailListExtractsNames(t *testing.T) {
-	out := parseFail2banJailList([]byte(
+	out, err := parseFail2banJailList([]byte(
 		"Status\n" +
 			"|- Number of jail:	2\n" +
 			"`- Jail list:	sshd, recidive\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(out) != 2 || out[0] != "sshd" || out[1] != "recidive" {
 		t.Fatalf("parsed list = %v, want [sshd recidive]", out)
 	}
@@ -19,12 +22,12 @@ func TestParseFail2banJailListExtractsNames(t *testing.T) {
 // regex is the gate; the helper drops names that fail it.
 func TestJailNameRegexFiltersInvalid(t *testing.T) {
 	bad := []string{
-		"-h",          // flag-like
-		"foo;bar",     // command separator
-		"--version",   // long flag
-		"foo bar",     // whitespace
-		"",            // empty
-		"$(reboot)",   // shell expansion
+		"-h",        // flag-like
+		"foo;bar",   // command separator
+		"--version", // long flag
+		"foo bar",   // whitespace
+		"",          // empty
+		"$(reboot)", // shell expansion
 	}
 	good := []string{"sshd", "recidive", "postfix-sasl", "ssh.aggressive"}
 	for _, n := range bad {

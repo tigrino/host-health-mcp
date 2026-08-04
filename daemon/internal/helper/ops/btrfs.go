@@ -1,9 +1,9 @@
 package ops
 
 import (
-	"bufio"
 	"bytes"
 	"context"
+	"host-health-mcp/daemon/internal/shared/linescan"
 	"regexp"
 	"strconv"
 	"strings"
@@ -66,7 +66,7 @@ func BtrfsScrub(ctx context.Context, param string) (any, error) {
 	}
 
 	out := BtrfsScrubResult{Mountpoint: param}
-	scanner := bufio.NewScanner(bytes.NewReader(stdout))
+	scanner := linescan.New(bytes.NewReader(stdout), "btrfs scrub status")
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		switch {
@@ -95,6 +95,9 @@ func BtrfsScrub(ctx context.Context, param string) (any, error) {
 				out.ErrorsCount = v
 			}
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, &dispatch.Error{Code: proto.CodeToolFailed, Message: err.Error()}
 	}
 	return out, nil
 }

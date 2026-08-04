@@ -1,9 +1,11 @@
 package ops
 
 import (
-	"bufio"
 	"bytes"
 	"context"
+	"host-health-mcp/daemon/internal/helper/dispatch"
+	"host-health-mcp/daemon/internal/shared/linescan"
+	"host-health-mcp/daemon/internal/shared/proto"
 	"strconv"
 	"strings"
 
@@ -43,7 +45,11 @@ func ZpoolStatus(ctx context.Context, _ string) (any, error) {
 		if err != nil {
 			continue
 		}
-		out.Pools = append(out.Pools, parseZpoolStatus(name, statusOut))
+		pool, perr := parseZpoolStatus(name, statusOut)
+		if perr != nil {
+			return nil, &dispatch.Error{Code: proto.CodeToolFailed, Message: perr.Error()}
+		}
+		out.Pools = append(out.Pools, pool)
 	}
 	return out, nil
 }
@@ -51,15 +57,15 @@ func ZpoolStatus(ctx context.Context, _ string) (any, error) {
 // parseZpoolStatus extracts state, scan, errors_total from the
 // human-readable `zpool status` output.
 //
-//   pool: tank
-//   state: ONLINE
-//   scan: scrub repaired 0B in 00:30:00 with 0 errors on Sun ...
-//   ...
-//   errors: No known data errors
-func parseZpoolStatus(name string, out []byte) ZfsPool {
+//	pool: tank
+//	state: ONLINE
+//	scan: scrub repaired 0B in 00:30:00 with 0 errors on Sun ...
+//	...
+//	errors: No known data errors
+func parseZpoolStatus(name string, out []byte) (ZfsPool, error) {
 	p := ZfsPool{Name: name, State: "unknown", ScanState: "unknown"}
 
-	scanner := bufio.NewScanner(bytes.NewReader(out))
+	scanner := linescan.New(bytes.NewReader(out), "zpool status")
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		switch {
@@ -72,7 +78,10 @@ func parseZpoolStatus(name string, out []byte) ZfsPool {
 			p.ErrorsTotal = parseErrors(strings.TrimSpace(strings.TrimPrefix(line, "errors:")))
 		}
 	}
-	return p
+	if err := scanner.Err(); err != nil {
+		return ZfsPool{}, err
+	}
+	return p, nil
 }
 
 // summariseScan collapses the free-form scan line to a short tag

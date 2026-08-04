@@ -4,10 +4,10 @@
 package pressure
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"errors"
+	"host-health-mcp/daemon/internal/shared/linescan"
 	"io/fs"
 	"os"
 	"strconv"
@@ -67,12 +67,18 @@ func readSome(path string) *Metric {
 		}
 		return nil
 	}
-	scanner := bufio.NewScanner(bytes.NewReader(b))
+	scanner := linescan.New(bytes.NewReader(b), path)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if strings.HasPrefix(line, "some ") {
 			return parsePressureLine(line)
 		}
+	}
+	// A truncated read yields a confidently wrong number. Report
+	// "unknown" instead — for a health check the two are not the
+	// same thing.
+	if scanner.Err() != nil {
+		return nil
 	}
 	return nil
 }
@@ -84,7 +90,7 @@ func readSomeFull(path string) (*Metric, *Metric) {
 		return nil, nil
 	}
 	var some, full *Metric
-	scanner := bufio.NewScanner(bytes.NewReader(b))
+	scanner := linescan.New(bytes.NewReader(b), path)
 	for scanner.Scan() {
 		line := scanner.Text()
 		switch {
@@ -93,6 +99,12 @@ func readSomeFull(path string) (*Metric, *Metric) {
 		case strings.HasPrefix(line, "full "):
 			full = parsePressureLine(line)
 		}
+	}
+	// A truncated read yields a confidently wrong number. Report
+	// "unknown" instead — for a health check the two are not the
+	// same thing.
+	if scanner.Err() != nil {
+		return nil, nil
 	}
 	return some, full
 }

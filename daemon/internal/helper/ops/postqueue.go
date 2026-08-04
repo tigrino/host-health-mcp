@@ -1,9 +1,11 @@
 package ops
 
 import (
-	"bufio"
 	"bytes"
 	"context"
+	"host-health-mcp/daemon/internal/helper/dispatch"
+	"host-health-mcp/daemon/internal/shared/linescan"
+	"host-health-mcp/daemon/internal/shared/proto"
 	"strings"
 
 	helperexec "host-health-mcp/daemon/internal/helper/exec"
@@ -28,21 +30,29 @@ func Postqueue(ctx context.Context, _ string) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return parsePostqueueOutput(stdout), nil
+	res, perr := parsePostqueueOutput(stdout)
+	if perr != nil {
+		return nil, &dispatch.Error{Code: proto.CodeToolFailed, Message: perr.Error()}
+	}
+	return res, nil
 }
+
+// maxQueueDepth clamps the reported queue depth. Postfix will not
+// hold anywhere near this many messages before other limits bite.
+const maxQueueDepth = 10_000_000
 
 // parsePostqueueOutput is the pure parser exposed for testing.
 // QueueDepth comes from the trailing "-- N Kbytes in M Requests."
 // summary; DeferredCount is counted per-message from the indicator
 // suffix on each queue-id header line (no suffix == deferred, '*' ==
 // active, '!' == hold).
-func parsePostqueueOutput(stdout []byte) PostqueueResult {
+func parsePostqueueOutput(stdout []byte) (PostqueueResult, error) {
 	out := PostqueueResult{}
-	scanner := bufio.NewScanner(bytes.NewReader(stdout))
+	scanner := linescan.New(bytes.NewReader(stdout), "postqueue -p")
 	for scanner.Scan() {
 		line := scanner.Text()
 		if strings.Contains(line, "Mail queue is empty") {
-			return out
+			return out, nil
 		}
 		if strings.HasPrefix(line, "--") && strings.Contains(line, "Requests") {
 			fields := strings.Fields(line)
@@ -54,6 +64,17 @@ func parsePostqueueOutput(stdout []byte) PostqueueResult {
 							break
 						}
 						n = n*10 + int(c-'0')
+					}
+					// Clamp. n comes from postqueue's own summary line,
+					// but that line is derived from queue contents an
+					// external sender influences; a 64-bit value here
+					// would overflow anything downstream that narrows
+					// it, and a negative depth is meaningless.
+					if n < 0 {
+						n = 0
+					}
+					if n > maxQueueDepth {
+						n = maxQueueDepth
 					}
 					out.QueueDepth = n
 					// Do not return here — defer counting may
@@ -70,7 +91,10 @@ func parsePostqueueOutput(stdout []byte) PostqueueResult {
 			out.DeferredCount++
 		}
 	}
-	return out
+	if err := scanner.Err(); err != nil {
+		return PostqueueResult{}, err
+	}
+	return out, nil
 }
 
 // isDeferredHeaderLine identifies a deferred-message header row. The

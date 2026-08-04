@@ -143,7 +143,7 @@ func (t *Tool) Handle(ctx context.Context, body []byte) (any, []string, error) {
 	var req Request
 	if len(body) > 0 {
 		if err := schema.DecodeStrict(body, &req); err != nil {
-			return nil, nil, &tools.Error{Code: schema.ErrCodeBadArgument, Message: "firewall_lookup: " + err.Error()}
+			return nil, nil, &tools.Error{Code: schema.ErrCodeBadArgument, Message: schema.BoundMessage("firewall_lookup: " + err.Error())}
 		}
 	}
 	if strings.TrimSpace(req.Query) == "" {

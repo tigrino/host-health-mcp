@@ -1,9 +1,11 @@
 package ops
 
 import (
-	"bufio"
 	"context"
 	"errors"
+	"host-health-mcp/daemon/internal/helper/dispatch"
+	"host-health-mcp/daemon/internal/shared/linescan"
+	"host-health-mcp/daemon/internal/shared/proto"
 	"io"
 	"io/fs"
 	"os"
@@ -52,7 +54,7 @@ func RkhunterSummary(ctx context.Context, _ string) (any, error) {
 	defer f.Close()
 
 	count := 0
-	scanner := bufio.NewScanner(io.LimitReader(f, 16*1024*1024))
+	scanner := linescan.New(io.LimitReader(f, 16*1024*1024), "rkhunter.log")
 	scanner.Buffer(make([]byte, 64*1024), 1<<20)
 	for scanner.Scan() {
 		if strings.Contains(scanner.Text(), "Warning:") {
@@ -60,5 +62,8 @@ func RkhunterSummary(ctx context.Context, _ string) (any, error) {
 		}
 	}
 	out.WarningCount = &count
+	if err := scanner.Err(); err != nil {
+		return nil, &dispatch.Error{Code: proto.CodeToolFailed, Message: err.Error()}
+	}
 	return out, nil
 }

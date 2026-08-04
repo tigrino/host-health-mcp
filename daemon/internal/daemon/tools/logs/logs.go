@@ -83,9 +83,9 @@ func (*Tool) DefaultTimeout() time.Duration { return 5 * time.Second }
 
 // helperResult mirrors the helper's JournalQueryResult.
 type helperResult struct {
-	TotalCount int               `json:"total_count"`
-	ByUnit     map[string]int    `json:"by_unit"`
-	Samples    []helperSample    `json:"samples"`
+	TotalCount int            `json:"total_count"`
+	ByUnit     map[string]int `json:"by_unit"`
+	Samples    []helperSample `json:"samples"`
 }
 
 type helperSample struct {
@@ -150,7 +150,7 @@ func (t *Tool) Handle(ctx context.Context, body []byte) (any, []string, error) {
 	var req Request
 	if len(body) > 0 {
 		if err := schema.DecodeStrict(body, &req); err != nil {
-			return nil, nil, &tools.Error{Code: schema.ErrCodeBadArgument, Message: "logs: " + err.Error()}
+			return nil, nil, &tools.Error{Code: schema.ErrCodeBadArgument, Message: schema.BoundMessage("logs: " + err.Error())}
 		}
 	}
 	req.applyDefaults()

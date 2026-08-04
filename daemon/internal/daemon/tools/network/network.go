@@ -9,11 +9,11 @@
 package network
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/hex"
 	"fmt"
+	"host-health-mcp/daemon/internal/shared/linescan"
 	"net"
 	"net/netip"
 	"os"
@@ -235,7 +235,7 @@ func readDefaultRoutes(path, family string) ([]DefaultRoute, error) {
 		return nil, err
 	}
 	var out []DefaultRoute
-	scanner := bufio.NewScanner(bytes.NewReader(b))
+	scanner := linescan.New(bytes.NewReader(b), path)
 	first := true
 	for scanner.Scan() {
 		if family == "inet" && first {
@@ -279,6 +279,9 @@ func readDefaultRoutes(path, family string) ([]DefaultRoute, error) {
 				Dev: fields[9], Metric: int(metric),
 			})
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
 	}
 	return out, nil
 }

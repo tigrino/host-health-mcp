@@ -78,7 +78,10 @@ myfs /mnt/virtiofs virtiofs rw 0 0
 sshfs#user@host:/ /mnt/ssh fuse.sshfs rw 0 0
 /dev/sdb1 /data btrfs rw 0 0
 `
-	measured, skipped := parseMounts(strings.NewReader(procMounts))
+	measured, skipped, err := parseMounts(strings.NewReader(procMounts))
+	if err != nil {
+		t.Fatalf("parseMounts: %v", err)
+	}
 
 	wantMeasured := map[string]string{"/": "ext4", "/var": "xfs", "/data": "btrfs"}
 	if len(measured) != len(wantMeasured) {
@@ -115,7 +118,10 @@ devtmpfs /dev devtmpfs rw 0 0
 fusectl /sys/fs/fuse/connections fusectl rw 0 0
 /dev/sda1 / ext4 rw 0 0
 `
-	measured, skipped := parseMounts(strings.NewReader(procMounts))
+	measured, skipped, err := parseMounts(strings.NewReader(procMounts))
+	if err != nil {
+		t.Fatalf("parseMounts: %v", err)
+	}
 	if len(skipped) != 0 {
 		t.Errorf("skipped = %v, want none — pseudo-filesystems are not a blind spot", skipped)
 	}
@@ -133,7 +139,10 @@ func TestParseMountsDeduplicatesMountpoints(t *testing.T) {
 srv:/export /mnt/x nfs4 rw 0 0
 srv:/export /mnt/x nfs4 rw 0 0
 `
-	measured, skipped := parseMounts(strings.NewReader(procMounts))
+	measured, skipped, err := parseMounts(strings.NewReader(procMounts))
+	if err != nil {
+		t.Fatalf("parseMounts: %v", err)
+	}
 	if len(measured) != 1 {
 		t.Errorf("measured = %v, want one entry", measured)
 	}
@@ -163,8 +172,11 @@ func TestUnescapeMountField(t *testing.T) {
 }
 
 func TestParseMountsDecodesEscapedMountpoints(t *testing.T) {
-	measured, _ := parseMounts(strings.NewReader(
+	measured, _, err := parseMounts(strings.NewReader(
 		`/dev/sda1 /mnt/my\040disk ext4 rw 0 0` + "\n"))
+	if err != nil {
+		t.Fatalf("parseMounts: %v", err)
+	}
 	if len(measured) != 1 {
 		t.Fatalf("measured = %v", measured)
 	}
@@ -175,8 +187,11 @@ func TestParseMountsDecodesEscapedMountpoints(t *testing.T) {
 
 // Short or malformed lines must not panic or produce entries.
 func TestParseMountsIgnoresMalformedLines(t *testing.T) {
-	measured, skipped := parseMounts(strings.NewReader(
+	measured, skipped, err := parseMounts(strings.NewReader(
 		"\n\nshort\ntwo fields\n/dev/sda1 / ext4 rw 0 0\n"))
+	if err != nil {
+		t.Fatalf("parseMounts: %v", err)
+	}
 	if len(measured) != 1 || len(skipped) != 0 {
 		t.Errorf("measured = %v, skipped = %v", measured, skipped)
 	}

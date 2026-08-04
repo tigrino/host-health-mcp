@@ -548,6 +548,72 @@ that parses HTTP status codes.
   `go.mod` directive is a floor rather than a pin; that was fixed in
   2.1.0.
 
+- **Every line-oriented read is now bounded and error-checked (audit
+  A-9, C-10).** `bufio.Scanner` caps a line at 64 KiB by default and
+  simply stops on a longer one — `Scan()` returns false exactly as it
+  does at clean EOF. Fifteen scanners across ten files never called
+  `Err()`, so an over-long line truncated the input and the tool
+  returned a **wrong count with `status: ok`**. That is worse than a
+  failure: a health check reporting three queued messages when there
+  are thirty thousand gets believed. Postfix queue and fail2ban jail
+  output both carry remote-attacker-influenced content, so an attacker
+  able to produce one long line could choose what the operator saw.
+
+  The same bug was fixed in `security.go` for 2.0.0 and never carried
+  across. It is now a shared `internal/shared/linescan` package rather
+  than a convention: one buffer limit, one error path, named source in
+  the message. Every scanner in the tree routes through it, including
+  eleven the audit did not list, and each caller either propagates the
+  error or degrades to "unknown" rather than reporting a confident
+  wrong number.
+
+- **`SystemCallFilter` was inert (found while fixing B-14).** The
+  daemon unit carried
+  `SystemCallFilter=@system-service ~@privileged ~@resources ~@mount
+  ~@swap ~@reboot ~@module` on one line. A leading `~` makes the whole
+  value a deny-list; a `~` in the middle is parsed as part of a syscall
+  *name*. systemd rejected each group in turn — "System call
+  ~@privileged is not known, ignoring" — and applied only
+  `@system-service`. All six explicit denials had never been in effect.
+  Split into two directives. `@system-service` already excludes most of
+  them, so this should be a no-op in practice, but the control now says
+  what it does.
+
+- **Remaining Low-tier findings.** `RestrictAddressFamilies=` and
+  `UMask=0077` on the daemon unit (B-14; `ProcSubset=pid` is
+  deliberately *not* set — it would break `system`, `pressure`,
+  `sockets` and `kernel`). Bounded tail reads for `auth.log` (C-9,
+  a file an external attacker grows one line per SSH probe) and
+  `unattended-upgrades.log` (A-8). `anyExists` no longer reports
+  "installed" when a stat fails for any reason other than absence
+  (C-8) — for a security-posture tool, "cannot verify" must not render
+  as "verified present". UDP sockets are filtered to the bound-but-
+  unconnected set instead of returning every ephemeral client socket
+  (C-7). The error envelope's documented 200-char message bound is
+  enforced (B-11), and `HelperOpError.Message` now goes through the
+  redactor alongside `StderrPrefix` — a `*os.PathError` in that field
+  rendered an absolute host path to the caller (B-12). The cache has an
+  entry cap (B-13); the key includes canonicalised args, so a caller
+  varying an argument accumulated entries between sweeps. `Lchown` for
+  the runtime dir and socket (A-11). Element rendering allocates for
+  what it keeps, not for the input (A-7). The postqueue depth is
+  clamped (A-10). A backup state file that parses but carries no usable
+  field no longer counts as state and suppresses the log fallback
+  (C-11). `access_log_tail_bytes` is validated daemon-side where the
+  manifest is the operator's to fix (C-12). `SetTransport` panics
+  outside a test binary (B-17). Test fixtures use RFC 5737
+  documentation addresses (C-16), and the example `filter_canary` is an
+  RFC 2606 `.example` name instead of a real third-party domain every
+  installed host would have queried (C-17).
+
+- **Audit C-13 did not reproduce.** It reports dead code in
+  `kernel.go`; every function there is referenced. Left alone rather
+  than invent a change to match the finding.
+
+- **Audit B-15 and B-16 needed no change.** The postinst has not
+  swallowed the capability generator's exit status since 2.1.0, and the
+  example ownership in `doc/install.md` matches the daemon user.
+
 - **Audit B-4 needed no change.** The postinst drop-in that denied the
   daemon's own inbound traffic, and the non-existent `dns:`/`resolvers:`
   config key it read, were both fixed in 2.1.0 by the `ip_filter_allow`

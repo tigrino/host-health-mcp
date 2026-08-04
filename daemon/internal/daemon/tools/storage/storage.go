@@ -5,10 +5,10 @@
 package storage
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"errors"
+	"host-health-mcp/daemon/internal/shared/linescan"
 	"os"
 	"sort"
 	"strings"
@@ -307,7 +307,7 @@ func enumerateMdraidArrays() ([]string, error) {
 		return nil, err
 	}
 	var out []string
-	scanner := bufio.NewScanner(bytes.NewReader(b))
+	scanner := linescan.New(bytes.NewReader(b), "/proc/mdstat")
 	for scanner.Scan() {
 		line := scanner.Text()
 		// Lines describing an array begin "mdN :". Skip header,
@@ -319,6 +319,9 @@ func enumerateMdraidArrays() ([]string, error) {
 				out = append(out, fields[0])
 			}
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
 	}
 	return out, nil
 }

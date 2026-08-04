@@ -12,6 +12,10 @@ import (
 	"host-health-mcp/daemon/internal/shared/proto"
 )
 
+// maxAccessLogTailBytes mirrors the helper's own ceiling so the
+// manifest is validated where the operator can act on the message.
+const maxAccessLogTailBytes = 4 * 1024 * 1024
+
 func init() {
 	Register(&nginxApachePlugin{})
 }
@@ -47,6 +51,13 @@ func (*nginxApachePlugin) Collect(ctx context.Context, hc *helperinvoke.Client, 
 		v, err := strconv.Atoi(s)
 		if err != nil || v < 0 {
 			return nil, nil, fmt.Errorf("nginx_apache: access_log_tail_bytes: %q is not a non-negative integer", s)
+		}
+		// Bound it here as well as in the helper. The helper clamps and
+		// warns, but a manifest asking for 4 GiB is a configuration
+		// mistake the operator should be told about at the daemon,
+		// where the manifest is theirs to fix.
+		if v > maxAccessLogTailBytes {
+			return nil, nil, fmt.Errorf("nginx_apache: access_log_tail_bytes %d exceeds the %d-byte maximum", v, maxAccessLogTailBytes)
 		}
 		param.AccessLogTailBytes = v
 	}

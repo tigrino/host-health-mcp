@@ -1,10 +1,10 @@
 package ops
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"errors"
+	"host-health-mcp/daemon/internal/shared/linescan"
 	"regexp"
 	"strconv"
 	"strings"
@@ -49,7 +49,10 @@ func Fail2banStatus(ctx context.Context, _ string) (any, error) {
 	}
 	out.Present = true
 
-	all := parseFail2banJailList(stdout)
+	all, err := parseFail2banJailList(stdout)
+	if err != nil {
+		return nil, &dispatch.Error{Code: proto.CodeToolFailed, Message: err.Error()}
+	}
 	jails := make([]string, 0, len(all))
 	for _, j := range all {
 		if jailNameRE.MatchString(j) {
@@ -66,15 +69,21 @@ func Fail2banStatus(ctx context.Context, _ string) (any, error) {
 		if err != nil {
 			continue
 		}
-		out.TotalBanned += parseFail2banCurrentlyBanned(jailOut)
+		banned, perr := parseFail2banCurrentlyBanned(jailOut)
+		if perr != nil {
+			// A truncated jail status would understate the ban count,
+			// which is exactly the number an operator acts on.
+			return nil, &dispatch.Error{Code: proto.CodeToolFailed, Message: perr.Error()}
+		}
+		out.TotalBanned += banned
 	}
 	return out, nil
 }
 
 // parseFail2banJailList extracts the comma-separated jail names from
 // the "Jail list:" line of `fail2ban-client status`.
-func parseFail2banJailList(b []byte) []string {
-	scanner := bufio.NewScanner(bytes.NewReader(b))
+func parseFail2banJailList(b []byte) ([]string, error) {
+	scanner := linescan.New(bytes.NewReader(b), "fail2ban-client")
 	for scanner.Scan() {
 		line := scanner.Text()
 		idx := strings.Index(line, "Jail list:")
@@ -83,7 +92,7 @@ func parseFail2banJailList(b []byte) []string {
 		}
 		rest := strings.TrimSpace(line[idx+len("Jail list:"):])
 		if rest == "" {
-			return nil
+			return nil, nil
 		}
 		fields := strings.Split(rest, ",")
 		out := make([]string, 0, len(fields))
@@ -93,15 +102,18 @@ func parseFail2banJailList(b []byte) []string {
 				out = append(out, name)
 			}
 		}
-		return out
+		return out, nil
 	}
-	return nil
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return nil, nil
 }
 
 // parseFail2banCurrentlyBanned extracts the integer after "Currently
 // banned:" from a single jail's status output. Returns 0 if absent.
-func parseFail2banCurrentlyBanned(b []byte) int {
-	scanner := bufio.NewScanner(bytes.NewReader(b))
+func parseFail2banCurrentlyBanned(b []byte) (int, error) {
+	scanner := linescan.New(bytes.NewReader(b), "fail2ban-client")
 	for scanner.Scan() {
 		line := scanner.Text()
 		idx := strings.Index(line, "Currently banned:")
@@ -111,14 +123,16 @@ func parseFail2banCurrentlyBanned(b []byte) int {
 		rest := strings.TrimSpace(line[idx+len("Currently banned:"):])
 		fields := strings.Fields(rest)
 		if len(fields) == 0 {
-			return 0
+			return 0, nil
 		}
 		n, err := strconv.Atoi(fields[0])
 		if err != nil {
-			return 0
+			return 0, nil
 		}
-		return n
+		return n, nil
 	}
-	return 0
+	if err := scanner.Err(); err != nil {
+		return 0, err
+	}
+	return 0, nil
 }
-

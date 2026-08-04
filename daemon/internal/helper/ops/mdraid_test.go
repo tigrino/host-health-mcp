@@ -89,7 +89,10 @@ unused devices: <none>
 		"MD_DEVICE_dev_sda1_ROLE=0\n" +
 		"MD_DEVICE_dev_sdb1_DEV=/dev/sdb1\n" +
 		"MD_DEVICE_dev_sdb1_ROLE=1\n")
-	got := mdraidDetailFromExport("md0", export)
+	got, err := mdraidDetailFromExport("md0", export)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got.SyncProgress == nil {
 		t.Fatal("expected SyncProgress to be non-nil via mdstat fallback")
 	}
@@ -118,7 +121,10 @@ unused devices: <none>
 		"MD_DEGRADED=1\n" +
 		"MD_RESYNC_ACTION=recover\n" +
 		"MD_RESYNC_PCT=88.5\n")
-	got := mdraidDetailFromExport("md0", export)
+	got, err := mdraidDetailFromExport("md0", export)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got.SyncProgress == nil || *got.SyncProgress != 88.5 {
 		t.Fatalf("SyncProgress = %v want 88.5", got.SyncProgress)
 	}
@@ -131,7 +137,10 @@ func TestMdraidDetailFromExport_IdleActionNoProgress(t *testing.T) {
 		"MD_ARRAY_STATE=clean\n" +
 		"MD_DEGRADED=0\n" +
 		"MD_RESYNC_ACTION=idle\n")
-	got := mdraidDetailFromExport("md0", export)
+	got, err := mdraidDetailFromExport("md0", export)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got.SyncProgress != nil {
 		t.Fatalf("expected nil SyncProgress on idle, got %v", *got.SyncProgress)
 	}

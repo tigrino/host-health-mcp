@@ -3,9 +3,9 @@
 package system
 
 import (
-	"bufio"
 	"context"
 	"fmt"
+	"host-health-mcp/daemon/internal/shared/linescan"
 	"io"
 	"os"
 	"runtime"
@@ -177,7 +177,7 @@ func readMemInfo() (memTotal, memAvail, swapTotal, swapUsed int64, err error) {
 		return
 	}
 	defer f.Close()
-	scanner := bufio.NewScanner(f)
+	scanner := linescan.New(f, "/proc/meminfo")
 	var swapFree int64
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -206,6 +206,10 @@ func readMemInfo() (memTotal, memAvail, swapTotal, swapUsed int64, err error) {
 		case "SwapFree":
 			swapFree = bytesV
 		}
+	}
+	if serr := scanner.Err(); serr != nil {
+		err = serr
+		return
 	}
 	swapUsed = swapTotal - swapFree
 	return
@@ -319,8 +323,8 @@ func readMounts() (measured, skipped []mountEntry, err error) {
 		return nil, nil, err
 	}
 	defer f.Close()
-	measured, skipped = parseMounts(f)
-	return measured, skipped, nil
+	measured, skipped, err = parseMounts(f)
+	return measured, skipped, err
 }
 
 // parseMounts splits /proc/mounts into the filesystems safe to statfs
@@ -332,8 +336,8 @@ func readMounts() (measured, skipped []mountEntry, err error) {
 // Pseudo-filesystems are not reported: nobody expects a usage figure
 // for procfs, whereas a missing NFS volume is a monitoring blind spot
 // the operator has to be told about.
-func parseMounts(r io.Reader) (measured, skipped []mountEntry) {
-	scanner := bufio.NewScanner(r)
+func parseMounts(r io.Reader) (measured, skipped []mountEntry, err error) {
+	scanner := linescan.New(r, "/proc/mounts")
 	seen := make(map[string]bool)
 	for scanner.Scan() {
 		fields := strings.Fields(scanner.Text())
@@ -367,7 +371,10 @@ func parseMounts(r io.Reader) (measured, skipped []mountEntry) {
 		}
 		measured = append(measured, mountEntry{Mountpoint: mp, FS: fs})
 	}
-	return measured, skipped
+	// A truncated /proc/mounts would silently drop filesystems from
+	// disk[], which reads as "that volume is gone" rather than "the
+	// read failed".
+	return measured, skipped, scanner.Err()
 }
 
 // unescapeMountField decodes the octal escapes the kernel writes into

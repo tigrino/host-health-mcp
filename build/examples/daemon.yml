@@ -41,7 +41,13 @@ timeout_overrides:
 dns_probe_targets:
   self_hostname: ""               # filled at start from /etc/hostname
   external_probe: example.com
-  filter_canary: dnscanary.org
+  # RFC 2606 reserves the .example TLD, so this resolves nowhere and
+  # belongs to nobody. It is a PLACEHOLDER: substitute a name your own
+  # DNS filter actually blocks, or the probe cannot tell you anything.
+  #
+  # The previous default named a real third-party domain, which pointed
+  # every host that copied this file at someone else's nameservers.
+  filter_canary: filter-canary.example
 
 # Sensitive directories consulted by REQ 6.2/6.3.
 sensitive_dirs:

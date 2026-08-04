@@ -1,11 +1,11 @@
 package ops
 
 import (
-	"bufio"
 	"bytes"
-	"context"
 	"compress/gzip"
+	"context"
 	"errors"
+	"host-health-mcp/daemon/internal/shared/linescan"
 	"io"
 	"io/fs"
 	"os"
@@ -33,12 +33,16 @@ var dbPaths = []string{
 }
 
 // changeLineRE matches the summary line AIDE emits after --check:
-//   "Total number of differences: 3"
+//
+//	"Total number of differences: 3"
+//
 // or in the verbose form:
-//   "Total number of entries:        12345"
-//   "Added entries:                  1"
-//   "Removed entries:                0"
-//   "Changed entries:                2"
+//
+//	"Total number of entries:        12345"
+//	"Added entries:                  1"
+//	"Removed entries:                0"
+//	"Changed entries:                2"
+//
 // We sum Added+Removed+Changed when present, falling back to the
 // "differences" line when only the summary is available.
 var (
@@ -167,7 +171,7 @@ func readMaybeGzipped(path string) ([]byte, error) {
 func parseAideLog(body []byte) (*int, *int) {
 	var cnt *int
 	var exit *int
-	scanner := bufio.NewScanner(bytes.NewReader(body))
+	scanner := linescan.New(bytes.NewReader(body), "aide log")
 	scanner.Buffer(make([]byte, 64*1024), 64*1024)
 
 	var added, removed, changed int
@@ -226,6 +230,12 @@ func parseAideLog(body []byte) (*int, *int) {
 	case foundDiff:
 		one := 1
 		exit = &one
+	}
+	// A truncated read yields a confidently wrong number. Report
+	// "unknown" instead — for a health check the two are not the
+	// same thing.
+	if scanner.Err() != nil {
+		return nil, nil
 	}
 	return cnt, exit
 }

@@ -1,9 +1,11 @@
 package ops
 
 import (
-	"bufio"
 	"bytes"
 	"context"
+	"host-health-mcp/daemon/internal/helper/dispatch"
+	"host-health-mcp/daemon/internal/shared/linescan"
+	"host-health-mcp/daemon/internal/shared/proto"
 	"strings"
 
 	helperexec "host-health-mcp/daemon/internal/helper/exec"
@@ -39,13 +41,22 @@ func AptPending(ctx context.Context, _ string) (any, error) {
 		return out, nil
 	}
 
-	sec, reg := countUpgrades(upgradeOut)
+	sec, reg, perr := countUpgrades(upgradeOut)
+	if perr != nil {
+		// An understated pending-update count reads as "this host is
+		// patched" — the opposite of the truth.
+		return nil, &dispatch.Error{Code: proto.CodeToolFailed, Message: perr.Error()}
+	}
 	out.SecurityUpdatesPending = &sec
 	out.RegularUpdatesPending = &reg
 
 	holdOut, err := helperexec.Run(ctx, "dpkg", "--get-selections")
 	if err == nil {
-		out.HeldPackages = extractHeld(holdOut)
+		held, herr := extractHeld(holdOut)
+		if herr != nil {
+			return nil, &dispatch.Error{Code: proto.CodeToolFailed, Message: herr.Error()}
+		}
+		out.HeldPackages = held
 	}
 
 	return out, nil
@@ -55,8 +66,8 @@ func AptPending(ctx context.Context, _ string) (any, error) {
 // `apt-get -s upgrade` output. The simulation prefixes upgrade lines
 // with "Inst <pkg> [...] (Debian:<dist>/<archive>" where archive
 // containing "security" marks the upgrade as a security update.
-func countUpgrades(b []byte) (sec, reg int) {
-	scanner := bufio.NewScanner(bytes.NewReader(b))
+func countUpgrades(b []byte) (sec, reg int, err error) {
+	scanner := linescan.New(bytes.NewReader(b), "apt")
 	for scanner.Scan() {
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "Inst ") {
@@ -68,14 +79,17 @@ func countUpgrades(b []byte) (sec, reg int) {
 			reg++
 		}
 	}
-	return sec, reg
+	if err = scanner.Err(); err != nil {
+		return 0, 0, err
+	}
+	return sec, reg, nil
 }
 
 // extractHeld scans dpkg --get-selections output for lines whose status
 // is "hold". Each line is "<name>\t<status>".
-func extractHeld(b []byte) []string {
+func extractHeld(b []byte) ([]string, error) {
 	var held []string
-	scanner := bufio.NewScanner(bytes.NewReader(b))
+	scanner := linescan.New(bytes.NewReader(b), "apt")
 	for scanner.Scan() {
 		line := scanner.Text()
 		fields := strings.Fields(line)
@@ -83,5 +97,8 @@ func extractHeld(b []byte) []string {
 			held = append(held, fields[0])
 		}
 	}
-	return held
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return held, nil
 }

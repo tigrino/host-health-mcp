@@ -229,7 +229,7 @@ func (t *Tool) Handle(ctx context.Context, body []byte) (any, []string, error) {
 		// Tolerate empty body or "{}"; reject malformed JSON or unknown
 		// fields (REQ 8 / schema additionalProperties:false).
 		if err := schema.DecodeStrict(body, &req); err != nil {
-			return nil, nil, &tools.Error{Code: schema.ErrCodeBadArgument, Message: "firewall: " + err.Error()}
+			return nil, nil, &tools.Error{Code: schema.ErrCodeBadArgument, Message: schema.BoundMessage("firewall: " + err.Error())}
 		}
 	}
 	if terr := validateRequest(&req); terr != nil {

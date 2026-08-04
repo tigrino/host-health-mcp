@@ -671,7 +671,14 @@ func renderElements(elems []json.RawMessage, cap int) []FirewallSetElem {
 	if cap <= 0 {
 		return nil
 	}
-	out := make([]FirewallSetElem, 0, len(elems))
+	// Allocate min(len, cap): a 70k-element set rendered with cap=100
+	// otherwise reserved 70k slots to fill a hundred, in a root
+	// process, on every call.
+	n := len(elems)
+	if cap < n {
+		n = cap
+	}
+	out := make([]FirewallSetElem, 0, n)
 	for i, raw := range elems {
 		if i >= cap {
 			break

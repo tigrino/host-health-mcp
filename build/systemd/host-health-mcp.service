@@ -16,6 +16,17 @@ User=host-health-mcp
 Group=host-health-mcp
 NoNewPrivileges=yes
 
+# The daemon speaks TLS over TCP and a unix socket to the helper, and
+# nothing else. Without this it kept AF_NETLINK and AF_PACKET — the
+# families a compromised listener would reach for to enumerate or
+# capture from the network stack.
+#
+# ProcSubset=pid is deliberately NOT set: it hides /proc/meminfo,
+# /proc/pressure, /proc/net/* and /proc/vmstat, which would break the
+# system, pressure, sockets and kernel tools outright.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+UMask=0077
+
 CapabilityBoundingSet=
 AmbientCapabilities=
 
@@ -43,7 +54,18 @@ StateDirectoryMode=0750
 ReadWritePaths=/var/lib/host-health-mcp
 ReadOnlyPaths=/etc/host-health-mcp
 
-SystemCallFilter=@system-service ~@privileged ~@resources ~@mount ~@swap ~@reboot ~@module
+# Two directives, not one line. A leading `~` makes the WHOLE value a
+# deny-list; a `~` in the middle of a list is parsed as part of a
+# syscall NAME. The single-line form here was therefore rejected group
+# by group — "System call ~@privileged is not known, ignoring" — and
+# only @system-service was ever applied. Every explicit denial below
+# was silently inert.
+#
+# @system-service already excludes most of these, so restoring them
+# should be a no-op in practice; they are kept because the intent is
+# worth stating explicitly and the allow-set may widen upstream.
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @mount @swap @reboot @module
 SystemCallErrorNumber=EPERM
 SystemCallArchitectures=native
 

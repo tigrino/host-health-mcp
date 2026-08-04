@@ -1,10 +1,10 @@
 package ops
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"errors"
+	"host-health-mcp/daemon/internal/shared/linescan"
 	"strings"
 
 	"host-health-mcp/daemon/internal/helper/dispatch"
@@ -103,7 +103,7 @@ func DovecotStatus(ctx context.Context, _ string) (any, error) {
 func parseDoveadmWho(b []byte) int {
 	count := 0
 	first := true
-	scanner := bufio.NewScanner(bytes.NewReader(b))
+	scanner := linescan.New(bytes.NewReader(b), "doveadm who")
 	scanner.Buffer(make([]byte, 64*1024), 1<<20)
 	for scanner.Scan() {
 		line := strings.TrimRight(scanner.Text(), " \t")
@@ -124,6 +124,12 @@ func parseDoveadmWho(b []byte) int {
 			}
 		}
 		count++
+	}
+	// A truncated read yields a confidently wrong number. Report
+	// "unknown" instead — for a health check the two are not the
+	// same thing.
+	if scanner.Err() != nil {
+		return -1
 	}
 	return count
 }

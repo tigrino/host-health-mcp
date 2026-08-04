@@ -4,9 +4,9 @@
 package kernel
 
 import (
-	"bufio"
 	"bytes"
 	"context"
+	"host-health-mcp/daemon/internal/shared/linescan"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -58,17 +58,17 @@ var taintBits = []struct {
 // returned because the kernel command line may carry operator
 // secrets (resume= device names, root= UUID values)."
 var allowlistedCmdlineKeys = map[string]bool{
-	"BOOT_IMAGE":         true,
-	"console":            true,
-	"crashkernel":        true,
-	"ipv6.disable":       true,
-	"loglevel":           true,
-	"nmi_watchdog":       true,
-	"panic":              true,
-	"quiet":              true,
-	"ro":                 true,
-	"rw":                 true,
-	"selinux":            true,
+	"BOOT_IMAGE":                       true,
+	"console":                          true,
+	"crashkernel":                      true,
+	"ipv6.disable":                     true,
+	"loglevel":                         true,
+	"nmi_watchdog":                     true,
+	"panic":                            true,
+	"quiet":                            true,
+	"ro":                               true,
+	"rw":                               true,
+	"selinux":                          true,
 	"systemd.unified_cgroup_hierarchy": true,
 }
 
@@ -174,7 +174,7 @@ func readOOMKills() int {
 	if err != nil {
 		return -1
 	}
-	scanner := bufio.NewScanner(bytes.NewReader(b))
+	scanner := linescan.New(bytes.NewReader(b), "/proc/vmstat")
 	for scanner.Scan() {
 		fields := strings.Fields(scanner.Text())
 		if len(fields) == 2 && fields[0] == "oom_kill" {
@@ -182,6 +182,12 @@ func readOOMKills() int {
 				return v
 			}
 		}
+	}
+	// A truncated read yields a confidently wrong number. Report
+	// "unknown" instead — for a health check the two are not the
+	// same thing.
+	if scanner.Err() != nil {
+		return 0
 	}
 	return 0
 }

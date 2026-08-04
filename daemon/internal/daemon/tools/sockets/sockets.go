@@ -4,9 +4,9 @@
 package sockets
 
 import (
-	"bufio"
 	"context"
 	"fmt"
+	"host-health-mcp/daemon/internal/shared/linescan"
 	"net/netip"
 	"os"
 	"strconv"
@@ -63,6 +63,11 @@ func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 	return d, nil, nil
 }
 
+// udpUnconnectedState is TCP_CLOSE (07) as reported in /proc/net/udp
+// for a bound socket with no connected peer — the UDP equivalent of
+// "listening".
+const udpUnconnectedState = "07"
+
 func readProcNet(path, proto, family, listenState string) ([]ListeningSocket, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -70,7 +75,7 @@ func readProcNet(path, proto, family, listenState string) ([]ListeningSocket, er
 	}
 	defer f.Close()
 	var out []ListeningSocket
-	scanner := bufio.NewScanner(f)
+	scanner := linescan.New(f, path)
 	first := true
 	for scanner.Scan() {
 		if first {
@@ -83,8 +88,25 @@ func readProcNet(path, proto, family, listenState string) ([]ListeningSocket, er
 		}
 		localHex := fields[1]
 		state := fields[3]
-		if proto == "tcp" && state != listenState {
-			continue
+		// UDP was never filtered. The guard read `proto == "tcp" &&
+		// state != listenState`, so every UDP row came back including
+		// connected ephemeral client sockets — not the listening
+		// inventory REQ 4.16 describes, and noisy enough to bury the
+		// entries an operator is looking for.
+		//
+		// UDP has no LISTEN state: /proc/net/udp reports 07
+		// (TCP_CLOSE) for an unconnected bound socket and 01
+		// (TCP_ESTABLISHED) for one that has been connect()ed to a
+		// peer. The bound-but-unconnected rows are the listeners.
+		switch proto {
+		case "tcp":
+			if state != listenState {
+				continue
+			}
+		case "udp":
+			if state != udpUnconnectedState {
+				continue
+			}
 		}
 		addr, port, err := parseHexEndpoint(localHex, family)
 		if err != nil {
@@ -96,6 +118,9 @@ func readProcNet(path, proto, family, listenState string) ([]ListeningSocket, er
 			Addr:   addr,
 			Port:   port,
 		})
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
 	}
 	return out, nil
 }

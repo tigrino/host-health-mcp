@@ -1,9 +1,11 @@
 package ops
 
 import (
-	"bufio"
 	"bytes"
 	"context"
+	"host-health-mcp/daemon/internal/helper/dispatch"
+	"host-health-mcp/daemon/internal/shared/linescan"
+	"host-health-mcp/daemon/internal/shared/proto"
 	"strings"
 
 	helperexec "host-health-mcp/daemon/internal/helper/exec"
@@ -33,7 +35,7 @@ func Needrestart(ctx context.Context, _ string) (any, error) {
 	}
 
 	out := NeedrestartResult{PendingServices: []string{}}
-	scanner := bufio.NewScanner(bytes.NewReader(stdout))
+	scanner := linescan.New(bytes.NewReader(stdout), "needrestart")
 	for scanner.Scan() {
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "NEEDRESTART-SVC:") {
@@ -43,6 +45,9 @@ func Needrestart(ctx context.Context, _ string) (any, error) {
 		if svc != "" {
 			out.PendingServices = append(out.PendingServices, svc)
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, &dispatch.Error{Code: proto.CodeToolFailed, Message: err.Error()}
 	}
 	return out, nil
 }

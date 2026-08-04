@@ -8,17 +8,17 @@ import (
 
 // FuzzRedact exercises the redactor with arbitrary inputs. Invariants
 // kept on every output regardless of input shape:
-//   1. No raw IPv4/IPv6 address outside the configured allowlist
-//      appears in the output.
-//   2. No input byte sequence longer than 64 ASCII identifier chars
-//      passes verbatim.
-//   3. The output never panics and never grows beyond input length.
+//  1. No raw IPv4/IPv6 address outside the configured allowlist
+//     appears in the output.
+//  2. No input byte sequence longer than 64 ASCII identifier chars
+//     passes verbatim.
+//  3. The output never panics and never grows beyond input length.
 func FuzzRedact(f *testing.F) {
 	seeds := []string{
 		"",
 		"plain text",
 		"nginx[1234]: hello world",
-		"8.8.8.8",
+		"198.51.100.8",
 		"10.0.0.1",
 		"AKIA0123456789ABCDEF",
 		"ASIA0123456789ABCDEF",

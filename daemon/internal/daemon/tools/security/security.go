@@ -9,6 +9,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"host-health-mcp/daemon/internal/shared/linescan"
+	"io"
 	"os"
 	"regexp"
 	"strconv"
@@ -220,7 +222,7 @@ func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 	}
 
 	d.AideOrEquivalent = Aide{
-		Present:      aide.Present || anyExists("/usr/bin/aide", "/usr/sbin/aide"),
+		Present:      aide.Present || existsOrWarn("aide", addWarning, "/usr/bin/aide", "/usr/sbin/aide"),
 		LastRunTS:    aide.LastRunTS,
 		LastExitCode: aide.LastExitCode,
 		ChangeCount:  aide.ChangeCount,
@@ -246,7 +248,7 @@ func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 	}
 
 	d.Auditd = Auditd{
-		Present:        audit.Present || anyExists("/sbin/auditd", "/usr/sbin/auditd"),
+		Present:        audit.Present || existsOrWarn("auditd", addWarning, "/sbin/auditd", "/usr/sbin/auditd"),
 		QueueDepth:     audit.QueueDepth,
 		LostEvents:     audit.LostEvents,
 		LastRotationTS: audit.LastRotationTS,
@@ -254,7 +256,7 @@ func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 	if audit.NetlinkError != "" {
 		addWarning("security: AUDIT_GET netlink failed: " + audit.NetlinkError +
 			" (queue_depth/lost_events null; last_rotation_ts still derived from /var/log/audit/)")
-	} else if !audit.Present && anyExists("/sbin/auditd", "/usr/sbin/auditd") {
+	} else if present, _ := anyExists("/sbin/auditd", "/usr/sbin/auditd"); !audit.Present && present {
 		// kernel reported CONFIG_AUDIT=n while userspace has the
 		// auditd binary — a real contradiction worth surfacing.
 		addWarning("security: auditd binary present but kernel has no audit subsystem " +
@@ -268,7 +270,7 @@ func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 	if err := t.hc.CallJSON(ctx, proto.OpRkhunterSummary, "", &rk); err != nil {
 		addOpError(proto.OpRkhunterSummary, err)
 	}
-	d.Rkhunter.Present = rk.Present || anyExists("/usr/bin/rkhunter", "/usr/sbin/rkhunter")
+	d.Rkhunter.Present = rk.Present || existsOrWarn("rkhunter", addWarning, "/usr/bin/rkhunter", "/usr/sbin/rkhunter")
 	d.Rkhunter.LastRunTS = rk.LastRunTS
 	d.Rkhunter.WarningCount = rk.WarningCount
 	if d.Rkhunter.Present && rk.LastRunTS == nil {
@@ -278,7 +280,7 @@ func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 		addWarning("security: rkhunter log present but unreadable from the helper; warning_count null")
 	}
 
-	d.DebsumsOrEquivalent.Present = anyExists("/usr/bin/debsums")
+	d.DebsumsOrEquivalent.Present = existsOrWarn("debsums", addWarning, "/usr/bin/debsums")
 	if d.DebsumsOrEquivalent.Present {
 		t.fillDebsums(ctx, &d.DebsumsOrEquivalent, addWarning, addOpError)
 	}
@@ -384,10 +386,10 @@ type helperSystemdTimer struct {
 
 // fillDebsums fills LastRunTS and ModifiedCount from one of three
 // sources, in preference order:
-//   1. operator-supplied debsums_log_path (manifest);
-//   2. debsums-check.timer's LastTriggerUSec via the helper (Debian
-//      packages of debsums-mail ship this timer);
-//   3. nothing — emit a warning so the operator sees the config gap.
+//  1. operator-supplied debsums_log_path (manifest);
+//  2. debsums-check.timer's LastTriggerUSec via the helper (Debian
+//     packages of debsums-mail ship this timer);
+//  3. nothing — emit a warning so the operator sees the config gap.
 func (t *Tool) fillDebsums(ctx context.Context, d *Debsums, addWarning func(string), addOpError func(string, error)) {
 	if t.debsumsLogPath != "" {
 		info, err := os.Stat(t.debsumsLogPath)
@@ -460,8 +462,7 @@ func (t *Tool) fillAideFromLog(d *Aide, addWarning func(string)) {
 		foundDiff   bool
 		foundNoDiff bool
 	)
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 64*1024), 1<<20)
+	scanner := linescan.New(f, t.aideLogPath)
 	for scanner.Scan() {
 		line := scanner.Text()
 		switch {
@@ -511,6 +512,9 @@ func (t *Tool) fillAideFromLog(d *Aide, addWarning func(string)) {
 		one := 1
 		d.LastExitCode = &one
 	}
+	if err := scanner.Err(); err != nil {
+		addWarning("security: aide log: " + err.Error())
+	}
 }
 
 // AIDE log regexes mirror the helper's parser but match the
@@ -558,22 +562,49 @@ func countDebsumsChanged(path string) (int, error) {
 	return count, nil
 }
 
-func anyExists(paths ...string) bool {
+// anyExists reports whether any of paths is present.
+//
+// A stat error other than ErrNotExist — EACCES, ELOOP, ENOTDIR —
+// used to count as "present", so a permission problem made the tool
+// report AIDE, auditd, rkhunter or fail2ban as INSTALLED when it had
+// no idea. For a security-posture tool that is the wrong direction to
+// fail: "cannot verify" must never render as "verified present". The
+// second return distinguishes the two so the caller can warn.
+func anyExists(paths ...string) (present bool, uncertain error) {
 	for _, p := range paths {
-		if _, err := os.Stat(p); err == nil {
-			return true
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return true
+		_, err := os.Stat(p)
+		if err == nil {
+			return true, nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			// Keep looking: another path may exist outright.
+			uncertain = err
 		}
 	}
-	return false
+	return false, uncertain
 }
+
+// existsOrWarn adapts anyExists for the common call site: an
+// uncertain stat becomes a warning rather than a silent "present".
+func existsOrWarn(what string, addWarning func(string), paths ...string) bool {
+	present, uncertain := anyExists(paths...)
+	if uncertain != nil {
+		addWarning("security: cannot determine whether " + what +
+			" is installed: " + uncertain.Error() + " (reported as absent)")
+	}
+	return present
+}
+
+// firstOf drops the uncertainty return where the caller has no
+// warning channel. detectIPS reports an IPS name, and "unknown"
+// correctly degrades to "none" there.
+func firstOf(present bool, _ error) bool { return present }
 
 func detectIPS() string {
 	switch {
-	case anyExists("/usr/bin/fail2ban-client", "/usr/local/bin/fail2ban-client"):
+	case firstOf(anyExists("/usr/bin/fail2ban-client", "/usr/local/bin/fail2ban-client")):
 		return "fail2ban"
-	case anyExists("/usr/bin/crowdsec", "/usr/local/bin/crowdsec"):
+	case firstOf(anyExists("/usr/bin/crowdsec", "/usr/local/bin/crowdsec")):
 		return "crowdsec"
 	default:
 		return "none"
@@ -631,7 +662,13 @@ func isSSHFailedLine(line string) bool {
 // the helper's journal counter; err is non-nil when a file source
 // existed but could not be read to completion (see below). The counts
 // cover the live file, i.e. "since the last log rotation".
+// maxAuthLogBytes caps the tail read of auth.log. 8 MiB is far more
+// than a day of legitimate sshd chatter and bounds the cost of a
+// brute-force flood.
+const maxAuthLogBytes = 8 * 1024 * 1024
+
 func readAuthLogCounters() (accepted, failed int, found bool, err error) {
+	truncated := false
 	var path string
 	for _, p := range authLogPaths {
 		if _, statErr := os.Stat(p); statErr == nil {
@@ -647,10 +684,27 @@ func readAuthLogCounters() (accepted, failed int, found bool, err error) {
 		return 0, 0, false, nil
 	}
 	defer f.Close()
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 64*1024), 1<<20)
+	// Bound the read. auth.log is a file an EXTERNAL attacker grows,
+	// one line per SSH probe, and this walked all of it with no cap.
+	// A sustained brute-force turns a health check into an unbounded
+	// read on every poll. The tail is also the only interesting part:
+	// these counters describe recent activity.
+	if st, statErr := f.Stat(); statErr == nil && st.Size() > maxAuthLogBytes {
+		if _, seekErr := f.Seek(st.Size()-maxAuthLogBytes, io.SeekStart); seekErr == nil {
+			truncated = true
+		}
+	}
+	scanner := linescan.New(f, path)
+	first := true
 	for scanner.Scan() {
 		line := scanner.Text()
+		// After a seek the first line is a fragment; counting it could
+		// double-count or invent a match.
+		if truncated && first {
+			first = false
+			continue
+		}
+		first = false
 		if !isSSHDLine(line) {
 			continue
 		}

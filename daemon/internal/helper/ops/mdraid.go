@@ -1,9 +1,9 @@
 package ops
 
 import (
-	"bufio"
 	"bytes"
 	"context"
+	"host-health-mcp/daemon/internal/shared/linescan"
 	"os"
 	"regexp"
 	"strconv"
@@ -49,7 +49,11 @@ func MdraidDetail(ctx context.Context, param string) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return mdraidDetailFromExport(param, stdout), nil
+	res, perr := mdraidDetailFromExport(param, stdout)
+	if perr != nil {
+		return nil, &dispatch.Error{Code: proto.CodeToolFailed, Message: perr.Error()}
+	}
+	return res, nil
 }
 
 // mdraidDetailFromExport is the pure parse-plus-fallback decision
@@ -57,11 +61,11 @@ func MdraidDetail(ctx context.Context, param string) (any, error) {
 // fallback trigger (no MD_RESYNC_PCT but a non-idle MD_RESYNC_ACTION)
 // is testable against synthetic --export output combined with the
 // existing mdstatPathForTest-controlled /proc/mdstat fixture.
-func mdraidDetailFromExport(name string, stdout []byte) MdraidDetailResult {
+func mdraidDetailFromExport(name string, stdout []byte) (MdraidDetailResult, error) {
 	out := MdraidDetailResult{ArrayName: name}
 	var resyncAction string
 	var sawResyncPct bool
-	scanner := bufio.NewScanner(bytes.NewReader(stdout))
+	scanner := linescan.New(bytes.NewReader(stdout), "mdadm --detail")
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		eq := bytes.IndexByte(line, '=')
@@ -111,7 +115,10 @@ func mdraidDetailFromExport(name string, stdout []byte) MdraidDetailResult {
 			out.SyncProgress = &zero
 		}
 	}
-	return out
+	if err := scanner.Err(); err != nil {
+		return MdraidDetailResult{}, err
+	}
+	return out, nil
 }
 
 // readMdstatProgress parses /proc/mdstat for the resync/recovery
@@ -133,7 +140,7 @@ func readMdstatProgress(name string) (float64, bool) {
 	if err != nil {
 		return 0, false
 	}
-	scanner := bufio.NewScanner(bytes.NewReader(b))
+	scanner := linescan.New(bytes.NewReader(b), "/proc/mdstat")
 	scanner.Buffer(make([]byte, 64*1024), 1<<20)
 	in := false
 	for scanner.Scan() {
@@ -165,6 +172,12 @@ func readMdstatProgress(name string) (float64, bool) {
 			return 0, false
 		}
 		return pct, true
+	}
+	// A truncated read yields a confidently wrong number. Report
+	// "unknown" instead — for a health check the two are not the
+	// same thing.
+	if scanner.Err() != nil {
+		return 0, false
 	}
 	return 0, false
 }

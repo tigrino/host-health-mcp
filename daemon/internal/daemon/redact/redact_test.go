@@ -85,7 +85,7 @@ func TestRedactIPv4Allowlist(t *testing.T) {
 	if got := f.Redact("127.0.0.1"); got != "127.0.0.1" {
 		t.Errorf("loopback redacted: %q", got)
 	}
-	if got := f.Redact("8.8.8.8"); got != "<redacted>" {
+	if got := f.Redact("198.51.100.8"); got != "<redacted>" {
 		t.Errorf("IPv4 outside allowlist passed: %q", got)
 	}
 	if got := f.Redact("192.168.1.1"); got != "<redacted>" {

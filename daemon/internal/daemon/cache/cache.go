@@ -36,8 +36,15 @@ func (e Entry) Age() time.Duration { return time.Since(e.Builtat) }
 // Expired reports whether the entry has aged past its TTL.
 func (e Entry) Expired() bool { return e.Age() > e.TTL }
 
+// MaxEntries bounds the map. The previous note said a cap was
+// unnecessary because singleflight plus TTL bounds growth in practice
+// — but the key includes the canonicalised ARGS, so a caller varying
+// a tool argument produces a distinct entry every time, and entries
+// only leave on Sweep after their TTL. Between sweeps a caller within
+// its rate limit can still accumulate them. This is the backstop.
+const MaxEntries = 4096
+
 // Cache is the global cache keyed by (tool, args_hash).
-// Per-tool entry-count cap deliberately not enforced; on the deployment target the memory budget headroom is ample and the singleflight+TTL design bounds memory growth in practice.
 type Cache struct {
 	mu sync.RWMutex
 	m  map[string]Entry
@@ -100,11 +107,20 @@ func (c *Cache) Lookup(key string) (Entry, bool) {
 	return e, true
 }
 
-// Store inserts or replaces an entry under key.
+// Store inserts or replaces an entry under key. At MaxEntries it
+// first drops expired entries; if that frees nothing, the write is
+// skipped rather than growing the map without bound. Skipping costs a
+// cache miss on the next call, which is the correct way to fail here.
 func (c *Cache) Store(key string, e Entry) {
 	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, replacing := c.m[key]; !replacing && len(c.m) >= MaxEntries {
+		c.sweepLocked()
+		if len(c.m) >= MaxEntries {
+			return
+		}
+	}
 	c.m[key] = e
-	c.mu.Unlock()
 }
 
 // Do executes fn under singleflight keyed by k. Concurrent callers of
@@ -188,10 +204,15 @@ func (c *Cache) Do(ctx context.Context, k string, fn func() (Entry, error)) (Ent
 // background goroutine at min(TTL)/2.
 func (c *Cache) Sweep() {
 	c.mu.Lock()
+	c.sweepLocked()
+	c.mu.Unlock()
+}
+
+// sweepLocked evicts expired entries. Caller holds c.mu.
+func (c *Cache) sweepLocked() {
 	for k, e := range c.m {
 		if e.Expired() {
 			delete(c.m, k)
 		}
 	}
-	c.mu.Unlock()
 }

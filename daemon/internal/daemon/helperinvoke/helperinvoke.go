@@ -199,12 +199,22 @@ func (e *HelperError) Error() string {
 // crosses the daemon's outbound boundary (REQ 6.3, threat-model §6.7).
 func (e *HelperError) AsOpError() *schema.HelperOpError {
 	prefix := e.StderrPrefix
+	msg := e.Message
 	if e.redactor != nil {
 		prefix = e.redactor.Redact(prefix)
+		// Message travels the same path to the same client and was
+		// going out untouched. It is not a fixed catalogue string:
+		// OpErrorFrom's fallback stuffs a raw err.Error() into it, and
+		// a *os.PathError renders as "open /etc/host-health-mcp/...:
+		// permission denied" — an absolute host path reaching the
+		// caller through the one field the redactor never saw.
+		// threat-model R5 covers argv disclosure; this closes the same
+		// hole one field over.
+		msg = e.redactor.Redact(msg)
 	}
 	return &schema.HelperOpError{
 		Code:         e.Code,
-		Message:      e.Message,
+		Message:      schema.BoundMessage(msg),
 		Argv:         e.Argv,
 		ExitCode:     e.ToolExit,
 		StderrSHA256: e.StderrSHA256,
@@ -223,7 +233,7 @@ func OpErrorFrom(err error) *schema.HelperOpError {
 	if errors.As(err, &he) {
 		return he.AsOpError()
 	}
-	return &schema.HelperOpError{Code: "tool_failed", Message: err.Error()}
+	return &schema.HelperOpError{Code: "tool_failed", Message: schema.BoundMessage(err.Error())}
 }
 
 // CodeOf extracts the helper error code from err, or returns

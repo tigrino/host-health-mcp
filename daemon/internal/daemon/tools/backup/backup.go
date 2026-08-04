@@ -105,11 +105,12 @@ type stateFile struct {
 }
 
 // Handle resolves backup state via, in order:
-//   1. the wrapper-emitted state file (defaultStatePath or manifest's
-//      backup_state_path);
-//   2. the manifest-declared log path, or an auto-probed log path for
-//      the configured backend;
-//   3. nothing matches → warning, all fields null.
+//  1. the wrapper-emitted state file (defaultStatePath or manifest's
+//     backup_state_path);
+//  2. the manifest-declared log path, or an auto-probed log path for
+//     the configured backend;
+//  3. nothing matches → warning, all fields null.
+//
 // last_archive_label is only ever populated from the state file.
 func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 	if t.backend == "none" {
@@ -186,8 +187,22 @@ func readStateFile(path string) (s stateFile, used bool, err error) {
 	if err := json.Unmarshal(body, &s); err != nil {
 		return stateFile{}, false, fmt.Errorf("json: %w", err)
 	}
+	// A file that parses but carries nothing — "{}" is the obvious
+	// case, and a wrapper that truncates then fails before writing is
+	// the realistic one — used to count as usable state. The tool then
+	// returned all-null fields and skipped the log-path fallback
+	// entirely, so a broken backup wrapper rendered as a backup tool
+	// with nothing to say and no warning attached.
+	if s.LastStartTS == nil && s.LastEndTS == nil &&
+		s.LastExitCode == nil && s.LastArchiveLabel == nil {
+		return stateFile{}, false, errEmptyState
+	}
 	return s, true, nil
 }
+
+// errEmptyState marks a state file that parsed but held no field the
+// tool can report.
+var errEmptyState = errors.New("state file contains no usable fields")
 
 // probeBackendLog returns the first path under backendLogProbes[backend]
 // that exists, plus the full candidate list (for the operator-facing

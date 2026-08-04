@@ -5,6 +5,7 @@ package schema
 import (
 	"encoding/json"
 	"time"
+	"unicode/utf8"
 )
 
 // SchemaVersion is the semver baked into the daemon at build. Bumped per
@@ -35,9 +36,37 @@ type ErrorEnvelope struct {
 }
 
 // Error is the structured error body. Code is one of the constants in
-// this package; Message is bounded to 200 chars and drawn from a fixed
-// catalogue compiled into the daemon.
+// this package; Message is bounded to MaxMessageLen and is normally
+// drawn from the fixed catalogue in errors.go.
+//
+// "Normally" is doing work there. Several tools build a message from a
+// decoder error so the caller learns which field was rejected, and the
+// strict decoder embeds the offending field name — up to a full
+// request body of caller-supplied bytes echoed back. That is
+// self-reflection rather than disclosure, but the stated bound was
+// simply not enforced. Route any constructed message through
+// BoundMessage.
 type Error struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
+}
+
+// MaxMessageLen is the cap the Error.Message contract states. Chosen
+// to fit the catalogue strings plus a short constructed suffix.
+const MaxMessageLen = 200
+
+// BoundMessage truncates m to MaxMessageLen, marking it when it cuts
+// so a reader can tell a short message from a clipped one. Truncation
+// is on a rune boundary: a message can contain caller-supplied bytes,
+// and slicing mid-rune would emit invalid UTF-8 in a JSON string.
+func BoundMessage(m string) string {
+	if len(m) <= MaxMessageLen {
+		return m
+	}
+	const ellipsis = "…"
+	cut := MaxMessageLen - len(ellipsis)
+	for cut > 0 && !utf8.RuneStart(m[cut]) {
+		cut--
+	}
+	return m[:cut] + ellipsis
 }

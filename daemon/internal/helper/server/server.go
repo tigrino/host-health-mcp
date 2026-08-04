@@ -104,13 +104,19 @@ func (s *Server) Serve(ctx context.Context) error {
 		// forbidden:allow — the helper's own RuntimeDirectory=, which
 		// systemd creates root:root; the unprivileged daemon cannot
 		// traverse it otherwise. Group only, never mode.
-		if err := os.Chown(parent, 0, int(s.cfg.SocketGID)); err != nil {
+		//
+		// Lchown, not Chown: Chown follows symlinks, so if the runtime
+		// directory were ever replaced by a link the root helper would
+		// re-own the target instead. systemd creates this path itself
+		// and it is not attacker-writable, but a chown as root through
+		// an unresolved path is not something to leave to circumstance.
+		if err := os.Lchown(parent, 0, int(s.cfg.SocketGID)); err != nil {
 			ln.Close()
 			return fmt.Errorf("server: chown runtime dir %s: %w", parent, err)
 		}
 		// forbidden:allow — same handoff, on the socket this process
-		// just created.
-		if err := os.Chown(s.cfg.SocketPath, 0, int(s.cfg.SocketGID)); err != nil {
+		// just created. Lchown for the same reason as above.
+		if err := os.Lchown(s.cfg.SocketPath, 0, int(s.cfg.SocketGID)); err != nil {
 			ln.Close()
 			return fmt.Errorf("server: chown socket: %w", err)
 		}

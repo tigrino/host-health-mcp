@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -323,5 +324,55 @@ func TestDeadlineDoesForgetSoTheToolRecovers(t *testing.T) {
 	}
 	if !ran {
 		t.Error("after a deadline the next caller must start a fresh invocation")
+	}
+}
+
+// B-13: the key includes the canonicalised ARGS, so a caller varying a
+// tool argument produces a distinct entry every time, and entries only
+// leave on Sweep after their TTL. The old note said singleflight plus
+// TTL bounded growth; between sweeps it does not.
+func TestStoreIsBounded(t *testing.T) {
+	c := New()
+	live := Entry{Data: []byte("{}"), Builtat: time.Now(), TTL: time.Hour}
+	for i := 0; i < MaxEntries+500; i++ {
+		c.Store(Key("logs", []byte(`{"n":`+strconv.Itoa(i)+`}`)), live)
+	}
+	if n := len(c.m); n > MaxEntries {
+		t.Errorf("cache holds %d entries, over the %d cap", n, MaxEntries)
+	}
+}
+
+// Hitting the cap must not stop expired entries being reclaimed: the
+// cache has to recover once TTLs lapse, not wedge at the ceiling.
+func TestStoreReclaimsExpiredAtTheCap(t *testing.T) {
+	c := New()
+	expired := Entry{Data: []byte("{}"), Builtat: time.Now().Add(-time.Hour), TTL: time.Second}
+	for i := 0; i < MaxEntries; i++ {
+		c.Store(Key("logs", []byte(`{"n":`+strconv.Itoa(i)+`}`)), expired)
+	}
+	live := Entry{Data: []byte(`{"fresh":true}`), Builtat: time.Now(), TTL: time.Hour}
+	k := Key("logs", []byte(`{"new":1}`))
+	c.Store(k, live)
+	if _, ok := c.Lookup(k); !ok {
+		t.Error("a fresh entry was refused while the map was full of expired ones")
+	}
+}
+
+// Replacing an existing key must always work, cap or no cap —
+// otherwise a hot tool stops refreshing once the map fills.
+func TestStoreAlwaysReplacesAnExistingKey(t *testing.T) {
+	c := New()
+	live := Entry{Data: []byte("{}"), Builtat: time.Now(), TTL: time.Hour}
+	for i := 0; i < MaxEntries; i++ {
+		c.Store(Key("logs", []byte(`{"n":`+strconv.Itoa(i)+`}`)), live)
+	}
+	k := Key("logs", []byte(`{"n":0}`))
+	c.Store(k, Entry{Data: []byte(`{"updated":true}`), Builtat: time.Now(), TTL: time.Hour})
+	got, ok := c.Lookup(k)
+	if !ok {
+		t.Fatal("the existing key vanished")
+	}
+	if string(got.Data) != `{"updated":true}` {
+		t.Errorf("Data = %s, want the replacement", got.Data)
 	}
 }

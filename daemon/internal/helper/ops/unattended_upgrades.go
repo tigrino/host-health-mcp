@@ -1,10 +1,10 @@
 package ops
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"errors"
+	"host-health-mcp/daemon/internal/shared/linescan"
 	"io"
 	"os"
 	"strings"
@@ -61,14 +61,29 @@ func UnattendedUpgradesStatus(ctx context.Context, _ string) (any, error) {
 	ts := info.ModTime().UTC()
 	out.LastRunTS = &ts
 
+	// Bounded below via io.LimitReader: this log grows unattended (the
+	// clue is in the name) and nothing else caps it.
 	f, err := os.Open(unattendedUpgradesLogPath)
 	if err != nil {
 		return out, nil
 	}
 	defer f.Close()
-	out.LastExitCode = parseUnattendedLastExitCode(f)
+	// The last exit code lives at the END of the log, so read the tail
+	// rather than the whole file.
+	if info.Size() > maxUnattendedLogBytes {
+		if _, seekErr := f.Seek(info.Size()-maxUnattendedLogBytes, io.SeekStart); seekErr != nil {
+			return out, nil
+		}
+	}
+	out.LastExitCode = parseUnattendedLastExitCode(io.LimitReader(f, maxUnattendedLogBytes))
 	return out, nil
 }
+
+// maxUnattendedLogBytes bounds the tail read of
+// unattended-upgrades.log. The file grows without external rotation
+// on some hosts and the only field taken from it is the last exit
+// code, which is at the end.
+const maxUnattendedLogBytes = 4 * 1024 * 1024
 
 // parseUnattendedFromAptConfig returns true if apt-config dump
 // reports `APT::Periodic::Unattended-Upgrade "1"`. apt parses files
@@ -79,7 +94,7 @@ func UnattendedUpgradesStatus(ctx context.Context, _ string) (any, error) {
 func parseUnattendedFromAptConfig(b []byte) bool {
 	const key = `APT::Periodic::Unattended-Upgrade "`
 	last := ""
-	scanner := bufio.NewScanner(bytes.NewReader(b))
+	scanner := linescan.New(bytes.NewReader(b), "apt-config dump")
 	scanner.Buffer(make([]byte, 64*1024), 1<<20)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -94,6 +109,12 @@ func parseUnattendedFromAptConfig(b []byte) bool {
 		}
 		last = rest[:end]
 	}
+	// A truncated read yields a confidently wrong number. Report
+	// "unknown" instead — for a health check the two are not the
+	// same thing.
+	if scanner.Err() != nil {
+		return false
+	}
 	return last == "1"
 }
 
@@ -101,12 +122,14 @@ func parseUnattendedFromAptConfig(b []byte) bool {
 // the start (the file is small — Debian's logrotate caps it well
 // under a MiB) and returns the exit code derived from the most
 // recent terminal status line. Conventions per the script source:
-//   "All upgrades installed"               -> 0
-//   "No packages found that can be upgraded unattended" -> 0
-//   "Upgrade failed"                       -> 1
+//
+//	"All upgrades installed"               -> 0
+//	"No packages found that can be upgraded unattended" -> 0
+//	"Upgrade failed"                       -> 1
+//
 // Anything else leaves the exit code null.
 func parseUnattendedLastExitCode(r io.Reader) *int {
-	scanner := bufio.NewScanner(r)
+	scanner := linescan.New(r, "unattended-upgrades.log")
 	scanner.Buffer(make([]byte, 64*1024), 1<<20)
 	var lastCode *int
 	for scanner.Scan() {
@@ -120,6 +143,12 @@ func parseUnattendedLastExitCode(r io.Reader) *int {
 			one := 1
 			lastCode = &one
 		}
+	}
+	// A truncated read yields a confidently wrong number. Report
+	// "unknown" instead — for a health check the two are not the
+	// same thing.
+	if scanner.Err() != nil {
+		return nil
 	}
 	return lastCode
 }

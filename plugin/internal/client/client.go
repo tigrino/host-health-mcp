@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"testing"
 	"time"
 )
 
@@ -29,7 +30,7 @@ const EnvTrustSystemRoots = "HOSTHEALTH_TRUST_SYSTEM_ROOTS"
 
 // Config configures a Client.
 type Config struct {
-	Port        int    // default port when a host arg has no :port
+	Port        int // default port when a host arg has no :port
 	CertPath    string
 	KeyPath     string
 	CAPath      string // server CA bundle; empty uses system roots
@@ -89,10 +90,19 @@ func New(cfg Config) (*Client, error) {
 	}, nil
 }
 
-// SetTransport replaces the HTTP transport. Test-only helper to
-// inject a transport that trusts a httptest TLS cert; production
-// code constructs the transport in New.
+// SetTransport replaces the HTTP transport.
+//
+// TEST-ONLY. This is a hook for swapping out the mTLS transport on the
+// production client, which is the one thing that must never happen
+// outside a test — so it refuses to run unless the binary is a test
+// binary. Keeping it exported is unavoidable: the plugin's mcp tests
+// live in another package and need it to point a client at an
+// httptest server. Making it inert in production is the next best
+// thing to removing it.
 func (c *Client) SetTransport(rt http.RoundTripper) {
+	if !testing.Testing() {
+		panic("client: SetTransport is test-only and must not be called in a production binary")
+	}
 	c.http.Transport = rt
 }
 
