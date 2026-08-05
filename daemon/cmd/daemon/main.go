@@ -225,6 +225,11 @@ func main() {
 
 	cch := cache.New()
 
+	// Fixed by REQ 6.6, not read from daemon.yml. Deliberately not a
+	// config field: the two numbers are the requirement, and a knob
+	// here would let a deployment raise its own ceiling on the one
+	// control that bounds a valid-certificate caller. build/examples/
+	// daemon.yml says so where an operator would look for the key.
 	global := ratelimit.BucketCfg{SustainedPerMin: 30, Burst: 10}
 	perTool := map[string]ratelimit.BucketCfg{}
 	for tool, bcfg := range cfg.ExpensiveToolBuckets {

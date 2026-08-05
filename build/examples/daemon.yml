@@ -66,8 +66,14 @@ ipv6_allowlist_ranges:
 # startup warning unless this is explicit (REQ 6.4).
 public_bind_acknowledged: false
 
-# Per-(caller, tool) buckets for expensive tools. The per-caller global
-# bucket (30 req/min sustained, burst 10) applies on top.
+# Per-(caller, tool) buckets for expensive tools.
+#
+# The per-caller GLOBAL bucket — 30 req/min sustained, burst 10 —
+# applies on top of these and is NOT configurable. REQ 6.6 fixes those
+# two numbers, so they are compiled in rather than read from here;
+# there is no key to set. Stated explicitly because the value appears
+# in this file and would otherwise read like a default you could
+# override.
 expensive_tool_buckets:
   logs:     { sustained_per_min: 10, burst: 3 }
   workload: { sustained_per_min: 10, burst: 3 }
