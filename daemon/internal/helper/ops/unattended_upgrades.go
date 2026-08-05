@@ -45,7 +45,11 @@ func UnattendedUpgradesStatus(ctx context.Context, _ string) (any, error) {
 		}
 		return nil, err
 	}
-	out.Enabled = parseUnattendedFromAptConfig(stdout)
+	enabled, err := parseUnattendedFromAptConfig(stdout)
+	if err != nil {
+		return nil, err
+	}
+	out.Enabled = enabled
 
 	// Log parsing is best-effort: a host that just installed the
 	// package but hasn't run it yet has no log. That is not an error.
@@ -91,7 +95,7 @@ const maxUnattendedLogBytes = 4 * 1024 * 1024
 // values overriding earlier ones; apt-config dump emits the final
 // resolved view, so the parse is straight key-equality on the last
 // occurrence.
-func parseUnattendedFromAptConfig(b []byte) bool {
+func parseUnattendedFromAptConfig(b []byte) (bool, error) {
 	const key = `APT::Periodic::Unattended-Upgrade "`
 	last := ""
 	scanner := linescan.New(bytes.NewReader(b), "apt-config dump")
@@ -109,13 +113,18 @@ func parseUnattendedFromAptConfig(b []byte) bool {
 		}
 		last = rest[:end]
 	}
-	// A truncated read yields a confidently wrong number. Report
-	// "unknown" instead — for a health check the two are not the
-	// same thing.
-	if scanner.Err() != nil {
-		return false
+	// A truncated read yields a confidently wrong answer. `false`
+	// here would read as "unattended-upgrades is off" — a security
+	// posture claim, in the unsafe direction, manufactured from a
+	// read that did not finish. The op fails instead, so the caller
+	// gets the reason in errors[] rather than a fabricated negative.
+	// The return type is bool, not *bool, because the wire field is
+	// a required non-nullable boolean; "unknown" is expressible only
+	// as the absence of an answer.
+	if err := scanner.Err(); err != nil {
+		return false, err
 	}
-	return last == "1"
+	return last == "1", nil
 }
 
 // parseUnattendedLastExitCode scans the unattended-upgrades log from
