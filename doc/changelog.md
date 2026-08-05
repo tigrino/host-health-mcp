@@ -898,6 +898,17 @@ for two was right.
   costed is with the owner and this entry will be updated with the
   outcome.
 
+- **S-3 — dependency currency.** Open, pending a decision. `govulncheck`
+  reports one vulnerability in a required module: an integer overflow in
+  `golang.org/x/sys/windows`, unreachable twice over — not called, and
+  Windows-only in a product that builds for Linux alone. It is fixed in
+  `x/sys` v0.44.0, and no version clears it while keeping the current
+  `go 1.22` floor: taking the fix forces the directive to `1.25.0` for
+  every builder downstream. The full refresh was tried, verified clean
+  (`go vet`, `-race` suite, `govulncheck`) and reverted, because raising
+  a floor downstream packaging depends on is a release-note decision,
+  not a maintenance one.
+
 - **C-6 — orphan tags on the public remote.** Open, and unchanged
   because it needs a decision, not a fix. Re-measured directly:
   **28 tags are unreachable from `main`** — every tag up to and
