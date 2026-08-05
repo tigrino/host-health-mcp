@@ -117,7 +117,15 @@ func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 	// on error would drop every interface because one of them could
 	// not be queried.
 	ifaces, err := readInterfaces()
-	d.Interfaces = ifaces
+	// Assign only what was actually read. readInterfaces returns
+	// (nil, err) when /sys/class/net cannot be listed, and an
+	// unconditional assignment overwrote the empty-slice initialiser
+	// with nil — serialising as "interfaces": null, which the schema
+	// declares required and typed array. Keeping partial results must
+	// not mean publishing a shape no client is allowed to expect.
+	if ifaces != nil {
+		d.Interfaces = ifaces
+	}
 	if err != nil {
 		warnings = append(warnings, "network: interface addresses: "+err.Error()+
 			"; addrs[] may be incomplete")
@@ -167,9 +175,13 @@ func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 }
 
 // readInterfaces walks /sys/class/net for non-loopback interfaces.
+// sysClassNetPath is the interface enumeration root; a var so tests can
+// point it at a fixture or at a path that cannot be read.
+var sysClassNetPath = "/sys/class/net"
+
 func readInterfaces() ([]NetworkInterface, error) {
 	var firstAddrErr error
-	entries, err := os.ReadDir("/sys/class/net")
+	entries, err := os.ReadDir(sysClassNetPath)
 	if err != nil {
 		return nil, err
 	}
