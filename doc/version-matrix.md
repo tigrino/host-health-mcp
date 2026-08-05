@@ -156,7 +156,7 @@ Three response shapes changed:
      the alert that is supposed to fire when mail stops flowing, and
      the failure direction was silent.
 
-  1a. **`system.disk[]` measurements are nullable, and every mount is
+  2. **`system.disk[]` measurements are nullable, and every mount is
      listed again.** Network and userspace-backed filesystems (NFS,
      CIFS, virtiofs, FUSE) were dropped from the array entirely because
      `statfs(2)` on a dead server blocks uninterruptibly; a capacity
@@ -166,7 +166,7 @@ Three response shapes changed:
      `inodes_used` null when the probe did not answer. A client
      decoding those four as plain integers must move to nullable types.
 
-  1b. **`sockets.listening[]` gains `connected`, and connected UDP
+  3. **`sockets.listening[]` gains `connected`, and connected UDP
      sockets are returned again.** Filtering UDP to state 07 removed
      genuine servers that `connect()` back to a client — ordinary for
      TFTP, some DNS forwarders and QUIC. Both kinds are returned and
@@ -178,27 +178,27 @@ Three response shapes changed:
 Eight further changes are visible in HTTP status codes or in error
 envelopes, with no field affected:
 
-  2. A request to a path outside `/v1/` returns the JSON error
+  4. A request to a path outside `/v1/` returns the JSON error
      envelope instead of `net/http`'s plain-text 404.
-  3. The five pre-dispatch rejection paths are rate-limited, so any
+  5. The five pre-dispatch rejection paths are rate-limited, so any
      of them can return `429` where it previously returned `404` or
      `405`.
-  4. The listener sets `ReadTimeout` (10 s), `WriteTimeout` (30 s),
+  6. The listener sets `ReadTimeout` (10 s), `WriteTimeout` (30 s),
      `IdleTimeout` (10 s) and `MaxHeaderBytes` (16 KiB). A client that
      trickles a request body, or holds an idle keep-alive connection
      longer than ten seconds, now has the connection closed.
-  5. A tool with invocations that have not returned is refused with
+  7. A tool with invocations that have not returned is refused with
      HTTP `503` and message `tool has invocations that have not
      returned`, under the existing `tool_failed` code. Previously the
      caller waited out the full timeout and received `504`.
-  6. Helper ops run under a deadline, so a call that previously hung
+  8. Helper ops run under a deadline, so a call that previously hung
      for the life of the process now returns a `deadline` error.
-  7. `nginx_apache_status` validates its parameter against an
+  9. `nginx_apache_status` validates its parameter against an
      allow-list, so a value that was previously accepted can now
      return `bad_argument`.
-  8. An over-cap helper reply reports `output_truncated` rather than
+ 10. An over-cap helper reply reports `output_truncated` rather than
      presenting as a generic failure.
-  9. `CAP_SYS_ADMIN` is no longer granted to every host with a
+ 11. `CAP_SYS_ADMIN` is no longer granted to every host with a
      `storage` entry — it is gated on the declared `storage_backends[]`.
      A host running ZFS or btrfs without declaring it produces empty
      results from `zpool_status` and in-progress `btrfs_scrub`. The
@@ -207,8 +207,8 @@ envelopes, with no field affected:
      `storage_backends[]` before upgrading.**
 
 A client that keys on `error.code` rather than on the HTTP status is
-unaffected by items 2-8. Item 1 requires a decoder change; item 9
-requires a configuration check.
+unaffected by items 4-10. Items 1-3 require a decoder change; item 11
+requires a configuration check on the host.
 
 A plugin compiled against `0.7.0` that decoded `recent_4xx` /
 `recent_5xx` as a plain `int` may surface a parse error on an

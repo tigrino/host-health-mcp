@@ -5,9 +5,16 @@ author: Albert 'Tigr' Zenkoff <albert@tigr.net>
 
 # 2.3.0 — security audit remediation (2026-08-05)
 
-Every finding from the 2026-08-02 audit of the published source — all
-four tiers — the packaging-interface work that followed, and a pass
-over the maintainer scripts so that nothing they do is silent.
+The 2026-08-02 audit of the published source, across all four tiers.
+Most findings are fixed; the exceptions are recorded rather than
+implied. B-3 and B-5 are accepted by design, not fixed, and
+`REQUIREMENTS.txt` still requires the opposite — a written proposal is
+with the owner. S-3 is open pending a decision on the Go toolchain
+floor. The audit ledger below carries the disposition of every finding
+that has no entry of its own.
+
+Also here: the packaging-interface work that followed the audit, and a
+pass over the maintainer scripts so that nothing they do is silent.
 
 **Wire schema moves to `1.2.0`** (additive minor). Three response
 shapes changed, each replacing a confident wrong answer with an
@@ -867,7 +874,7 @@ never existed. All four were found by audit, not by a failing test.
   obligations.
 
   Section 6 also listed two client-observable changes for this
-  release where there are nine. The full list is there now, with the
+  release where there are eleven. The full list is there now, with the
   two that need action before upgrading marked as such.
 
 ## Audit ledger: findings with no entry above
