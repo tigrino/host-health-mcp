@@ -855,6 +855,63 @@ never existed. All four were found by audit, not by a failing test.
   release where there are nine. The full list is there now, with the
   two that need action before upgrading marked as such.
 
+## Audit ledger: findings with no entry above
+
+Seven finding IDs from the 2026-08-02 audit had no disposition recorded
+anywhere in this release. Each was re-checked against the current tree;
+this is what is actually true of them. An audit finding without a
+disposition reads as unhandled, which for five of these was wrong and
+for two was right.
+
+- **S-4 — the plugin module was never scanned by the forbidden-call
+  linter.** Fixed. `build.sh` runs the linter against `plugin` as well
+  as `daemon`. Verified by running it against both.
+
+- **C-14 — `forbidden:allow` suppression was too loose.** Fixed. The
+  directive must now start the comment
+  (`^(//|/\*)\s*forbidden:allow\b`), so prose that merely mentions
+  the token — including this project's own documentation of it — no
+  longer suppresses a finding.
+
+- **C-15 — `_test.go` files exempt from the linter.** Not a defect;
+  deliberate and now explicit. The exemption is per rule, not
+  wholesale: `_test.go` files are scanned for the process-spawning and
+  system-state rules and exempted only from the filesystem ones,
+  because a parser test legitimately writes fixtures into `t.TempDir()`
+  and no `_test.go` is compiled into a shipped binary.
+
+- **M-9** was cited by the audit as an already-closed fix from an
+  earlier release, not as an open finding. No action.
+
+- **B-18 — the global rate bucket is hardcoded.** Closed as
+  documentation. REQ 6.6 specifies 30 req/min sustained, burst 10, so
+  compiling those numbers in is the requirement being met. A config key
+  would let a deployment raise its own ceiling on the control that
+  bounds a caller holding a valid certificate. The example file and the
+  call site now both say there is no key.
+
+- **B-3 and B-5** are recorded above as accepted by design. What was
+  missing is that `REQUIREMENTS.txt` 6.3 and 6.4 still require the
+  opposite, so the repository holds a requirement and a decision not to
+  meet it with nothing linking them. Amending the binding contract is
+  not a maintenance decision; a written proposal with both options
+  costed is with the owner and this entry will be updated with the
+  outcome.
+
+- **C-6 — orphan tags on the public remote.** Open, and unchanged
+  because it needs a decision, not a fix. Re-measured directly:
+  **28 tags are unreachable from `main`** — every tag up to and
+  including `1.15.0`; the first reachable one is `1.15.1`. The oldest
+  carry a pre-scrub module path. `git clone` fetches tags by default,
+  so the pre-rewrite lineage is in every public clone. The orphan
+  boundary implies a second history rewrite that this changelog does
+  not document. Separately, one v-prefixed alias (`v1.16.1`) still
+  points at the same commit as `1.16.1`.
+
+  Nothing here has been touched. Deleting or remapping a published ref
+  changes what a verifier sees and is not a decision to take while
+  tidying.
+
 ## Release-note discipline
 
 Three classes of change are invisible to a downstream consumer unless
