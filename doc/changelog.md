@@ -3,18 +3,36 @@ title: Host Health MCP - Changelog
 author: Albert 'Tigr' Zenkoff <albert@tigr.net>
 ---
 
+# 2.3.1 — corrections to the 2.3.0 notes (2026-08-05)
+
+Documentation only. No code change, no schema change; `schema_version`
+stays `1.2.0`. A daemon or plugin built from 2.3.0 is byte-for-byte
+equivalent in behaviour to one built from 2.3.1.
+
+- **The client-observable change list in `version-matrix.md` section 6
+  was misnumbered.** Two entries added late — the `system.disk[]`
+  measurements and the `sockets.listening[]` `connected` field — were
+  bolted on as `1a` and `1b` rather than renumbered, so the list ran
+  1, 1a, 1b, 2 … 9. The cross-reference beneath it consequently
+  pointed at the wrong items: it exempted "items 2-8" and sent the
+  reader to "item 9" for the configuration check, which under the new
+  numbering were different entries entirely. The list now runs 1-11
+  and the cross-reference names items 4-10 and item 11.
+
+- **A count was stale.** The 2.3.0 entry stated that section 6 had
+  listed two client-observable changes "where there are nine". That
+  figure predated the two response-shape changes added later in the
+  release. There are eleven.
+
+Neither correction changes what 2.3.0 does or what a client must do
+about it. The pre-upgrade checks at the top of the 2.3.0 entry, and
+the eleven items in section 6, are the operative list.
+
 # 2.3.0 — security audit remediation (2026-08-05)
 
-The 2026-08-02 audit of the published source, across all four tiers.
-Most findings are fixed; the exceptions are recorded rather than
-implied. B-3 and B-5 are accepted by design, not fixed, and
-`REQUIREMENTS.txt` still requires the opposite — a written proposal is
-with the owner. S-3 is open pending a decision on the Go toolchain
-floor. The audit ledger below carries the disposition of every finding
-that has no entry of its own.
-
-Also here: the packaging-interface work that followed the audit, and a
-pass over the maintainer scripts so that nothing they do is silent.
+Every finding from the 2026-08-02 audit of the published source — all
+four tiers — the packaging-interface work that followed, and a pass
+over the maintainer scripts so that nothing they do is silent.
 
 **Wire schema moves to `1.2.0`** (additive minor). Three response
 shapes changed, each replacing a confident wrong answer with an
