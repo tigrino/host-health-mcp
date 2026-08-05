@@ -615,6 +615,23 @@ files from under two running services, so the daemon carried on
 serving from a binary no longer on disk and the helper kept its root
 privileges and its socket.
 
+A unit that refuses to stop does **not** block the removal. The
+`prerm` reports the failure in full — the stop's own error output, and
+that the unit is still running — and then lets dpkg proceed, because a
+service that will not stop is frequently the reason for removing the
+package in the first place, and failing here would leave the package
+un-removable without hand intervention. Check the units afterwards:
+
+```
+systemctl status host-health-mcp host-health-mcp-helper
+```
+
+This is deliberately the opposite of install. The `postinst` **does**
+exit non-zero when a unit fails to come back after an upgrade, because
+a dead daemon behind a successful `apt` run is an outage nobody is
+told about, and the failed configure is the only thing that surfaces
+it. Removal is loud but permissive; installation is loud and strict.
+
 The `systemctl disable` above is belt-and-braces: from 2.3.0 the
 `postrm` disables both units itself before reloading. It was left to
 the operator at first, on the reasoning that a package which never

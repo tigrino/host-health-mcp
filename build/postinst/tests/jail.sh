@@ -144,7 +144,18 @@ case "$verb" in
             [ -f "/opt/state/$u.stopped" ] && exit 3
         done
         exit 0 ;;
-    stop)    for u in ${units:-}; do : > "/opt/state/$u.stopped"; done ;;
+    stop)
+        # A unit named in JAIL_FAIL_UNIT refuses to stop and stays
+        # active, which is the case prerm must report without failing
+        # the removal.
+        for u in ${units:-}; do
+            case " ${JAIL_FAIL_UNIT:-} " in
+                *" $u "*)
+                    echo "Job for $u failed: unit is stuck in stopping." >&2
+                    exit 1 ;;
+            esac
+            : > "/opt/state/$u.stopped"
+        done ;;
     start|restart)
         # Fault injection: a unit named in JAIL_FAIL_UNIT refuses to
         # come back, which is the case the scripts must detect and

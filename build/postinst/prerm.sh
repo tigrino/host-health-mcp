@@ -83,10 +83,23 @@ for unit in host-health-mcp.service host-health-mcp-helper.service; do
     fi
 done
 
-# Non-zero aborts the removal while the package is still whole, which
-# is recoverable. Letting dpkg pull files out from under a unit that
-# refused to stop is not.
+# Deliberately NOT fatal, and deliberately asymmetric with postinst.
+#
+# postinst exits non-zero when a unit fails to come back, because a
+# dead daemon behind a successful `apt` run is a monitoring outage
+# nobody is told about, and the failed configure is the only thing that
+# surfaces it.
+#
+# Removal is the opposite case. A unit that will not stop is often
+# exactly why an operator is removing the package, and failing here
+# would leave it un-removable without hand intervention — turning a
+# stuck service into a stuck service AND a stuck package. Everything
+# above is still reported in full; only the exit status is withheld.
 if [ "$rc" -ne 0 ]; then
-    echo "$ME: pre-removal finished with errors; see above." >&2
-    exit "$rc"
+    echo "$ME: pre-removal finished with errors (see above), but is not" >&2
+    echo "$ME:   failing the removal: a unit that will not stop is often the" >&2
+    echo "$ME:   reason for removing the package. Check the units afterwards:" >&2
+    echo "$ME:   systemctl status host-health-mcp host-health-mcp-helper" >&2
 fi
+
+exit 0
