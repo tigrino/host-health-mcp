@@ -100,11 +100,10 @@ func TestDownstreamPathsAreDocumented(t *testing.T) {
 }
 
 // The wire schema version is declared twice — once in each Go module —
-// because the plugin cannot import daemon internals. CLAUDE.md says
-// they are kept in lockstep "at release time", which until now meant
-// by hand: nothing failed if a release bumped one and not the other,
-// and the symptom of drift is a plugin refusing a daemon it is
-// compatible with, or accepting one it is not.
+// because the plugin cannot import daemon internals. Keeping the two
+// equal was a manual release step: nothing failed if a release bumped
+// one and not the other, and the symptom of drift is a plugin refusing
+// a daemon it is compatible with, or accepting one it is not.
 func TestWireSchemaVersionIsDeclaredOnceInEffect(t *testing.T) {
 	root := repoRoot(t)
 	daemonV := constValue(t, filepath.Join(root, "daemon", "internal", "shared", "schema", "envelope.go"), "SchemaVersion")

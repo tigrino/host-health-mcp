@@ -3,19 +3,33 @@ title: Host Health MCP - Changelog
 author: Albert 'Tigr' Zenkoff <albert@tigr.net>
 ---
 
-# 2.3.0 — security audit remediation, first tranche (2026-08-04)
+# 2.3.0 — security audit remediation (2026-08-05)
 
-The five "fix before the next release" findings from the 2026-08-02
-audit of the published source, the High, Medium and Low tiers behind
-them, and the packaging-interface work that followed.
+Every finding from the 2026-08-02 audit of the published source — all
+four tiers — the packaging-interface work that followed, and a pass
+over the maintainer scripts so that nothing they do is silent.
 
-**Wire schema moves to `1.2.0`** (additive minor): `mail.queue_depth`
-becomes nullable. `doc/version-matrix.md` section 6 lists every change
-a client can observe in this release — one response field and eight
-status-code or error-envelope changes. Read it before upgrading a
-client that decodes `queue_depth` or parses HTTP status codes, and
-check `storage_backends[]` in `manifest.yml` before upgrading a host
-that runs ZFS or btrfs.
+**Wire schema moves to `1.2.0`** (additive minor). Three response
+shapes changed, each replacing a confident wrong answer with an
+explicit unknown: `mail.queue_depth` and the four `system.disk[]`
+measurements become nullable, and `sockets.listening[]` gains a
+required `connected` boolean. `doc/version-matrix.md` section 6 lists
+every change a client can observe.
+
+**Before upgrading a host, read section 6 and check four things.** A
+config that this release rejects will stop the daemon, and — new in
+this release — the post-install now reports that as a failed
+`dpkg --configure` rather than exiting 0 over a dead listener:
+
+  1. `max_concurrent_handshakes` is absent or positive.
+  2. Every key under `expensive_tool_buckets`, `timeout_overrides` and
+     `cache_ttl_overrides` names a registered tool.
+  3. Every rate-limit bucket has both values positive, or an explicit
+     `enabled: false`.
+  4. `log_redaction_rules`, if set, names a file that parses.
+
+And on a host running ZFS or btrfs, declare it in `storage_backends[]`
+in `manifest.yml` first, or those probes go silently empty.
 
 - **Request bodies are now bounded (audit B-1).** The listener set only
   `ReadHeaderTimeout`. Go's `net/http` resets the read deadline to
@@ -377,11 +391,12 @@ that runs ZFS or btrfs.
   released tag has already published; the proprietary line was the
   outlier.
 
-- **The last AI-tool references are out of the published tree (audit
-  C-4).** One in the README architecture diagram and one in a 1.19.x
-  changelog entry naming a file that is gitignored and therefore not in
-  the published tree at all. The repo-map entry the audit also listed
-  had already gone.
+- **The last references to gitignored tooling files are out of the
+  published tree (audit C-4).** One in the README architecture diagram
+  and one in a 1.19.x changelog entry, both naming paths that are
+  gitignored and therefore absent from the published tree — a reader
+  of the public repository could only conclude the file was missing.
+  The repo-map entry the audit also listed had already gone.
 
   The two commit subjects the finding names are reachable from `main`
   and are left alone: correcting them means rewriting published
