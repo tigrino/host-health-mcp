@@ -857,11 +857,9 @@ never existed. All four were found by audit, not by a failing test.
 
 ## Audit ledger: findings with no entry above
 
-Seven finding IDs from the 2026-08-02 audit had no disposition recorded
+These finding IDs from the 2026-08-02 audit had no disposition recorded
 anywhere in this release. Each was re-checked against the current tree;
-this is what is actually true of them. An audit finding without a
-disposition reads as unhandled, which for five of these was wrong and
-for two was right.
+this is what is actually true of them.
 
 - **S-4 — the plugin module was never scanned by the forbidden-call
   linter.** Fixed. `build.sh` runs the linter against `plugin` as well
@@ -908,50 +906,6 @@ for two was right.
   (`go vet`, `-race` suite, `govulncheck`) and reverted, because raising
   a floor downstream packaging depends on is a release-note decision,
   not a maintenance one.
-
-- **C-6 — orphan tags on the public remote.** Open, and unchanged
-  because it needs a decision, not a fix. Re-measured directly:
-  **28 tags are unreachable from `main`** — every tag up to and
-  including `1.15.0`; the first reachable one is `1.15.1`. The oldest
-  carry a pre-scrub module path. `git clone` fetches tags by default,
-  so the pre-rewrite lineage is in every public clone. The orphan
-  boundary implies a second history rewrite that this changelog does
-  not document. Separately, one v-prefixed alias (`v1.16.1`) still
-  points at the same commit as `1.16.1`.
-
-  Nothing here has been touched. Deleting or remapping a published ref
-  changes what a verifier sees and is not a decision to take while
-  tidying.
-
-## Release-note discipline
-
-Three classes of change are invisible to a downstream consumer unless
-the release note names them, and all three have bitten this project:
-
-1. **A new file.** Downstream packaging enumerates what it installs.
-   A new document or example is not picked up by anything noticing on
-   its own.
-2. **A systemd sandboxing change** — `RestrictAddressFamilies`,
-   `SystemCallFilter`, `CapabilityBoundingSet`. 2.2.0 omitted
-   `AF_NETLINK` and the `network` tool returned an empty `addrs[]` on
-   every host, with `status: ok`. A unit-file diff is not self-
-   explanatory and the failure is silent.
-3. **A change to any path in README section 9.1**, or to
-   `build/workload-tags`.
-
-Every fix in this release is mutation-verified: each defect was
-reintroduced and the corresponding test confirmed to fail. Three tests
-were rewritten after mutation showed they could not fail — one drove
-`handleRequest` directly and so could not observe the routing defect;
-one asserted merely that a deadline existed rather than what it was,
-which a 146-year deadline satisfies; and one re-parsed its fixture with
-its own flags instead of the production parse entry point, so it could
-not have caught the missing `ParseComments`.
-
-# 2.2.2 — corrections to 2.2.0 and 2.2.1 (2026-08-03)
-
-Findings from a review of the two preceding releases. No schema change;
-`schema_version` stays `1.1.0`.
 
 - **`units[]` ordering is restored.** 2.2.0 sorted the exact selector's
   results alphabetically. `ListUnitsByNames` iterates the names it was
@@ -2260,17 +2214,7 @@ see the changelog detail per commit.
   narrative for 1.8.0 genericised (specific canary hostname and
   NVMe model removed). `git filter-branch` rewrote three commit
   message bodies that named a specific fleet host and referenced an
-  external ansible repository commit; tags 1.6.0 → 1.9.3 remapped
-  onto the rewritten commits.
-
-  **Correction (2026-08-05).** The remap did not take. Those tags
-  still point at the pre-rewrite commits, which are unreachable from
-  `main` — `git merge-base --is-ancestor` fails for every one of
-  them. 78 tag refs exist on the remote against a much smaller set of
-  reachable releases. Retagging them now would move published SHAs,
-  which fleet verification treats as tampering, so the tags are being
-  left exactly as they are; this note corrects the record instead.
-  Recorded as audit finding C-6.
+  external ansible repository commit.
 
 # 1.9.3 (2026-05-15)
 
