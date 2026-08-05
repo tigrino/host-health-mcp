@@ -453,6 +453,15 @@ func (s *Server) handleToolError(w http.ResponseWriter, r *http.Request, toolNam
 		s.writeError(w, r, toolName, http.StatusGatewayTimeout, schema.ErrCodeToolTimeout, schema.MsgToolTimeout, start, "deadline")
 		return
 	}
+	// A wedged tool is 503, not 502: the daemon is refusing to start
+	// another invocation of something that has not returned, and the
+	// condition clears on its own when it does. 502 would say the
+	// upstream answered badly, and a caller cannot tell from that
+	// whether retrying is useful.
+	if errors.Is(err, cache.ErrStalled) {
+		s.writeError(w, r, toolName, http.StatusServiceUnavailable, schema.ErrCodeToolFailed, schema.MsgToolStalled, start, "stalled")
+		return
+	}
 	s.writeError(w, r, toolName, http.StatusBadGateway, schema.ErrCodeToolFailed, schema.MsgToolFailed, start, "tool_error")
 }
 

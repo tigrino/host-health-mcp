@@ -18,12 +18,18 @@ import (
 // Data is the response data for tool mail. Mirrors MailData in
 // doc/schema-draft.yaml.
 type Data struct {
-	MTAInUse              string                 `json:"mta_in_use"`
-	QueueDepth            int                    `json:"queue_depth"`
-	LastSuccessfulSendTS  *time.Time             `json:"last_successful_send_ts"`
-	LastFailureTS         *time.Time             `json:"last_failure_ts"`
-	LastFailureReason     *string                `json:"last_failure_reason"`
-	Errors                []schema.HelperOpError `json:"errors,omitempty"`
+	MTAInUse string `json:"mta_in_use"`
+	// QueueDepth is null when the depth was not measured: the helper's
+	// postqueue op failed, or the host runs an MTA whose queue this
+	// tool cannot read. It was a plain int, which meant both of those
+	// reported 0 — indistinguishable from an empty queue, and read by
+	// exactly the alert that is supposed to fire when mail stops
+	// flowing. A measurement that failed is not a measurement of zero.
+	QueueDepth           *int                   `json:"queue_depth"`
+	LastSuccessfulSendTS *time.Time             `json:"last_successful_send_ts"`
+	LastFailureTS        *time.Time             `json:"last_failure_ts"`
+	LastFailureReason    *string                `json:"last_failure_reason"`
+	Errors               []schema.HelperOpError `json:"errors,omitempty"`
 }
 
 // Tool is the registered tool.
@@ -50,7 +56,8 @@ type helperPostqueue struct {
 }
 
 // Handle assembles the mail envelope. The MTA detection is by binary
-// presence; the queue depth comes from the helper for Postfix.
+// presence; the queue depth comes from the helper for Postfix and is
+// left null for every other MTA, since nothing here measures theirs.
 func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 	d := Data{MTAInUse: detectMTA()}
 	var warnings []string
@@ -63,7 +70,8 @@ func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 			d.Errors = append(d.Errors, *oe)
 			warnings = append(warnings, "mail: "+proto.OpPostqueue+": "+helperinvoke.CodeOf(err))
 		} else {
-			d.QueueDepth = pq.QueueDepth
+			depth := pq.QueueDepth
+			d.QueueDepth = &depth
 		}
 	}
 
@@ -80,19 +88,24 @@ func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 	return d, warnings, nil
 }
 
+// mtaProbes maps a binary path to the REQ 4.7 enum value it implies,
+// in probe order. A var so tests can point it at a fixture directory;
+// nothing else rewrites it.
+var mtaProbes = []struct {
+	path, name string
+}{
+	{"/usr/sbin/postfix", "postfix"},
+	{"/usr/sbin/exim4", "exim"},
+	{"/usr/sbin/sendmail", "sendmail"},
+	{"/usr/bin/msmtp", "msmtp"},
+	{"/usr/sbin/msmtp", "msmtp"},
+}
+
 // detectMTA returns one of the REQ 4.7 enum values by probing for the
 // canonical binary in /usr/sbin or by checking for the daemon's
 // systemd unit name. We never invoke them.
 func detectMTA() string {
-	for _, c := range []struct {
-		path, name string
-	}{
-		{"/usr/sbin/postfix", "postfix"},
-		{"/usr/sbin/exim4", "exim"},
-		{"/usr/sbin/sendmail", "sendmail"},
-		{"/usr/bin/msmtp", "msmtp"},
-		{"/usr/sbin/msmtp", "msmtp"},
-	} {
+	for _, c := range mtaProbes {
 		if _, err := os.Stat(c.path); err == nil {
 			return c.name
 		}

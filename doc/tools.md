@@ -28,6 +28,17 @@ failing the call: `storage.smart[].error`, `updates.apt_lock_state`,
 and `dns` (per-probe bool plus envelope warning). All other tools
 follow the "tool fails as a whole" rule.
 
+Messages come from a fixed catalogue compiled into the daemon
+(`schema/errors.go`); free-form interpolation of subsystem strings
+into a message is forbidden by `schema-draft.yaml`. Two messages share
+the `tool_failed` code because the code enum is part of the wire
+contract and the distinction is not:
+
+| Message | HTTP | Meaning |
+|---|---|---|
+| `tool failed to assemble its response` | 502 | The tool ran and did not produce a usable answer. |
+| `tool has invocations that have not returned` | 503 | The daemon is refusing to start another invocation because earlier ones are still running. Temporary; clears when one returns. Retrying later is worthwhile, which is why it is 503 and not 502. |
+
 # Argument matching
 
 Every value that can influence what a tool does is matched by one of a
@@ -372,6 +383,14 @@ MTA detected by canonical binary presence. Queue depth from the
 helper's `postqueue` op (Postfix only). Last successful send from
 `/var/log/mail.log` mtime as a coarse signal.
 
+`queue_depth` is **nullable from wire schema 1.2.0**. Null means the
+depth was not measured — the `postqueue` op failed (the reason is in
+`errors[]` and in `warnings[]`), or the host runs an MTA whose queue
+this tool does not read. `0` means an empty queue. Before 1.2.0 the
+field was a non-nullable integer and reported `0` for all three cases,
+so a failed measurement was indistinguishable from mail flowing
+normally. Treat null as unknown; do not coalesce it to zero.
+
 Cache TTL default: 60 s. Timeout default: 3 s.
 
 ## `backup` (REQ 4.8, CORE)
@@ -386,9 +405,10 @@ Cache TTL default: 5 min. Timeout default: 2 s.
 ## `workload` (REQ 4.9, OPTIONAL)
 
 Map keyed by compile-time-registered plugin name. Plugins are
-selected via build tags (`WORKLOAD_TAGS=` in `build.sh`); the
-default build ships `wl_wireguard`, `wl_postfix`, `wl_dovecot`,
-`wl_nginx_apache`. Manifest references to plugins not compiled in
+selected via build tags. The authoritative list is `build/workload-tags`,
+one tag per line; `build.sh` reads it into `WORKLOAD_TAGS` and
+downstream packaging reads the same file. The default build ships
+`wl_wireguard`, `wl_postfix`, `wl_dovecot`, `wl_nginx_apache`. Manifest references to plugins not compiled in
 cause the daemon to refuse to start (REQ 8.2).
 
   - `wireguard`: delegates to the helper's `wireguard_show` op.

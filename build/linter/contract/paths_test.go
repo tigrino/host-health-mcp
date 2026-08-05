@@ -8,6 +8,7 @@ package contract
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -96,4 +97,40 @@ func TestDownstreamPathsAreDocumented(t *testing.T) {
 				"named in README section 9.1", p.path)
 		}
 	}
+}
+
+// The wire schema version is declared twice — once in each Go module —
+// because the plugin cannot import daemon internals. CLAUDE.md says
+// they are kept in lockstep "at release time", which until now meant
+// by hand: nothing failed if a release bumped one and not the other,
+// and the symptom of drift is a plugin refusing a daemon it is
+// compatible with, or accepting one it is not.
+func TestWireSchemaVersionIsDeclaredOnceInEffect(t *testing.T) {
+	root := repoRoot(t)
+	daemonV := constValue(t, filepath.Join(root, "daemon", "internal", "shared", "schema", "envelope.go"), "SchemaVersion")
+	pluginV := constValue(t, filepath.Join(root, "plugin", "internal", "schema", "version.go"), "SchemaVersion")
+
+	if daemonV != pluginV {
+		t.Fatalf("wire schema version has drifted: daemon declares %q, plugin declares %q",
+			daemonV, pluginV)
+	}
+	if daemonV == "" {
+		t.Fatal("could not read the wire schema version from either module")
+	}
+}
+
+// constValue extracts the quoted value of `const <name> = "..."` from
+// a Go source file. Textual on purpose: the point is to compare two
+// modules the compiler never links together.
+func constValue(t *testing.T, path, name string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	m := regexp.MustCompile(`(?m)^const ` + name + ` = "([^"]*)"`).FindSubmatch(b)
+	if m == nil {
+		t.Fatalf("no `const %s = \"...\"` in %s", name, path)
+	}
+	return string(m[1])
 }

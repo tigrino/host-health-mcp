@@ -6,12 +6,16 @@ author: Albert 'Tigr' Zenkoff <albert@tigr.net>
 # 2.3.0 — security audit remediation, first tranche (2026-08-04)
 
 The five "fix before the next release" findings from the 2026-08-02
-audit of the published source, plus one packaging change requested by
-the fleet architect. No schema change; `schema_version` stays `1.1.0`.
+audit of the published source, the High, Medium and Low tiers behind
+them, and the packaging-interface work that followed.
 
-Two changes alter observable daemon behaviour without changing any
-response field — read the first two entries before upgrading a client
-that parses HTTP status codes.
+**Wire schema moves to `1.2.0`** (additive minor): `mail.queue_depth`
+becomes nullable. `doc/version-matrix.md` section 6 lists every change
+a client can observe in this release — one response field and eight
+status-code or error-envelope changes. Read it before upgrading a
+client that decodes `queue_depth` or parses HTTP status codes, and
+check `storage_backends[]` in `manifest.yml` before upgrading a host
+that runs ZFS or btrfs.
 
 - **Request bodies are now bounded (audit B-1).** The listener set only
   `ReadHeaderTimeout`. Go's `net/http` resets the read deadline to
@@ -763,6 +767,93 @@ behaviour on a correctly-installed host is unchanged.
 
   Adding a file inside a directory already listed is safe. Relocating,
   renaming, or splitting one is a release-note item.
+
+## Wrong answers that reported as right
+
+Three defects where the daemon produced a confident, well-formed
+response that was not true, and one control that was documented but
+never existed. All four were found by audit, not by a failing test.
+
+- **`mail.queue_depth` reported `0` for a measurement that never
+  happened.** The `postqueue` op failing left the field at its zero
+  value, and so did every MTA other than Postfix. The tool added an
+  `errors[]` entry and a warning, but the field a monitoring system
+  actually reads said the queue was empty — which is what a healthy
+  mail host looks like. The alert that exists to fire when mail stops
+  flowing was being fed a plausible number by the failure it was
+  meant to catch.
+
+  The field is now `*int` and null means "not measured". `0` is
+  reserved for a queue that was measured and found empty. This
+  loosens the wire type, so `schema_version` goes to `1.2.0` and a
+  client decoding it as a plain `int` must move to a nullable type —
+  the same treatment `recent_4xx` / `recent_5xx` had in `0.8.0`.
+  Seven tests cover the distinction, including that an empty queue
+  still reports `0` and that the key is serialised as an explicit
+  null rather than omitted.
+
+- **A wedged tool leaked a goroutine per poll, indefinitely.** The
+  2.3.0 fix for audit C-3 made a timed-out caller `Forget` the
+  singleflight entry so the next arrival starts a fresh call instead
+  of joining a wedged one. That restored recovery, and the comment
+  describing it claimed the abandoned goroutine "self-heals". It does
+  not. Against a tool blocked in an uninterruptible syscall — the
+  `unix.Statfs`-on-a-stale-mount case the system tool exists to
+  report — every poll started another invocation that also wedged. A
+  30 s poll leaves 2880 wedged goroutines a day, each holding
+  whatever the tool allocated, and every caller still paid the full
+  timeout.
+
+  Invocations are now bounded: `MaxInFlightPerKey` (2) and
+  `MaxInFlightTotal` (64). The total bound is not redundant — the
+  cache key includes the canonicalised arguments, so a caller varying
+  one argument produces unbounded distinct keys, each otherwise
+  entitled to its own per-key allowance, and that is reachable by any
+  caller holding a valid certificate inside its rate limit. Past the
+  bound a caller is refused immediately rather than waiting out a
+  deadline for an answer already known.
+
+  Recovery survives the bound: the count drops when the wedged call
+  returns, so the tool works again at the moment the underlying cause
+  clears — the same moment it would have before. What is given up is
+  the case where the cause never clears, which now reports a stalled
+  tool instead of leaking forever. The comment that claimed
+  self-healing is corrected in place.
+
+- **A stalled tool now answers `503`, not `504`.** It is a distinct
+  condition: the daemon is refusing to start another invocation, the
+  refusal is immediate, and it clears on its own. Presenting it as a
+  timeout told a caller nothing about whether retrying was
+  worthwhile. The error `code` stays `tool_failed` — the code enum is
+  the wire contract — and the distinction is carried by a new
+  compiled-in message, `tool has invocations that have not returned`,
+  which is what `schema-draft.yaml` means by "a fixed catalogue of
+  message templates". The audit log records `reject_reason:
+  stalled`.
+
+- **`version-matrix.md` section 5 described a CI gate that was never
+  built.** It claimed `build.sh` hashes "the schema file used by the
+  daemon" against "the schema file used by the plugin" and fails the
+  build on a mismatch. `build.sh` contains no schema handling of any
+  kind, and the gate could not have existed as described: there is
+  one schema document and neither binary reads it. A documented
+  control that does not exist is worse than no control, because it is
+  cited instead of checked.
+
+  Section 5 now says what runs and what does not. What runs is new:
+  the two `SchemaVersion` constants live in different Go modules — the
+  plugin cannot import daemon internals — and nothing had ever
+  compared them. Keeping them equal was a manual release step whose
+  failure mode is a plugin refusing a daemon it is compatible with.
+  A test in the linter module now fails the build on drift. What is
+  still unchecked is stated plainly: nothing validates the Go shapes
+  against `schema-draft.yaml`, and nothing enforces that
+  `schema_version` was bumped when a shape changed. Both are review
+  obligations.
+
+  Section 6 also listed two client-observable changes for this
+  release where there are nine. The full list is there now, with the
+  two that need action before upgrading marked as such.
 
 ## Release-note discipline
 

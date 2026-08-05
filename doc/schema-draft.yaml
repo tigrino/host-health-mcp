@@ -924,7 +924,15 @@ components:
         mta_in_use:
           type: string
           enum: [msmtp, postfix, exim, sendmail, other, none]
-        queue_depth: { type: integer, minimum: 0 }
+        queue_depth:
+          oneOf: [{ type: integer, minimum: 0 }, { type: "null" }]
+          description: |
+            Messages in the MTA queue, or null when the depth was not
+            measured — the helper's postqueue op failed (see errors[]),
+            or the host runs an MTA whose queue this tool does not
+            read. Null means unknown, never empty. Before wire schema
+            1.2.0 this field was a non-nullable integer and both of
+            those cases reported 0.
         last_successful_send_ts:
           oneOf: [{ type: string, format: date-time }, { type: "null" }]
         last_failure_ts:
