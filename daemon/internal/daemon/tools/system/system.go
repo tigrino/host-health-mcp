@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -39,12 +40,17 @@ type Data struct {
 
 // DiskEntry mirrors the DiskEntry schema in schema-draft.yaml.
 type DiskEntry struct {
-	Mountpoint  string `json:"mountpoint"`
-	FS          string `json:"fs"`
-	SizeB       int64  `json:"size_b"`
-	UsedB       int64  `json:"used_b"`
-	InodesTotal int64  `json:"inodes_total"`
-	InodesUsed  int64  `json:"inodes_used"`
+	Mountpoint string `json:"mountpoint"`
+	FS         string `json:"fs"`
+	// The four measurements are null when statfs(2) did not answer in
+	// time. The mount is still listed: dropping it entirely made a
+	// capacity dashboard go to no-data with nothing saying which
+	// volume had vanished, which is worse than a listed volume whose
+	// numbers are explicitly unknown.
+	SizeB       *int64 `json:"size_b"`
+	UsedB       *int64 `json:"used_b"`
+	InodesTotal *int64 `json:"inodes_total"`
+	InodesUsed  *int64 `json:"inodes_used"`
 }
 
 // Tool is the registered tool.
@@ -110,32 +116,36 @@ func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 			"; disk[] is incomplete")
 	}
 	{
-		if len(skipped) > 0 {
-			// Never silent. A mail or file server whose largest volume
-			// is NFS- or virtiofs-backed would otherwise lose capacity
-			// reporting for the volume that matters most, with nothing
-			// in the response to say why.
-			names := make([]string, 0, len(skipped))
-			for _, m := range skipped {
-				names = append(names, m.Mountpoint+" ("+m.FS+")")
+		// Every mount is listed, including the ones whose statfs may
+		// block. Skipping them entirely removed the volume from disk[]
+		// with only a warning to say so, and a capacity panel for an
+		// NFS or virtiofs volume went to no-data — silent, where the
+		// whole point of the tool is to be loud. They are measured
+		// under a deadline instead, and a mount that does not answer
+		// is listed with null measurements.
+		var unmeasured []string
+		for _, m := range append(append([]mountEntry{}, measured...), skipped...) {
+			e := DiskEntry{Mountpoint: m.Mountpoint, FS: m.FS}
+			st, ok := statfsBounded(m.Mountpoint)
+			if ok {
+				sizeB := int64(st.Blocks) * int64(st.Bsize)
+				usedB := int64(st.Blocks-st.Bavail) * int64(st.Bsize)
+				inodesTotal := int64(st.Files)
+				inodesUsed := int64(st.Files - st.Ffree)
+				e.SizeB = &sizeB
+				e.UsedB = &usedB
+				e.InodesTotal = &inodesTotal
+				e.InodesUsed = &inodesUsed
+			} else {
+				unmeasured = append(unmeasured, m.Mountpoint+" ("+m.FS+")")
 			}
-			warnings = append(warnings, "system: disk usage not measured for "+
-				strings.Join(names, ", ")+
-				": statfs on these filesystems can block uninterruptibly")
+			d.Disk = append(d.Disk, e)
 		}
-		for _, m := range measured {
-			var st unix.Statfs_t
-			if err := unix.Statfs(m.Mountpoint, &st); err != nil {
-				continue
-			}
-			d.Disk = append(d.Disk, DiskEntry{
-				Mountpoint:  m.Mountpoint,
-				FS:          m.FS,
-				SizeB:       int64(st.Blocks) * int64(st.Bsize),
-				UsedB:       int64(st.Blocks-st.Bavail) * int64(st.Bsize),
-				InodesTotal: int64(st.Files),
-				InodesUsed:  int64(st.Files - st.Ffree),
-			})
+		if len(unmeasured) > 0 {
+			warnings = append(warnings, "system: disk usage not measured for "+
+				strings.Join(unmeasured, ", ")+
+				": statfs did not answer within "+statfsTimeout.String()+
+				" (the mount is listed with null measurements)")
 		}
 	}
 
@@ -311,6 +321,55 @@ var blockingFSTypes = map[string]bool{
 	// Listed because a SIGKILLed ntfs-3g leaves the mount hung, not
 	// because it is remote.
 	"fuseblk": true,
+}
+
+// statfsTimeout bounds how long a single mount may take to answer.
+// Local filesystems answer in microseconds; a healthy NFS server in
+// milliseconds. A mount that misses this is a mount whose server is
+// gone.
+var statfsTimeout = 2 * time.Second
+
+// statfsInFlight tracks probes that have not returned. A statfs on a
+// dead NFS or virtiofs mount sits in D-state, where no timeout and no
+// signal reach it — the goroutine cannot be cancelled, only abandoned.
+// Without this guard every poll would abandon another one against the
+// same dead mount and they would accumulate for the life of the
+// process. With it there is at most one per mountpoint, and the next
+// poll reports "unknown" immediately instead of waiting again.
+var statfsInFlight sync.Map // mountpoint -> struct{}
+
+// statfsBounded returns the filesystem statistics for mp, or ok=false
+// if the call did not answer within statfsTimeout or a probe from an
+// earlier poll is still outstanding.
+func statfsBounded(mp string) (unix.Statfs_t, bool) {
+	if _, busy := statfsInFlight.LoadOrStore(mp, struct{}{}); busy {
+		return unix.Statfs_t{}, false
+	}
+	type result struct {
+		st  unix.Statfs_t
+		err error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		// Not cancellable by construction. The goroutine ends when the
+		// syscall returns, which for a recovered mount is when the
+		// server comes back, and for a permanently dead one is never.
+		// The buffered channel means it never blocks on a receiver
+		// that has already given up.
+		defer statfsInFlight.Delete(mp)
+		var st unix.Statfs_t
+		err := unix.Statfs(mp, &st)
+		ch <- result{st, err}
+	}()
+	select {
+	case r := <-ch:
+		if r.err != nil {
+			return unix.Statfs_t{}, false
+		}
+		return r.st, true
+	case <-time.After(statfsTimeout):
+		return unix.Statfs_t{}, false
+	}
 }
 
 // mayBlockOnStatfs reports whether statfs on this filesystem type may

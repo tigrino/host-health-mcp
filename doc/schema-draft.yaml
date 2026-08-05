@@ -706,10 +706,21 @@ components:
       properties:
         mountpoint:   { type: string }
         fs:           { type: string }
-        size_b:       { type: integer, minimum: 0 }
-        used_b:       { type: integer, minimum: 0 }
-        inodes_total: { type: integer, minimum: 0 }
-        inodes_used:  { type: integer, minimum: 0 }
+        size_b:
+          oneOf: [{ type: integer, minimum: 0 }, { type: "null" }]
+        used_b:
+          oneOf: [{ type: integer, minimum: 0 }, { type: "null" }]
+        inodes_total:
+          oneOf: [{ type: integer, minimum: 0 }, { type: "null" }]
+        inodes_used:
+          oneOf: [{ type: integer, minimum: 0 }, { type: "null" }]
+      description: |
+        Every currently-mounted filesystem is listed, including network
+        and userspace-backed ones. The four measurements are null when
+        statfs(2) did not answer within the probe deadline — a dead NFS
+        or virtiofs server, or a mount whose userspace daemon has gone.
+        Null means unknown, never empty; warnings[] names the mount.
+        Nullable from wire schema 1.2.0.
 
     SystemdUnit:
       type: object
@@ -1367,12 +1378,21 @@ components:
 
     ListeningSocket:
       type: object
-      required: [proto, family, addr, port]
+      required: [proto, family, addr, port, connected]
       properties:
         proto:  { type: string, enum: [tcp, udp] }
         family: { type: string, enum: [inet, inet6] }
         addr:   { type: string, maxLength: 64 }
         port:   { type: integer, minimum: 0, maximum: 65535 }
+        connected:
+          type: boolean
+          description: |
+            UDP only: true when the socket has a peer set
+            (/proc/net/udp state 01), false when bound without one
+            (state 07). Always false for TCP, where the LISTEN state
+            already carries the distinction. Both kinds are returned;
+            filter on this rather than expecting the daemon to choose.
+            Added in wire schema 1.2.0.
 
     SensorsData:
       type: object

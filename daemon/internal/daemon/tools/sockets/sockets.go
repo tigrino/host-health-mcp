@@ -25,6 +25,13 @@ type ListeningSocket struct {
 	Family string `json:"family"`
 	Addr   string `json:"addr"`
 	Port   int    `json:"port"`
+	// Connected distinguishes a UDP socket bound with a peer set
+	// (/proc/net/udp state 01) from a bound-but-unconnected one
+	// (state 07). Filtering the connected ones out dropped genuine
+	// UDP servers that had connect()ed back to a client, so both are
+	// returned and labelled instead. Always false for TCP, where the
+	// LISTEN state already carries the distinction.
+	Connected bool `json:"connected"`
 }
 
 // Tool is the registered tool.
@@ -104,35 +111,36 @@ func readProcNet(path, proto, family, listenState string) ([]ListeningSocket, er
 		}
 		localHex := fields[1]
 		state := fields[3]
-		// UDP was never filtered. The guard read `proto == "tcp" &&
-		// state != listenState`, so every UDP row came back including
-		// connected ephemeral client sockets — not the listening
-		// inventory REQ 4.16 describes, and noisy enough to bury the
-		// entries an operator is looking for.
-		//
 		// UDP has no LISTEN state: /proc/net/udp reports 07
-		// (TCP_CLOSE) for an unconnected bound socket and 01
-		// (TCP_ESTABLISHED) for one that has been connect()ed to a
-		// peer. The bound-but-unconnected rows are the listeners.
+		// (TCP_CLOSE) for a bound socket with no peer and 01
+		// (TCP_ESTABLISHED) for one that has been connect()ed. Both
+		// are returned. Filtering to 07 looked like it was removing
+		// client noise, but a UDP server that connect()s its socket
+		// back to a client — which is ordinary for TFTP, some DNS
+		// forwarders, and QUIC servers — reports 01 and vanished from
+		// the inventory. Dropping a real listener to reduce noise is
+		// the wrong trade for a tool whose job is to say what is
+		// listening; the `connected` field lets a caller filter
+		// without the daemon deciding for it.
+		connected := false
 		switch proto {
 		case "tcp":
 			if state != listenState {
 				continue
 			}
 		case "udp":
-			if state != udpUnconnectedState {
-				continue
-			}
+			connected = state != udpUnconnectedState
 		}
 		addr, port, err := parseHexEndpoint(localHex, family)
 		if err != nil {
 			continue
 		}
 		out = append(out, ListeningSocket{
-			Proto:  proto,
-			Family: family,
-			Addr:   addr,
-			Port:   port,
+			Proto:     proto,
+			Family:    family,
+			Addr:      addr,
+			Port:      port,
+			Connected: connected,
 		})
 	}
 	if err := scanner.Err(); err != nil {

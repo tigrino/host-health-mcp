@@ -76,15 +76,16 @@ func TestHandleCleanSourceProducesNoWarning(t *testing.T) {
 	}
 }
 
-// C-7 POSITIVE + NEGATIVE: UDP has no LISTEN state. A bound socket
-// with no peer reports 07 (TCP_CLOSE) and IS the listener; a
-// connect()ed one reports 01 and is an ephemeral client socket that
-// must not appear in a listening inventory. The original guard only
-// filtered TCP, so every UDP row came back.
-func TestUDPIsFilteredToBoundUnconnectedSockets(t *testing.T) {
+// UDP has no LISTEN state: /proc/net/udp reports 07 (TCP_CLOSE) for a
+// bound socket with no peer and 01 for one that has been connect()ed.
+// Both are returned. Filtering to 07 dropped genuine UDP servers that
+// connect() back to a client — ordinary for TFTP, some DNS forwarders
+// and QUIC — so a real listener disappeared from the inventory in the
+// name of removing client noise. The label lets the caller decide.
+func TestBothBoundAndConnectedUDPSocketsAreReturned(t *testing.T) {
 	f := writeTmp(t, procNetTCP(
-		row("0100007F:0035", "07"), // bound, no peer -> a listener
-		row("0100007F:9999", "01"), // connected -> must be filtered out
+		row("0100007F:0035", "07"), // bound, no peer
+		row("0100007F:9999", "01"), // connect()ed to a peer
 	))
 	withSources(t, []procNetSource{{f, "udp", "inet", udpUnconnectedState}})
 
@@ -93,10 +94,48 @@ func TestUDPIsFilteredToBoundUnconnectedSockets(t *testing.T) {
 		t.Fatalf("Handle: %v", err)
 	}
 	rows := out.(Data).Listening
-	if len(rows) != 1 {
-		t.Fatalf("got %d UDP rows, want 1 (the connected socket must be excluded): %+v", len(rows), rows)
+	if len(rows) != 2 {
+		t.Fatalf("got %d UDP rows, want 2 — neither may be dropped: %+v", len(rows), rows)
 	}
-	if rows[0].Port != 0x35 {
+
+	byPort := map[int]ListeningSocket{}
+	for _, r := range rows {
+		byPort[r.Port] = r
+	}
+	if r, ok := byPort[0x35]; !ok {
+		t.Error("the bound-unconnected socket is missing")
+	} else if r.Connected {
+		t.Error("a socket in state 07 must be labelled connected=false")
+	}
+	if r, ok := byPort[0x9999]; !ok {
+		t.Error("the connected socket is missing; it was previously filtered out")
+	} else if !r.Connected {
+		t.Error("a socket in state 01 must be labelled connected=true")
+	}
+}
+
+// NEGATIVE: TCP keeps its filter. LISTEN already carries the
+// distinction there, so a non-LISTEN TCP row is not a listener by any
+// reading and must not appear.
+func TestTCPIsStillFilteredToListenState(t *testing.T) {
+	f := writeTmp(t, procNetTCP(
+		row("0100007F:0016", "0A"), // LISTEN
+		row("0100007F:8888", "01"), // ESTABLISHED
+	))
+	withSources(t, []procNetSource{{f, "tcp", "inet", "0A"}})
+
+	out, _, err := (&Tool{}).Handle(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	rows := out.(Data).Listening
+	if len(rows) != 1 {
+		t.Fatalf("got %d TCP rows, want 1: %+v", len(rows), rows)
+	}
+	if rows[0].Port != 0x16 {
 		t.Errorf("kept the wrong socket: port %d", rows[0].Port)
+	}
+	if rows[0].Connected {
+		t.Error("TCP rows must always report connected=false")
 	}
 }

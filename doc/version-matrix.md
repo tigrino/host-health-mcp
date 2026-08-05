@@ -135,7 +135,7 @@ obligation:
 | 0.8.0          | 1.19.1                        | `WorkloadNginxApache.server` enum gains `none` (was 1.18.0); `recent_4xx` / `recent_5xx` loosened from `integer` to `oneOf integer or null` and two new required fields `recent_window_minutes` / `recent_coverage` added (was 1.19.0). The `0.7.0` → `0.8.0` bump was deferred from those releases and lands cumulatively here. |
 | 1.0.0          | 2.0.0                         | **First major bump — breaking.** `security.ssh_logins` renamed `accepted_since_boot` / `failed_since_boot` to `accepted_recent` / `failed_recent` (both nullable) and added the required `window` discriminator (`last_24h` / `since_log_rotation` / `unavailable`). The journal source is now bounded to the last 24h instead of walking since boot. A field rename is major per REQ 7.3; a `0.x` plugin fails closed against a `2.0.0` daemon per cell C4. Roll daemon and plugin together. |
 | 1.1.0          | 2.2.0                         | Additive minor. Tool 4.2 `systemd_units` gains `pattern_units[]`, the result of the new manifest `whitelisted_unit_patterns` glob selector; `units[]` keeps the exact selector's results, unchanged in shape and content. (Correction: 2.2.0 and 2.2.1 also re-sorted `units[]` alphabetically, where it had previously been returned in manifest order; 2.2.2 restored that ordering. No unit was added, dropped, or changed in shape.) The `manifest` response gains a matching `whitelisted_unit_patterns` array. No field renamed or removed, so a `1.0.0` plugin keeps working against a `2.2.0` daemon and simply does not see the new arrays (cell C2). |
-| 1.2.0          | 2.3.0                         | Additive minor. `MailData.queue_depth` loosened from `integer` to `oneOf integer or null`; null means the depth was not measured (failed `postqueue` op, or an MTA whose queue this tool does not read), where the field previously reported `0` for both. No field renamed or removed, so a `1.1.0` plugin keeps working per cell C2 — but one decoding `queue_depth` as a plain `int` will fault on null and must move to a nullable type. |
+| 1.2.0          | 2.3.0                         | Additive minor. `MailData.queue_depth`, and all four `DiskEntry` measurements, loosened from `integer` to `oneOf integer or null`; `ListeningSocket` gains a required `connected` boolean; null means the depth was not measured (failed `postqueue` op, or an MTA whose queue this tool does not read), where the field previously reported `0` for both. No field renamed or removed, so a `1.1.0` plugin keeps working per cell C2 — but one decoding `queue_depth` as a plain `int` will fault on null and must move to a nullable type. |
 
 `2.3.0` is an additive minor at the wire level (`1.2.0`), but it
 changes a great deal that a client can observe without any field being
@@ -144,7 +144,7 @@ these and called the release schema-neutral; the full list follows.
 None is a rename or a removal, so REQ 7.3 keeps all of it out of a
 major bump and no compatibility cell changes.
 
-One response field changed shape:
+Three response shapes changed:
 
   1. **`mail.queue_depth` is nullable.** It was a non-nullable integer
      that reported `0` both when the queue was empty and when the
@@ -155,6 +155,25 @@ One response field changed shape:
      re-check before upgrading**, because the old value fed exactly
      the alert that is supposed to fire when mail stops flowing, and
      the failure direction was silent.
+
+  1a. **`system.disk[]` measurements are nullable, and every mount is
+     listed again.** Network and userspace-backed filesystems (NFS,
+     CIFS, virtiofs, FUSE) were dropped from the array entirely because
+     `statfs(2)` on a dead server blocks uninterruptibly; a capacity
+     panel for such a volume went to no-data with nothing naming what
+     had vanished. They are now measured under a deadline and listed
+     either way, with `size_b` / `used_b` / `inodes_total` /
+     `inodes_used` null when the probe did not answer. A client
+     decoding those four as plain integers must move to nullable types.
+
+  1b. **`sockets.listening[]` gains `connected`, and connected UDP
+     sockets are returned again.** Filtering UDP to state 07 removed
+     genuine servers that `connect()` back to a client — ordinary for
+     TFTP, some DNS forwarders and QUIC. Both kinds are returned and
+     labelled; filter on `connected` rather than expecting the daemon
+     to choose. The field is required, so a strict decoder that rejects
+     unknown keys is unaffected but one validating against the 1.1.0
+     schema will see an extra property.
 
 Eight further changes are visible in HTTP status codes or in error
 envelopes, with no field affected:

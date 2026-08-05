@@ -319,36 +319,51 @@ func (t *Tool) Handle(ctx context.Context, _ []byte) (any, []string, error) {
 		addWarning("security: auth log read incomplete (" + fileErr.Error() +
 			"); falling back to journal counters")
 	}
-	if fileOK && fileTruncated {
-		// The counts cover the tail only, so do NOT label them
-		// since_log_rotation — that discriminator was added in 2.0.0
-		// precisely so a count is never ambiguous about what it spans.
-		// A sustained brute-force is what grows auth.log past the cap,
-		// so this fires during exactly the event the counters exist to
-		// surface.
-		addWarning("security: auth log exceeded the read cap; ssh_logins counts " +
-			"cover only the most recent portion of the file")
-		d.SSHLogins.Window = sshWindowUnavailable
-	} else if fileOK {
-		d.SSHLogins.AcceptedRecent = &a
-		d.SSHLogins.FailedRecent = &f
-		d.SSHLogins.Window = sshWindowSinceLogRotation
-	} else {
+	// The journal path, used whenever the file cannot give an
+	// unambiguous answer. Declared once because two distinct
+	// conditions reach it: no readable file at all, and a file too
+	// large to read in full.
+	journalCounters := func() {
 		var jc helperSshJournalCounts
 		if err := t.hc.CallJSON(ctx, proto.OpSshJournalCounts, "", &jc); err != nil {
 			addOpError(proto.OpSshJournalCounts, err)
 			d.SSHLogins.Window = sshWindowUnavailable
-		} else if jc.Present {
-			ja, jf := jc.AcceptedLast24h, jc.FailedLast24h
-			d.SSHLogins.AcceptedRecent = &ja
-			d.SSHLogins.FailedRecent = &jf
-			d.SSHLogins.Window = sshWindowLast24h
-			if jc.Truncated && jc.OldestEntryUnixS > 0 {
-				addWarning(formatSshJournalTruncationWarning(jc.OldestEntryUnixS))
-			}
-		} else {
-			d.SSHLogins.Window = sshWindowUnavailable
+			return
 		}
+		if !jc.Present {
+			d.SSHLogins.Window = sshWindowUnavailable
+			return
+		}
+		ja, jf := jc.AcceptedLast24h, jc.FailedLast24h
+		d.SSHLogins.AcceptedRecent = &ja
+		d.SSHLogins.FailedRecent = &jf
+		d.SSHLogins.Window = sshWindowLast24h
+		if jc.Truncated && jc.OldestEntryUnixS > 0 {
+			addWarning(formatSshJournalTruncationWarning(jc.OldestEntryUnixS))
+		}
+	}
+
+	switch {
+	case fileOK && !fileTruncated:
+		d.SSHLogins.AcceptedRecent = &a
+		d.SSHLogins.FailedRecent = &f
+		d.SSHLogins.Window = sshWindowSinceLogRotation
+
+	case fileOK && fileTruncated:
+		// The tail counts cannot be labelled since_log_rotation — that
+		// discriminator exists so a count is never ambiguous about what
+		// it spans. But reporting nothing is the wrong answer to "the
+		// file is too big": a sustained brute force is what grows
+		// auth.log past the cap, so this fires during exactly the event
+		// the counters exist to surface, and "no data" reads as "no
+		// attacks" on a dashboard. The journal covers a known window,
+		// so use it and say which window applies.
+		addWarning("security: auth log exceeded the read cap; counting from " +
+			"the journal instead, which covers a different window")
+		journalCounters()
+
+	default:
+		journalCounters()
 	}
 
 	return d, warnings, nil
