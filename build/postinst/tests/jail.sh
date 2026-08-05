@@ -39,12 +39,17 @@ usage() {
 [ $# -ge 1 ] || usage
 SCRIPT=$1
 ARG=${2:-}
+# Optional: space-separated unit names that must fail to start.
+JAIL_FAIL_UNIT=${JAIL_FAIL_UNIT:-}
 
 [ -f "$SCRIPT" ] || { echo "$0: no such script: $SCRIPT" >&2; exit 2; }
 SCRIPT=$(cd -- "$(dirname -- "$SCRIPT")" && pwd)/$(basename -- "$SCRIPT")
 
-command -v unshare >/dev/null 2>&1 || {
-    echo "$0: unshare(1) is required (util-linux)" >&2; exit 2; }
+# command -v is a predicate; its stdout is the resolved path.
+if ! command -v unshare >/dev/null; then
+    echo "$0: unshare(1) is required (util-linux)" >&2
+    exit 2
+fi
 # --map-auto maps the caller's /etc/subuid range, so chown/install to a
 # non-zero uid works inside the jail. Without it only uid 0 exists and
 # postinst's `install -o host-health-mcp` cannot succeed. Fall back to
@@ -55,12 +60,19 @@ command -v unshare >/dev/null 2>&1 || {
 # `install -o host-health-mcp` cannot succeed; without root, the tmpfs
 # mounts fail. Fall back to root-only, which is enough for prerm/postrm.
 MAPFLAGS="--map-auto --map-root-user"
-unshare --user $MAPFLAGS true 2>/dev/null || MAPFLAGS=--map-root-user
-unshare --user $MAPFLAGS true 2>/dev/null || {
+# Probing which mapping this kernel and /etc/subuid allow. A failure is
+# an ANSWER driving the fallback, not an error — but the message from
+# the final attempt is kept and shown if both fail.
+if ! probe=$(unshare --user $MAPFLAGS true 2>&1); then
+    MAPFLAGS=--map-root-user
+fi
+if ! probe=$(unshare --user $MAPFLAGS true 2>&1); then
+    echo "$0: user-namespace probe failed: $probe" >&2
     echo "$0: unprivileged user namespaces are unavailable on this kernel." >&2
     echo "  Do NOT fall back to running the script directly. Use a container" >&2
     echo "  or a disposable VM instead." >&2
-    exit 2; }
+    exit 2
+fi
 
 JAIL=$(mktemp -d)
 trap 'rm -rf "$JAIL"' EXIT
@@ -73,9 +85,15 @@ cp "$SCRIPT" "$JAIL/opt/script.sh"
 cat > "$JAIL/opt/inner.sh" <<'INNER'
 set -eu
 J=$1; ARG=${2:-}
+JAIL_FAIL_UNIT=${JAIL_FAIL_UNIT:-}
 
 for d in usr bin lib lib64 sbin dev; do
-    [ -d "/$d" ] && mount --bind -o ro "/$d" "$J/$d" 2>/dev/null || true
+    if [ ! -d "/$d" ]; then
+        continue
+    fi
+    if ! m=$(mount --bind -o ro "/$d" "$J/$d" 2>&1); then
+        echo "jail: WARNING: could not bind-mount /$d read-only: $m" >&2
+    fi
 done
 for d in etc run var tmp; do
     mount -t tmpfs tmpfs "$J/$d"
@@ -105,16 +123,57 @@ GR
 
 # Record systemd calls rather than making them. `is-active` answers
 # true so the restart/stop branches are actually exercised.
+# A stateful stub. The scripts now VERIFY their effects rather than
+# trusting an exit code, so a stub that always answers "active" makes
+# every stop look like a failure and every restart look like a success.
+# State lives in /opt/state/<unit>; "active" unless a stop cleared it.
 cat > "$J/opt/bin/systemctl" <<'STUB'
 #!/bin/sh
 echo "systemctl $*" >> /opt/calls
-[ "$1" = "is-active" ] && exit 0
+mkdir -p /opt/state
+verb=""
+for a in "$@"; do
+    case "$a" in
+        --*) ;;
+        *) if [ -z "$verb" ]; then verb=$a; else units="${units:-} $a"; fi ;;
+    esac
+done
+case "$verb" in
+    is-active)
+        for u in ${units:-}; do
+            [ -f "/opt/state/$u.stopped" ] && exit 3
+        done
+        exit 0 ;;
+    stop)    for u in ${units:-}; do : > "/opt/state/$u.stopped"; done ;;
+    start|restart)
+        # Fault injection: a unit named in JAIL_FAIL_UNIT refuses to
+        # come back, which is the case the scripts must detect and
+        # report rather than assume away.
+        for u in ${units:-}; do
+            case " ${JAIL_FAIL_UNIT:-} " in
+                *" $u "*)
+                    echo "Job for $u failed because the control process exited with error code." >&2
+                    : > "/opt/state/$u.stopped"
+                    exit 1 ;;
+            esac
+            rm -f "/opt/state/$u.stopped"
+        done ;;
+    status)
+        for u in ${units:-}; do
+            if [ -f "/opt/state/$u.stopped" ]; then
+                echo "* $u - stub unit"; echo "   Active: inactive (dead)"; exit 3
+            fi
+            echo "* $u - stub unit"; echo "   Active: active (running)"
+        done ;;
+esac
 exit 0
 STUB
+# deb-systemd-invoke delegates to systemctl so unit state stays
+# consistent whichever path a script takes.
 cat > "$J/opt/bin/deb-systemd-invoke" <<'STUB'
 #!/bin/sh
 echo "deb-systemd-invoke $*" >> /opt/calls
-exit 0
+exec /opt/bin/systemctl "$@"
 STUB
 # User creation would otherwise need a real passwd database. getent
 # reports "not found" so the create branch is the one exercised; the
@@ -132,6 +191,7 @@ chmod +x "$J/opt/bin/"*
 
 chroot "$J" /bin/sh -c "
     PATH=/opt/bin:\$PATH
+    export JAIL_FAIL_UNIT='$JAIL_FAIL_UNIT'
     sh /opt/script.sh $ARG
     rc=\$?
     echo
@@ -140,10 +200,10 @@ chroot "$J" /bin/sh -c "
     echo '--- privileged calls attempted ---'
     if [ -s /opt/calls ]; then sed 's/^/  /' /opt/calls; else echo '  (none)'; fi
     echo '--- /etc/systemd/system afterwards ---'
-    find /etc/systemd/system -mindepth 1 2>/dev/null | sed 's/^/  /' || echo '  (empty)'
+    find /etc/systemd/system -mindepth 1 | sed 's/^/  /' || echo '  (nothing, or /etc/systemd/system is absent)'
     exit \$rc
 "
 INNER
 
 echo "=== $(basename "$SCRIPT") ${ARG:-<no arg>} — in a throwaway root ==="
-unshare --user $MAPFLAGS --mount sh "$JAIL/opt/inner.sh" "$JAIL" "$ARG"
+JAIL_FAIL_UNIT="$JAIL_FAIL_UNIT" unshare --user $MAPFLAGS --mount sh "$JAIL/opt/inner.sh" "$JAIL" "$ARG"

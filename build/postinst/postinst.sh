@@ -11,12 +11,26 @@
 # Runs as postinst; $1 is "configure" on install and upgrade.
 set -eu
 
+ME=$(basename "$0")
+# Accumulates the worst outcome seen. Every failure path sets it; the
+# script exits with it. A message on stderr that leaves the exit status
+# at 0 hides the failure from dpkg just as effectively as discarding
+# the message would.
+rc=0
+restart_rc=0
+status_rc=0
+
 [ "${1:-configure}" = "configure" ] || exit 0
 
 USER=host-health-mcp
 GROUP=host-health-mcp
 HOME_DIR=/var/lib/host-health-mcp
 
+# getent is a QUERY used as a predicate: exit 0 means the entry exists,
+# 2 means it does not. Its stdout is the passwd/group record itself,
+# which carries no diagnostic value here, and any real error still
+# reaches stderr untouched. This is case 3 in the shell-error-handling
+# rules — a non-zero exit that is an answer, not a failure.
 if ! getent group "$GROUP" >/dev/null; then
     addgroup --system "$GROUP"
 fi
@@ -50,7 +64,12 @@ host-health-mcp-caps-template
 # boot is the operator's decision, and a package that enables a network
 # listener on install is making it for them.
 if [ -d /run/systemd/system ]; then
-    systemctl --system daemon-reload >/dev/null 2>&1 || true
+    if ! reload_out=$(systemctl --system daemon-reload 2>&1); then
+        echo "$ME: ERROR: systemctl daemon-reload failed:" >&2
+        echo "$reload_out" | sed "s/^/$ME:   /" >&2
+        echo "$ME:   the units below will restart against their OLD definitions" >&2
+        rc=1
+    fi
 
     # Restart only what is already running. On a first install nothing
     # is active, so nothing starts — installing the package must not
@@ -61,37 +80,66 @@ if [ -d /run/systemd/system ]; then
     # and on build hosts; plain systemctl does not. Restart the helper
     # first: the daemon dials its socket per call and reconnects.
     for unit in host-health-mcp-helper.service host-health-mcp.service; do
-        if ! systemctl is-active --quiet "$unit" 2>/dev/null; then
+        # A non-zero exit here is an ANSWER, not a failure: 3 means
+        # inactive, 4 means no such unit. Neither is something to
+        # restart, and neither is an error worth reporting.
+        if ! systemctl is-active --quiet "$unit"; then
             continue
         fi
-        # `|| true` is required, not sloppiness: this runs under
-        # `set -eu`, and a package that fails to configure because a
-        # service would not start is a worse fleet outcome than a
-        # configured package with a stopped service. The outcome is
-        # reported below instead of being asserted.
-        if command -v deb-systemd-invoke >/dev/null 2>&1; then
-            deb-systemd-invoke restart "$unit" >/dev/null 2>&1 || true
+
+        # command -v is a predicate; its stdout is the resolved path.
+        if command -v deb-systemd-invoke >/dev/null; then
+            restart_out=$(deb-systemd-invoke restart "$unit" 2>&1) || restart_rc=$?
         else
-            systemctl restart "$unit" >/dev/null 2>&1 || true
+            restart_out=$(systemctl restart "$unit" 2>&1) || restart_rc=$?
         fi
-        # Report what happened, not what was attempted. The success
-        # line used to print unconditionally after a `|| true`, so a
-        # daemon that failed to come back — bad config, missing TLS
-        # material, a validation tightened in this very release —
-        # produced "restarted", exit 0, and a clean dpkg record over a
-        # dead listener. On a fleet that converts a detectable failure
-        # into an invisible one.
-        #
-        # Still not fatal: a package that refuses to configure because
-        # a service will not start is its own kind of fleet hazard.
-        # Loud and non-zero-free is the right middle.
-        if systemctl is-active --quiet "$unit" 2>/dev/null; then
-            echo "host-health-mcp-server: restarted $unit" >&2
+        if [ "${restart_rc:-0}" -ne 0 ]; then
+            echo "$ME: ERROR: restart of $unit exited ${restart_rc}:" >&2
+            if [ -n "$restart_out" ]; then
+                echo "$restart_out" | sed "s/^/$ME:   /" >&2
+            fi
+            rc=1
+        elif [ -n "$restart_out" ]; then
+            echo "$restart_out" | sed "s/^/$ME:   /" >&2
+        fi
+        restart_rc=0
+
+        # Report what happened, not what was attempted. A restart that
+        # exits 0 has not necessarily produced a running service, and
+        # this is the check that catches a daemon rejecting a config
+        # the previous version tolerated.
+        if systemctl is-active --quiet "$unit"; then
+            echo "$ME: $unit is running" >&2
         else
-            echo "host-health-mcp-server: WARNING: $unit did not come back after" \
-                 "restart; check 'systemctl status $unit' and 'journalctl -u $unit'" >&2
+            echo "$ME: ERROR: $unit is NOT running after restart." >&2
+            echo "$ME:   systemctl status $unit" >&2
+            echo "$ME:   journalctl -u $unit -n 50" >&2
+            # `status` exits non-zero for an inactive unit — which is
+            # precisely the case we are in, so the non-zero is expected
+            # and its OUTPUT is the diagnostic we want. Captured either
+            # way and printed; nothing is discarded.
+            status_out=$(systemctl --no-pager --lines=0 status "$unit" 2>&1) || status_rc=$?
+            if [ -n "$status_out" ]; then
+                echo "$status_out" | sed "s/^/$ME:   /" >&2
+            else
+                echo "$ME:   (systemctl status produced no output, exit ${status_rc:-0})" >&2
+            fi
+            status_rc=0
+            rc=1
         fi
     done
+fi
+
+# A service that did not come back is reported through the exit status,
+# not only on stderr. dpkg records a failed configure, `apt` says so,
+# and the host shows up in any fleet report that reads package state —
+# instead of a clean upgrade over a dead listener, which is what the
+# previous `|| true` produced. Nothing above has been left half-done:
+# files are installed and the unit definitions are in place, so
+# `dpkg --configure` after fixing the cause completes normally.
+if [ "$rc" -ne 0 ]; then
+    echo "$ME: configuration finished with errors; see above." >&2
+    exit "$rc"
 fi
 
 echo "host-health-mcp-server: installed. Place TLS material under" \

@@ -61,8 +61,22 @@ run() {
     return 0
 }
 
-caps() { grep '^CapabilityBoundingSet=' "$WORK/d/caps.conf" 2>/dev/null || echo "<no drop-in>"; }
-ambient() { grep '^AmbientCapabilities=' "$WORK/d/caps.conf" 2>/dev/null || echo "<no drop-in>"; }
+# grep exiting 1 means "no such line", which is an answer; a missing
+# drop-in is a different answer and is reported as such rather than
+# collapsed into the same string by a discarded stderr.
+caps() { field '^CapabilityBoundingSet='; }
+ambient() { field '^AmbientCapabilities='; }
+field() {
+    if [ ! -f "$WORK/d/caps.conf" ]; then
+        echo "<no drop-in>"
+        return 0
+    fi
+    if ! out=$(grep "$1" "$WORK/d/caps.conf"); then
+        echo "<no matching line>"
+        return 0
+    fi
+    echo "$out"
+}
 
 has() {
     if ! caps | grep -q "$1"; then
@@ -83,14 +97,14 @@ hasnt() {
 # five neighbouring keys in the shipped example. Rejecting it aborted
 # the package configure.
 run "empty flow form storage_backends" 0 \
-    'enabled_tools:\n  - storage\nstorage_backends: []\n' || true
-run "empty flow form enabled_tools" 0 'enabled_tools: []\n' || true
-run "absent storage_backends"        0 'enabled_tools:\n  - storage\n' || true
-run "block form"                     0 'enabled_tools:\n  - storage\nstorage_backends:\n  - zfs\n' || true
-run "empty manifest"                 0 '\n' || true
-run "comments and blank lines"       0 '# c\nenabled_tools:\n\n  - storage   # spinning rust\n' || true
-run "tabs in list"                   0 'enabled_tools:\n\t- storage\n' || true
-run "quoted values"                  0 'enabled_tools:\n  - "storage"\n' || true
+    'enabled_tools:\n  - storage\nstorage_backends: []\n'
+run "empty flow form enabled_tools" 0 'enabled_tools: []\n'
+run "absent storage_backends"        0 'enabled_tools:\n  - storage\n'
+run "block form"                     0 'enabled_tools:\n  - storage\nstorage_backends:\n  - zfs\n'
+run "empty manifest"                 0 '\n'
+run "comments and blank lines"       0 '# c\nenabled_tools:\n\n  - storage   # spinning rust\n'
+run "tabs in list"                   0 'enabled_tools:\n\t- storage\n'
+run "quoted values"                  0 'enabled_tools:\n  - "storage"\n'
 
 # --- NEGATIVE: shapes that must be refused loudly ------------------
 
@@ -98,10 +112,10 @@ run "quoted values"                  0 'enabled_tools:\n  - "storage"\n' || true
 # so accepting it silently would generate the default cap set from a
 # non-empty config.
 run "non-empty flow form storage_backends" 1 \
-    'enabled_tools:\n  - storage\nstorage_backends: [smart, zfs]\n' || true
-run "non-empty flow form enabled_tools"    1 'enabled_tools: [storage, security]\n' || true
+    'enabled_tools:\n  - storage\nstorage_backends: [smart, zfs]\n'
+run "non-empty flow form enabled_tools"    1 'enabled_tools: [storage, security]\n'
 run "non-empty flow form workload_plugins" 1 \
-    'enabled_tools:\n  - workload\nworkload_plugins: [wireguard]\n' || true
+    'enabled_tools:\n  - workload\nworkload_plugins: [wireguard]\n'
 
 # Argument handling: --hint is opt-in, an unknown flag is a usage
 # error, and neither may change the generated drop-in.
@@ -128,9 +142,9 @@ argcheck "--help accepted"           0 --help
 rm -rf "$WORK/d" "$WORK/dd"; mkdir -p "$WORK/d" "$WORK/dd"
 printf 'enabled_tools:\n  - storage\n' > "$WORK/m.yml"
 MANIFEST="$WORK/m.yml" DROPIN_DIR="$WORK/d" DAEMON_DROPIN_DIR="$WORK/dd" \
-    DAEMON_YML="$WORK/absent.yml" sh "$GEN" 2>"$WORK/plain" >/dev/null
+    DAEMON_YML="$WORK/absent.yml" sh "$GEN" 2>"$WORK/plain" >"$WORK/plain_out"
 MANIFEST="$WORK/m.yml" DROPIN_DIR="$WORK/d" DAEMON_DROPIN_DIR="$WORK/dd" \
-    DAEMON_YML="$WORK/absent.yml" sh "$GEN" --hint 2>"$WORK/hinted" >/dev/null
+    DAEMON_YML="$WORK/absent.yml" sh "$GEN" --hint 2>"$WORK/hinted" >"$WORK/hinted_out"
 if grep -q 'systemctl' "$WORK/plain"; then
     echo "FAIL [--hint default] activation advice printed without --hint"; fail=$((fail+1))
 else

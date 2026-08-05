@@ -25,13 +25,37 @@ set -euo pipefail
 # not use this script; they pin to the toolchain their suite ships.
 export GOTOOLCHAIN=${GOTOOLCHAIN:-go1.26.5}
 
-SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)
+# `cd` can print the target directory when CDPATH is set in the
+# caller's environment; that stdout would corrupt the captured path.
+# Errors still reach stderr and an unresolvable path fails the
+# assignment under `set -e`.
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null && pwd)
 REPO=$(cd -- "$SCRIPT_DIR/.." && pwd)
 DIST="$SCRIPT_DIR/dist"
 
-VERSION=${VERSION:-$(cd "$REPO" && git describe --tags --dirty --always 2>/dev/null || echo "0.0.0-dev")}
-GIT_SHA=$(cd "$REPO" && git rev-parse --short HEAD 2>/dev/null || echo "unknown")
-export SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-$(cd "$REPO" && git log -1 --pretty=%ct 2>/dev/null || date +%s)}
+if [ -z "${VERSION:-}" ]; then
+    if VERSION=$(cd "$REPO" && git describe --tags --dirty --always 2>&1); then
+        :
+    else
+        echo "==> WARNING: git describe failed, versioning this build 0.0.0-dev:" >&2
+        echo "$VERSION" | sed 's/^/      /' >&2
+        VERSION=0.0.0-dev
+    fi
+fi
+if ! GIT_SHA=$(cd "$REPO" && git rev-parse --short HEAD 2>&1); then
+    echo "==> WARNING: git rev-parse failed, recording the commit as 'unknown':" >&2
+    echo "$GIT_SHA" | sed 's/^/      /' >&2
+    GIT_SHA=unknown
+fi
+if [ -z "${SOURCE_DATE_EPOCH:-}" ]; then
+    if ! SOURCE_DATE_EPOCH=$(cd "$REPO" && git log -1 --pretty=%ct 2>&1); then
+        echo "==> WARNING: no git commit timestamp available, using the wall clock;" >&2
+        echo "      this build's timestamps are not reproducible:" >&2
+        echo "$SOURCE_DATE_EPOCH" | sed 's/^/      /' >&2
+        SOURCE_DATE_EPOCH=$(date +%s)
+    fi
+fi
+export SOURCE_DATE_EPOCH
 
 mkdir -p "$DIST"
 
@@ -73,7 +97,8 @@ trap 'rm -f "$LINTER_BIN"' EXIT
 # deliberately; the build then says so, loudly, instead of implying a
 # scan happened.
 for scanner in staticcheck govulncheck; do
-    if command -v "$scanner" >/dev/null 2>&1; then
+    # command -v is a predicate; its stdout is the resolved path.
+    if command -v "$scanner" >/dev/null; then
         continue
     fi
     if [ "${ALLOW_MISSING_SCANNERS:-0}" = "1" ]; then
@@ -85,12 +110,12 @@ for scanner in staticcheck govulncheck; do
         exit 1
     fi
 done
-if command -v staticcheck >/dev/null 2>&1; then
+if command -v staticcheck >/dev/null; then
     echo "==> staticcheck"
     ( cd "$REPO/daemon" && staticcheck ./... )
     ( cd "$REPO/plugin" && staticcheck ./... )
 fi
-if command -v govulncheck >/dev/null 2>&1; then
+if command -v govulncheck >/dev/null; then
     echo "==> govulncheck"
     ( cd "$REPO/daemon" && govulncheck ./... )
     ( cd "$REPO/plugin" && govulncheck ./... )
@@ -130,7 +155,15 @@ done
 # Step 4b: Debian changelog for the package doc directories. Native
 # package, so the file is changelog.gz rather than changelog.Debian.gz.
 # Generated rather than tracked because it carries the release version.
-CHANGELOG_DATE=$(date -u -R -d "@$SOURCE_DATE_EPOCH" 2>/dev/null || date -u -R)
+# GNU date understands -d @epoch; BSD date does not. The fallback is a
+# real difference in output (wall clock instead of the commit time), so
+# it is announced rather than silently substituted.
+if ! CHANGELOG_DATE=$(date -u -R -d "@$SOURCE_DATE_EPOCH" 2>&1); then
+    echo "==> WARNING: date(1) does not support -d @epoch; the changelog" >&2
+    echo "      timestamp will be the wall clock, not SOURCE_DATE_EPOCH:" >&2
+    echo "$CHANGELOG_DATE" | sed 's/^/      /' >&2
+    CHANGELOG_DATE=$(date -u -R)
+fi
 {
     echo "host-health-mcp ($VERSION) unstable; urgency=medium"
     echo
@@ -148,7 +181,7 @@ CHANGELOG_DATE=$(date -u -R -d "@$SOURCE_DATE_EPOCH" 2>/dev/null || date -u -R)
 # comment on the scanner gate cites that very failure; leaving it in
 # place three blocks below would have been a joke at the reader's
 # expense. ALLOW_MISSING_NFPM=1 opts out deliberately and says so.
-if ! command -v nfpm >/dev/null 2>&1; then
+if ! command -v nfpm >/dev/null; then
     if [ "${ALLOW_MISSING_NFPM:-0}" = "1" ]; then
         echo "==> WARNING: nfpm not installed and ALLOW_MISSING_NFPM=1;" \
              "this run produced NO packages" >&2
