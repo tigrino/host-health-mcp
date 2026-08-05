@@ -907,6 +907,76 @@ this is what is actually true of them.
   a floor downstream packaging depends on is a release-note decision,
   not a maintenance one.
 
+## Maintainer scripts: nothing is swallowed
+
+Every `>/dev/null 2>&1`, every `|| true`, and every discarded exit
+status is gone from every script in the repository. Each command now
+has a stated outcome: fatal and surfaced, tolerated and reported, or a
+non-zero exit that is an answer rather than a failure — `is-active`
+returning 3 means inactive, which is data, and `|| true` also swallowed
+exit 4, "no such unit", which is a different fact.
+
+- **`postinst` exits non-zero when a unit does not come back.** It
+  reports what `daemon-reload` and each restart actually said, then
+  verifies the unit is running. Previously the restart was
+  `>/dev/null 2>&1 || true` followed by an unconditional "restarted"
+  line, so a daemon rejecting a config the previous version tolerated
+  produced a clean `apt` run over a dead listener. Every startup
+  validation tightened in this release was invisible behind that.
+
+- **`prerm` reports a unit that will not stop, and lets the removal
+  proceed.** Deliberately asymmetric with the above: a service that
+  will not stop is frequently the reason for removing the package, and
+  failing there would leave it un-removable without hand intervention.
+  Loud and permissive on the way out, loud and strict on the way in.
+
+- **`postrm` reports failures to remove the generated drop-ins**
+  rather than leaving a stale `CapabilityBoundingSet` for the next
+  reinstall to inherit.
+
+- **`build.sh` announces every fallback it takes** — a failed
+  `git describe`, an absent commit timestamp, a `date(1)` without
+  `-d @epoch` — instead of substituting a value silently. The
+  caps-template suite no longer masks its own failures with `|| true`
+  on every case.
+
+The harness had to grow to prove any of this. Its `systemctl` stub is
+now stateful, so verify-the-effect logic can be exercised at all, and
+it takes `JAIL_FAIL_UNIT` to inject a unit that refuses to start or to
+stop. With it, `postinst` exits 1 naming the unit and `prerm` exits 0
+having said exactly what went wrong. Without the change both exited 0
+in silence.
+
+## Release-note discipline
+
+Three classes of change are invisible to a downstream consumer unless
+the release note names them, and all three have bitten this project:
+
+1. **A new file.** Downstream packaging enumerates what it installs.
+   A new document or example is not picked up by anything noticing on
+   its own.
+2. **A systemd sandboxing change** — `RestrictAddressFamilies`,
+   `SystemCallFilter`, `CapabilityBoundingSet`. 2.2.0 omitted
+   `AF_NETLINK` and the `network` tool returned an empty `addrs[]` on
+   every host, with `status: ok`. A unit-file diff is not self-
+   explanatory and the failure is silent.
+3. **A change to any path in README section 9.1**, or to
+   `build/workload-tags`.
+
+Every fix in this release is mutation-verified: each defect was
+reintroduced and the corresponding test confirmed to fail. Three tests
+were rewritten after mutation showed they could not fail — one drove
+`handleRequest` directly and so could not observe the routing defect;
+one asserted merely that a deadline existed rather than what it was,
+which a 146-year deadline satisfies; and one re-parsed its fixture with
+its own flags instead of the production parse entry point, so it could
+not have caught the missing `ParseComments`.
+
+# 2.2.2 — corrections to 2.2.0 and 2.2.1 (2026-08-03)
+
+Findings from a review of the two preceding releases. No schema change;
+`schema_version` stays `1.1.0`.
+
 - **`units[]` ordering is restored.** 2.2.0 sorted the exact selector's
   results alphabetically. `ListUnitsByNames` iterates the names it was
   given, so before 2.2.0 `units[]` came back in **manifest order** — and
