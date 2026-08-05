@@ -45,6 +45,25 @@ is fleet infrastructure and is not provisioned by this repository.
 
 ## 1.2 Offline path: direct `.deb` install
 
+**Scope note.** Everything in this section — the artefacts under
+`build/dist/`, the maintainer scripts under `build/postinst/`, and the
+nfpm configuration that assembles them — belongs to this path only. It
+is how a package gets onto a host with no repository access, and how
+this repository's own packaging is tested.
+
+Packages installed by section 1.1 are built by a separate packaging
+pipeline from its own packaging sources. That packaging supplies its
+own maintainer scripts and its own toolchain pin, so nothing under
+`build/` runs on that path and no guarantee made there applies to it.
+The two are kept in step by what both consume from this repository —
+`build/systemd/*.service`, `build/postinst/caps-template.sh`,
+`build/examples/*`, and `build/workload-tags` — not by sharing a build.
+
+The `build/postinst/` scripts are therefore reference material as much
+as they are shipped code: when a change here affects install-time
+behaviour, downstream packaging needs the same change made in its own
+scripts, and that only happens if the release note says so.
+
 Where the fleet repository is not reachable, install the artefacts
 produced under `build/dist/` directly:
 

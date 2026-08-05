@@ -699,6 +699,87 @@ that parses HTTP status codes.
   and the two test helpers wait on that instead of spinning. The module
   is race-clean.
 
+## Packaging interface
+
+Everything in this subsection is documentation and diagnostics. No tool
+gained or lost a field, no response shape moved, and the daemon's
+behaviour on a correctly-installed host is unchanged.
+
+- **The workload build tags are published as data.** `build/workload-tags`
+  lists one Go build tag per line, `#`-commented, and is read by
+  `build/build.sh` instead of the list it used to hardcode. The
+  downstream packaging reads the same file. Before this the list
+  existed twice — once here and once duplicated by hand downstream —
+  so adding a plugin here produced a package without it: no error, no
+  warning, a probe that simply never appeared. A contract test pins the file against the `//go:build wl_*`
+  sources and against `CompiledIn()`, and fails in both directions.
+
+  **Adding or removing a line in that file is a release-note item.** A
+  downstream build has no way to notice a new tag on its own.
+
+- **The helper says something when it lacks a capability an op needs.**
+  Since 2.3.0 gated the dangerous capabilities per storage backend, a
+  host running ZFS or btrfs without declaring it in `storage_backends[]`
+  gets a helper without `CAP_SYS_ADMIN`, and the only symptom is that
+  `zpool_status` and in-progress `btrfs_scrub` report nothing. Nothing
+  errored, nothing logged, and "no pools" is indistinguishable from
+  "no pools visible" — the failure mode an operator is least likely to
+  notice.
+
+  The helper now reads its own `CapEff` at startup, logs it once, and
+  logs one line per op the first time an op needs a capability the
+  process does not hold. It is diagnostic only: the op still runs and
+  still fails however it would have. It fails **open** — an unreadable
+  or unparseable `/proc/self/status` warns about nothing, because a
+  false warning on every host is worse than no warning. A
+  test pins the required-capability table against the grant logic in
+  `caps-template.sh` in both directions, so a capability named by an op
+  but never granted (a warning on every host) and a capability granted
+  for no op (unnecessary privilege in a root process) each fail the
+  build.
+
+- **The offline install path is marked as such.** `build/build.sh`,
+  `build/nfpm/`, and the `postinst`/`prerm`/`postrm` scripts serve
+  direct `.deb` installation (`install.md` 1.2) and local development.
+  Packages installed from a distribution repository are built by a
+  separate packaging pipeline, with its own maintainer scripts and its
+  own toolchain pin, and never execute any of it. The scripts
+  now say so in their headers, `build.sh` says so in its own, and
+  `install.md` 1.2 has a scope note. The consequence worth stating: a
+  green `build.sh` run — GOTOOLCHAIN pin, `go vet`, the forbidden-call
+  linter, staticcheck, govulncheck, the maintainer-script suites — is
+  evidence about the offline path only, and says nothing about a
+  package installed with `apt`.
+
+- **The paths downstream packaging reads by name are recorded.**
+  README section 9.1 lists them: `daemon/`, `plugin/`, both unit files
+  under `build/systemd/`, `build/postinst/caps-template.sh`,
+  `build/examples/`, `build/workload-tags`, `doc/`. Moving or renaming
+  one breaks nothing in this repository — the failure lands downstream
+  at package build, or at install time on a host. A test in the linter
+  module asserts each path exists and each is named in that section,
+  so an undocumented dependency and an unenforced promise both fail
+  the build.
+
+  Adding a file inside a directory already listed is safe. Relocating,
+  renaming, or splitting one is a release-note item.
+
+## Release-note discipline
+
+Three classes of change are invisible to a downstream consumer unless
+the release note names them, and all three have bitten this project:
+
+1. **A new file.** Downstream packaging enumerates what it installs.
+   A new document or example is not picked up by anything noticing on
+   its own.
+2. **A systemd sandboxing change** — `RestrictAddressFamilies`,
+   `SystemCallFilter`, `CapabilityBoundingSet`. 2.2.0 omitted
+   `AF_NETLINK` and the `network` tool returned an empty `addrs[]` on
+   every host, with `status: ok`. A unit-file diff is not self-
+   explanatory and the failure is silent.
+3. **A change to any path in README section 9.1**, or to
+   `build/workload-tags`.
+
 Every fix in this release is mutation-verified: each defect was
 reintroduced and the corresponding test confirmed to fail. Three tests
 were rewritten after mutation showed they could not fail — one drove

@@ -20,7 +20,9 @@ import (
 	"syscall"
 	"time"
 
+	"host-health-mcp/daemon/internal/helper/caps"
 	"host-health-mcp/daemon/internal/helper/dispatch"
+	"host-health-mcp/daemon/internal/helper/ops"
 	"host-health-mcp/daemon/internal/shared/proto"
 )
 
@@ -59,14 +61,37 @@ type Server struct {
 
 	// sem bounds concurrent handleConn goroutines. See maxConns.
 	sem chan struct{}
+
+	// caps is this process's effective capability set, read once at
+	// construction. warnedCaps keeps the missing-capability warning to
+	// one line per op.
+	caps       caps.Set
+	warnedMu   sync.Mutex
+	warnedCaps map[string]bool
+}
+
+// warnMissingCapOnce logs at most one line per op token.
+func (s *Server) warnMissingCapOnce(op, want string) {
+	s.warnedMu.Lock()
+	defer s.warnedMu.Unlock()
+	if s.warnedCaps[op] {
+		return
+	}
+	s.warnedCaps[op] = true
+	log.Printf("helper: op %s requires %s and this helper does not have it; "+
+		"results will be empty or incomplete. Declare the matching entry in "+
+		"manifest.yml storage_backends[] (or enabled_tools[]), re-run "+
+		"host-health-mcp-caps-template, and restart the helper.", op, want)
 }
 
 // New constructs a Server. It does not listen yet; call Serve.
 func New(cfg Config) *Server {
 	return &Server{
-		cfg:  cfg,
-		open: make(map[net.Conn]struct{}),
-		sem:  make(chan struct{}, maxConns),
+		cfg:        cfg,
+		open:       make(map[net.Conn]struct{}),
+		sem:        make(chan struct{}, maxConns),
+		caps:       caps.Effective(),
+		warnedCaps: make(map[string]bool),
 	}
 }
 
@@ -347,6 +372,18 @@ func (s *Server) dispatch(ctx context.Context, req *proto.Request) *proto.Respon
 	h, ok := s.cfg.Registry.Lookup(req.Op)
 	if !ok {
 		return errResp(proto.CodeBadOp, "op not compiled into this helper")
+	}
+
+	// Say something when an op needs a capability this helper does not
+	// hold. Without CAP_SYS_ADMIN, zpool_status and btrfs_scrub return
+	// nothing rather than failing, which is indistinguishable from "this
+	// host has no pools" — the failure an operator is least likely to
+	// notice, on hosts where storage_backends was never declared.
+	//
+	// Diagnostic only: the op still runs and still fails however it
+	// would have. Once per op, because this fires on a polling path.
+	if want, ok := ops.RequiredCap[req.Op]; ok && !s.caps.Has(want) {
+		s.warnMissingCapOnce(req.Op, want)
 	}
 
 	// The single chokepoint where every op acquires a bound. The

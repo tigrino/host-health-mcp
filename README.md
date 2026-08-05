@@ -359,6 +359,34 @@ host-health-mcp/
     └── dist/                       build output, gitignored
 ```
 
+### 9.1 Paths that downstream packaging depends on
+
+A separate packaging pipeline builds this source with its own packaging
+sources. It reads the following paths by name. Moving or renaming one
+does not break any build in this repository — the failure surfaces
+downstream, at package build or, worse, at install time on a host.
+
+| Path | What consumes it |
+|---|---|
+| `daemon/` | `go build` of both binaries |
+| `plugin/` | `go build` of the client binary |
+| `build/systemd/host-health-mcp.service` | installed as the daemon unit |
+| `build/systemd/host-health-mcp-helper.service` | installed as the helper unit |
+| `build/postinst/caps-template.sh` | installed and invoked at configure time |
+| `build/examples/*` | installed as the shipped example configs |
+| `build/workload-tags` | read to derive `go build -tags` |
+| `doc/*` | installed as package documentation |
+
+Treat this list as an interface. Adding a file to a directory already
+named here is safe. Relocating one, renaming it, or splitting it needs
+a release note — a downstream build has no way to notice on its own,
+and a missing `caps-template.sh` fails a host's `dpkg` configure while
+a missing build tag just makes a probe quietly disappear.
+
+The rest of `build/` — `build.sh`, `nfpm/`, and the other
+`postinst/` scripts — serves the offline install path only
+(`doc/install.md` section 1.2) and is not consumed downstream.
+
 ## 10. Building from source
 
 ```

@@ -21,6 +21,7 @@ import (
 
 	"github.com/coreos/go-systemd/v22/daemon"
 
+	"host-health-mcp/daemon/internal/helper/caps"
 	"host-health-mcp/daemon/internal/helper/config"
 	"host-health-mcp/daemon/internal/helper/dispatch"
 	helperexec "host-health-mcp/daemon/internal/helper/exec"
@@ -81,6 +82,13 @@ func main() {
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
+
+	// One line at startup naming what this helper may actually do. The
+	// capability set is generated at install time from manifest.yml, so
+	// when it does not match the host's reality — ZFS running but not
+	// declared, say — this is the only place that shows it before a
+	// tool starts quietly returning nothing.
+	log.Printf("helper: effective capabilities: %s", caps.Effective())
 
 	if _, err := daemon.SdNotify(false, daemon.SdNotifyReady); err != nil {
 		log.Printf("helper: sd_notify ready: %v (continuing)", err)

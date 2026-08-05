@@ -6,6 +6,15 @@
 #
 # Build reproducibility is FUNCTIONAL, not byte-identical. See section
 # 10.1 of design-overview.md for the trade-off.
+#
+# SCOPE. This script builds the offline-path artefacts (install.md
+# section 1.2). Packages installed from a distribution repository are
+# built by a separate packaging pipeline, from its own packaging
+# sources, and never execute this file. Every gate below — the GOTOOLCHAIN pin, go vet,
+# the os/exec linter, staticcheck, govulncheck, the maintainer-script
+# suites — therefore protects the offline path and local development
+# only. Do not cite a green run here as evidence about a package
+# installed with apt; that path has to run its own equivalents.
 
 set -euo pipefail
 
@@ -91,7 +100,15 @@ fi
 # WORKLOAD_TAGS: workload plugins enabled at build time per REQ 4.9 and
 # design §8. Default includes all four named plugins; operators who
 # want a minimal binary may override.
-WORKLOAD_TAGS=${WORKLOAD_TAGS:-wl_wireguard,wl_postfix,wl_dovecot,wl_nginx_apache}
+# Read from build/workload-tags rather than hardcoding here. That file
+# is the interface downstream packaging consumes; keeping a second
+# copy in this script is exactly the drift that made adding a plugin
+# silently produce a downstream build without it.
+WORKLOAD_TAGS=${WORKLOAD_TAGS:-$(grep -vE '^[[:space:]]*(#|$)' "$REPO/build/workload-tags" | tr '\n' ',' | sed 's/,$//')}
+if [ -z "$WORKLOAD_TAGS" ]; then
+    echo "build.sh: build/workload-tags is empty or unreadable" >&2
+    exit 1
+fi
 LDFLAGS="-buildid= -X main.buildID=$VERSION"
 for ARCH in amd64 arm64; do
     echo "==> Build $ARCH (workload tags: $WORKLOAD_TAGS)"

@@ -1,6 +1,13 @@
 #!/bin/sh
 # Debian post-install scriptlet. Idempotent.
 #
+# SCOPE: this script ships in the .deb built by build/build.sh — the
+# offline install path (doc/install.md 1.2). Packages built by a
+# separate packaging pipeline carry their own maintainer scripts and
+# never run this file. A change here does not reach a repository-
+# installed host until the same change is made there, which is a
+# release-note item, not an implementation detail.
+#
 # Runs as postinst; $1 is "configure" on install and upgrade.
 set -eu
 

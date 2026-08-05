@@ -1,0 +1,29 @@
+# Workload plugins compiled into the daemon, as Go build tags.
+#
+# THIS FILE IS AN INTERFACE. Downstream packaging reads it to decide
+# what to pass to `go build -tags`; build/build.sh reads it for the same
+# purpose. Before it existed, the list was hardcoded in build.sh and
+# duplicated by hand downstream, which meant adding a plugin here
+# silently produced a package without it: no error, no warning, just a
+# probe that never appears. A comment saying "keep these in sync" is
+# not a control.
+#
+# Format, so it stays trivially parseable from make, sh, and Go:
+#   - one tag per line
+#   - blank lines and #-comments ignored
+#   - no quoting, no continuation, no ordering significance
+#
+# Consumers should join the lines with commas. `make` users:
+#   TAGS := $(shell grep -v '^\s*\#' build/workload-tags | tr '\n' ',' | sed 's/,$$//')
+#
+# Adding or removing a line changes what the shipped binary can probe.
+# Treat it as a release-note item, not an implementation detail — a
+# downstream build has no way to notice a NEW tag on its own.
+#
+# REQ 4.9 and design §9: plugins are compile-time only. There is no
+# runtime loading, so this list is the whole story.
+
+wl_wireguard
+wl_postfix
+wl_dovecot
+wl_nginx_apache
