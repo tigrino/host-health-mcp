@@ -132,7 +132,7 @@ fi
 
 # A service that did not come back is reported through the exit status,
 # not only on stderr. dpkg records a failed configure, `apt` says so,
-# and the host shows up in any fleet report that reads package state —
+# and the host shows up in any report that reads package state —
 # instead of a clean upgrade over a dead listener, which is what the
 # previous `|| true` produced. Nothing above has been left half-done:
 # files are installed and the unit definitions are in place, so
