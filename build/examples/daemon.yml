@@ -62,8 +62,8 @@ ipv4_allowlist_ranges:
 ipv6_allowlist_ranges:
   - fc00::/7
 
-# Set true if bind_addr is on a public interface; the daemon emits a
-# startup warning unless this is explicit (REQ 6.4).
+# Set true if bind_addr is on a public interface. Without it the daemon
+# REFUSES TO START on a public bind_addr — it is not a warning (REQ 6.4).
 public_bind_acknowledged: false
 
 # Per-(caller, tool) buckets for expensive tools.

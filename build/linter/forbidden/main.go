@@ -20,6 +20,13 @@
 // `// forbidden:allow` comment carrying a justification, on the line
 // of the call or the line above it.
 //
+// A third form of exemption exists for a package that legitimately
+// needs a small, fixed set of these calls: narrowChokepoints names the
+// package and the exact symbols it may use. Every other rule still
+// applies to it. That is the right tool when the reason is
+// package-wide but the permission should not be — see the comment on
+// narrowChokepoints for why the distinction earned its own mechanism.
+//
 // The linter fails CLOSED: a file it cannot parse is reported as a
 // finding, because "the enforcement mechanism could not read this
 // file" must never be indistinguishable from "this file is clean".
@@ -217,37 +224,56 @@ var dotImportBanned = map[string]bool{
 }
 
 // chokepoints are the only packages design §7.4 permits to hold the
-// calls in forbiddenCalls.
+// calls in forbiddenCalls. Exemption here is total: every rule in the
+// table is lifted for the whole package. Two entries, both of them
+// process-execution sites — the daemon's socket client to the helper,
+// and the helper's sole os/exec site.
 //
-// The first two are the process-execution chokepoints: the daemon's
-// socket client to the helper, and the helper's sole os/exec site.
-//
-// capstemplate is a different case and is listed for a different
-// reason. It is not part of the daemon or the helper and never runs in
-// the request path: it is the install-time generator invoked once by
-// the postinst, whose entire purpose is to write two systemd drop-ins
-// under /etc/systemd/system. Writing files is its job, not a leak in
-// the read-only property REQ 6.1 asserts about the SERVING binaries.
-// Naming it here states that once, where a reader looking for the
-// filesystem-mutation policy will find it; the alternative — half a
-// dozen scattered // forbidden:allow comments — buries the same fact
-// in six places and reads like an exception being argued rather than a
-// boundary being drawn.
-//
-// The scope is deliberately the command directory alone. Its
-// decision logic lives in plan.go and is pure; nothing that computes a
-// capability set is exempt from anything.
+// Adding a third entry means deciding that some package may spawn
+// processes, signal them, and mutate the filesystem, all unreviewed.
+// That is almost never what is wanted; see narrowChokepoints.
 var chokepoints = map[string]bool{
 	"daemon/internal/daemon/helperinvoke": true,
 	"daemon/internal/helper/exec":         true,
-	"daemon/cmd/capstemplate":             true,
+}
+
+// narrowChokepoints permit a package a NAMED set of calls and nothing
+// else. Every other rule in the table still applies, so a package here
+// remains unable to spawn a process, signal one, or change system
+// state without the build failing.
+//
+// This exists because 2.4.0 briefly got it wrong. The capability
+// generator legitimately writes two systemd drop-ins, so it was added
+// to chokepoints above — which also, silently, lifted the
+// process-spawning rules for it. The generator spawns nothing, so
+// nothing was exploitable; what was lost was the guarantee that it
+// never would. threat-model.md asserts that only the two packages
+// above may exec, and a package-level exemption made that assertion
+// false rather than merely unenforced.
+//
+// Naming the calls keeps the boundary in one place — the argument for
+// a chokepoint over scattered // forbidden:allow comments — without
+// the all-or-nothing granularity that made the first attempt wrong.
+// A Symbol matches the finding's own Symbol field: "os.WriteFile",
+// or `import "os/exec"` for the import check.
+var narrowChokepoints = map[string]map[string]bool{
+	// The install-time capability generator. Not the daemon, not the
+	// helper, never in the request path: a one-shot binary the
+	// postinst runs to write the helper's CapabilityBoundingSet
+	// drop-in and the daemon's optional IPAddressAllow drop-in.
+	// Writing those two files is its entire purpose.
+	"daemon/cmd/capstemplate": {
+		"os.MkdirAll":  true, // create the drop-in directory
+		"os.WriteFile": true, // write caps.conf / 10-ip-filter.conf
+		"os.Remove":    true, // retire the obsolete 10-ip-egress.conf
+	},
 }
 
 // walkRoot scans every .go file under root except those in allowed,
 // and returns the findings. A file that will not parse yields a
 // finding rather than being skipped. Separated from main so the walk,
 // which is where the fail-open bug lived, is reachable from a test.
-func walkRoot(root string, allowed map[string]bool) []finding {
+func walkRoot(root string, allowed map[string]bool, narrow map[string]map[string]bool) []finding {
 	fset := token.NewFileSet()
 	var findings []finding
 
@@ -284,7 +310,21 @@ func walkRoot(root string, allowed map[string]bool) []finding {
 			findings = append(findings, parseErrorFinding(path, err))
 			return nil
 		}
-		findings = append(findings, scanFile(fset, file, path)...)
+		got := scanFile(fset, file, path)
+		// A narrow chokepoint is scanned like anything else; only the
+		// findings it names are dropped. Everything the package is not
+		// permitted still fails the build.
+		if permitted, ok := narrow[dir]; ok {
+			kept := got[:0]
+			for _, f := range got {
+				if permitted[f.Symbol] {
+					continue
+				}
+				kept = append(kept, f)
+			}
+			got = kept
+		}
+		findings = append(findings, got...)
 		return nil
 	})
 	if err != nil {
@@ -305,7 +345,7 @@ func main() {
 	root := flag.String("root", "daemon", "path to scan (recursive)")
 	flag.Parse()
 
-	findings := walkRoot(*root, chokepoints)
+	findings := walkRoot(*root, chokepoints, narrowChokepoints)
 
 	if len(findings) == 0 {
 		return

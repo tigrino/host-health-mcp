@@ -188,8 +188,16 @@ can do. By construction the daemon cannot:
   method call that mutates.
 
 The daemon's Go source forbids `os/exec` and `syscall.ForkExec`
-calls in every package except `internal/helperinvoke/`, by a custom
-build-time linter (REQ 10.2). The daemon process holds no
+calls in every package except `internal/helperinvoke/` (daemon side)
+and `internal/exec/` (helper side), by a custom build-time linter
+(REQ 10.2).
+
+One further package, `cmd/capstemplate/`, is permitted three named
+filesystem calls — `os.MkdirAll`, `os.WriteFile`, `os.Remove` —
+because writing the two systemd drop-ins is its entire purpose. That
+exemption names the symbols rather than the package, so every other
+rule still applies to it: it cannot spawn a process, signal one, or
+change system state without the build failing. The daemon process holds no
 capabilities at runtime; the systemd unit sets
 `NoNewPrivileges=yes`, `CapabilityBoundingSet=` (empty),
 `AmbientCapabilities=` (empty). Every privileged read is delegated

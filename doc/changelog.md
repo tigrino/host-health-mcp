@@ -3,6 +3,101 @@ title: Host Health MCP - Changelog
 author: Albert 'Tigr' Zenkoff <albert@tigr.net>
 ---
 
+# 2.4.1 — documentation corrections and a narrowed linter exemption (2026-08-07)
+
+No runtime change. `schema_version` stays `1.2.0`; the daemon, helper
+and generator binaries behave identically to 2.4.0. The one code change
+is to the build-time linter, which does not ship.
+
+## The linter exemption 2.4.0 got wrong
+
+2.4.0 added `daemon/cmd/capstemplate` to the forbidden-call linter's
+`chokepoints` list so the generator could write its two systemd
+drop-ins. A chokepoint exemption is total: it lifted every rule in the
+table for that package, including the process-spawning and signalling
+rules, when three filesystem calls were all that was needed.
+
+Nothing was exploitable — the generator spawns no processes, and it is
+neither the daemon nor the helper. What was lost is the guarantee that
+it never would. `threat-model.md` asserts that only
+`internal/helperinvoke/` and `internal/exec/` may exec, and a
+package-wide exemption made that assertion false rather than merely
+unenforced.
+
+Replaced with `narrowChokepoints`, which names a package **and the
+exact symbols it may use**:
+
+```go
+"daemon/cmd/capstemplate": {
+    "os.MkdirAll":  true, // create the drop-in directory
+    "os.WriteFile": true, // write caps.conf / 10-ip-filter.conf
+    "os.Remove":    true, // retire the obsolete 10-ip-egress.conf
+}
+```
+
+The file is scanned normally and only those findings are dropped, so
+every other rule still applies. Verified by adding an `os/exec` import
+to the generator and confirming the linter rejects it:
+
+```
+daemon/cmd/capstemplate/main.go:42:2: forbidden import "os/exec"
+```
+
+`chokepoints` is back to two entries, pinned by a test that fails on a
+third. Four mutation tests cover the new path, including the two ways
+it could silently regress — the exemption becoming inert, and
+capstemplate regaining full-chokepoint status.
+
+## Documentation corrected against the code
+
+Nine statements that did not match the implementation. Each was
+verified against the source rather than taken from a prior review.
+
+- **A public `bind_addr` makes the daemon refuse to start, not warn.**
+  `install.md` and `build/examples/daemon.yml` both said
+  `public_bind_acknowledged` merely suppresses a startup warning. The
+  daemon calls `log.Fatalf` and does not come up. An operator following
+  the old text would have planned a bind that leaves the host down.
+  `threat-model.md` had it right.
+
+- **`schema-draft.yaml` documented 17 of 19 tools.** `firewall`
+  (1.13.0) and `firewall_lookup` (1.14.0) were absent along with every
+  shape they return. Both are now specified, and the document again
+  covers the registered surface.
+
+- **`HelperOpError` was undocumented** despite appearing on the wire in
+  `storage`, `firewall` and `firewall_lookup`. Now a named component
+  schema.
+
+- **`tool_disabled` is never emitted.** `README.md` and
+  `version-matrix.md` told operators to expect it when a tool is absent
+  from `enabled_tools[]`. The daemon answers `unknown_tool` with
+  HTTP 404, deliberately, so a disabled tool is indistinguishable from
+  one that does not exist (REQ 8.2). Anyone searching logs for
+  `tool_disabled` would never have found it. The code is now marked
+  reserved in `tools.md` and in the schema's enum, and kept there
+  because removing an enum member is not minor-additive.
+
+- **The plugin does not compare `enabled_tools[]`.** Version-matrix row
+  C3 and its definition described a pre-flight check that has never
+  existed. `recordCompatFromEnvelope` reads `schema_version` from the
+  `manifest` call and compares majors; that is the whole of the
+  plugin's compatibility logic. Both now say so, and C3 is retitled
+  "Detected on use".
+
+- **There is no `toolchain` directive in any `go.mod`.** The patch
+  version is pinned for releases by `GOTOOLCHAIN` in `build/build.sh`;
+  the `go 1.22` line is a floor. `design-overview.md` was already
+  correct.
+
+- **The chokepoint list in `design-overview.md`** was left at two
+  entries by 2.4.0 and is now accurate for the narrowed exemption
+  above.
+
+Checked and found already correct, so unchanged: the 23 helper ops, the
+19-tool count in `README.md`, the `GOTOOLCHAIN=go1.26.5` pin, and that
+`staticcheck` and `govulncheck` really do run from `build.sh`.
+
 # 2.4.0 — one parser for manifest.yml (2026-08-06)
 
 The install-time capability generator now reads `manifest.yml` and

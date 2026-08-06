@@ -241,8 +241,8 @@ with the package. Key fields:
 
   - `bind_addr` — listener address. `127.0.0.1:8443` for SSH-tunnelled
     operator access; an overlay address for inter-host pulls. A
-    routable public address requires `public_bind_acknowledged: true`
-    or the daemon emits a startup warning (REQ 6.4).
+    routable public address requires `public_bind_acknowledged: true`;
+    without it the daemon **refuses to start** and says so (REQ 6.4).
   - `tls_cert_path`, `tls_key_path`, `client_ca_path` — PKI material.
   - `manifest_path` — defaults to
     `/etc/host-health-mcp/manifest.yml`.

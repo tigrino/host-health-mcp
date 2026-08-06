@@ -566,6 +566,75 @@ paths:
                         $ref: '#/components/schemas/SensorsData'
         default: { $ref: '#/components/responses/Error' }
 
+  /firewall:
+    post:
+      operationId: firewall
+      summary: nftables ruleset inspection
+      description: |
+        Read-only inspection of the host's nftables tables, chains,
+        sets, and synthesised per-source ban counts. Added in 1.13.0,
+        outside the REQ section 4 gate set; additive under REQ 7.3.
+
+        Disabled unless the manifest's `firewall.enabled` is true, in
+        which case the tool returns an empty payload and an envelope
+        warning. `mode: detail` requires `firewall.detail_mode_allowed`
+        and is rejected otherwise; an unrecognised mode is an error
+        rather than a silent downgrade to summary.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FirewallRequest'
+      responses:
+        "200":
+          description: Firewall snapshot.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/FirewallData'
+        default: { $ref: '#/components/responses/Error' }
+
+  /firewall_lookup:
+    post:
+      operationId: firewall_lookup
+      summary: Find where an address, port, or set element is matched
+      description: |
+        Answers "why is this address blocked" without returning the
+        whole ruleset: searches rules and set elements for a caller-
+        supplied address, CIDR, or port and reports each hit with its
+        table, chain, and rule handle. Added in 1.14.0, outside the REQ
+        section 4 gate set; additive under REQ 7.3.
+
+        Gated by the same manifest `firewall.enabled` block as
+        `firewall`. The `searched_*` counters report the extent of the
+        search so an empty `matches` array is distinguishable from a
+        search that never ran.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FirewallLookupRequest'
+      responses:
+        "200":
+          description: Lookup result.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Envelope'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/FirewallLookupData'
+        default: { $ref: '#/components/responses/Error' }
+
 components:
 
   securitySchemes:
@@ -640,6 +709,11 @@ components:
                 - auth_required
                 - auth_failed
                 - unknown_tool
+                # Reserved, never emitted. A tool absent from the
+                # manifest's enabled_tools[] answers unknown_tool, so
+                # that a disabled tool is indistinguishable from one
+                # that does not exist (REQ 8.2). Kept in the enum
+                # because removing a member is not minor-additive.
                 - tool_disabled
                 - bad_argument
                 - rate_limited
@@ -1422,3 +1496,268 @@ components:
         value: { type: number }
         critical:
           oneOf: [{ type: number }, { type: "null" }]
+
+    # --- Structured per-source error -------------------------------
+    #
+    # The generalisation of the per-device storage.smart[].error block
+    # introduced in 1.7.0: any tool whose data source is a helper op
+    # can report that op's failure in a typed field instead of
+    # stuffing argv, exit status, and stderr into the envelope's
+    # warnings[] strings. The warning string carries section, op, and
+    # code; this carries the actionable diagnostics.
+    #
+    # Additive in wire schema 0.4.0.
+    HelperOpError:
+      type: object
+      required: [code, message]
+      properties:
+        op:
+          type: string
+          maxLength: 64
+          description: |
+            The helper op that failed, e.g. `read_aide_summary`.
+            Populated in a tool-level `errors[]` array; empty when the
+            error is the `error` field of a per-source element whose op
+            the surrounding context already implies, as in
+            `storage.smart[N].error`.
+        code:    { type: string, maxLength: 64 }
+        message: { type: string, maxLength: 512 }
+        argv:
+          type: array
+          maxItems: 32
+          items: { type: string, maxLength: 256 }
+          description: |
+            The argv the helper invoked, after redaction. Present so an
+            operator can reproduce the failure by hand.
+        exit_code:
+          oneOf: [{ type: integer }, { type: "null" }]
+          description: Null when the process did not exit normally.
+        stderr_sha256: { type: string, maxLength: 64 }
+        stderr_prefix:
+          type: string
+          maxLength: 512
+          description: |
+            Leading bytes of stderr, redacted. The hash above identifies
+            the full text without transporting it.
+
+    # --- firewall (1.13.0) -----------------------------------------
+
+    FirewallRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        mode:
+          type: string
+          enum: [summary, detail]
+          description: |
+            Absent or empty means summary. `detail` requires the
+            manifest's `firewall.detail_mode_allowed`. A value outside
+            this enum is an error, not a downgrade to summary.
+        table:
+          type: string
+          maxLength: 128
+          description: Restrict the walk to one `family/name` table.
+        include_set_elements:
+          type: boolean
+
+    FirewallData:
+      type: object
+      required: [backend, tables, chains, sets, bans]
+      properties:
+        backend: { type: string, maxLength: 32 }
+        nft_version: { type: string, maxLength: 32 }
+        ruleset_hash_sha256:
+          type: string
+          maxLength: 64
+          description: |
+            Hash of the ruleset text the helper parsed. Lets a caller
+            detect that the ruleset changed between polls without
+            diffing the whole structure.
+        tables:
+          type: array
+          maxItems: 256
+          items: { $ref: '#/components/schemas/FirewallTableMeta' }
+        chains:
+          type: array
+          maxItems: 1024
+          items: { $ref: '#/components/schemas/FirewallChain' }
+        sets:
+          type: array
+          maxItems: 1024
+          items: { $ref: '#/components/schemas/FirewallSet' }
+        bans: { $ref: '#/components/schemas/FirewallBans' }
+        errors:
+          type: array
+          maxItems: 32
+          items: { $ref: '#/components/schemas/HelperOpError' }
+
+    FirewallTableMeta:
+      type: object
+      required: [family, name, chain_count, set_count, map_count, rule_count]
+      properties:
+        family:      { type: string, maxLength: 16 }
+        name:        { type: string, maxLength: 128 }
+        chain_count: { type: integer }
+        set_count:   { type: integer }
+        map_count:   { type: integer }
+        rule_count:  { type: integer }
+
+    FirewallChain:
+      type: object
+      required: [family, table, name, rule_count]
+      properties:
+        family: { type: string, maxLength: 16 }
+        table:  { type: string, maxLength: 128 }
+        name:   { type: string, maxLength: 128 }
+        type:   { type: string, maxLength: 32 }
+        hook:   { type: string, maxLength: 32 }
+        prio:
+          oneOf: [{ type: integer }, { type: "null" }]
+        policy: { type: string, maxLength: 16 }
+        rule_count: { type: integer }
+        rules:
+          type: array
+          maxItems: 4096
+          items: { $ref: '#/components/schemas/FirewallRule' }
+          description: Present in detail mode only.
+
+    FirewallRule:
+      type: object
+      required: [handle, expr]
+      properties:
+        handle:  { type: integer }
+        expr:    { type: string, maxLength: 4096 }
+        counter: { $ref: '#/components/schemas/FirewallCounter' }
+
+    FirewallCounter:
+      type: object
+      required: [packets, bytes]
+      properties:
+        packets: { type: integer, format: int64 }
+        bytes:   { type: integer, format: int64 }
+
+    FirewallSet:
+      type: object
+      required: [family, table, name, type, element_count]
+      properties:
+        family: { type: string, maxLength: 16 }
+        table:  { type: string, maxLength: 128 }
+        name:   { type: string, maxLength: 128 }
+        type:   { type: string, maxLength: 64 }
+        flags:
+          type: array
+          maxItems: 16
+          items: { type: string, maxLength: 32 }
+        size_limit:    { type: integer }
+        element_count: { type: integer }
+        elements:
+          type: array
+          maxItems: 2000
+          items: { $ref: '#/components/schemas/FirewallSetElem' }
+        elements_truncated:
+          type: boolean
+          description: |
+            True when the set held more elements than the manifest's
+            `max_set_elements_per_set` cap allows to be returned. The
+            count above is still the real one.
+        is_map: { type: boolean }
+
+    FirewallSetElem:
+      type: object
+      required: [key]
+      properties:
+        key: { type: string, maxLength: 256 }
+        expires_s:
+          oneOf: [{ type: integer, format: int64 }, { type: "null" }]
+        timeout_s:
+          oneOf: [{ type: integer, format: int64 }, { type: "null" }]
+
+    FirewallBans:
+      type: object
+      required: [total_active_v4, total_active_v6, by_set]
+      properties:
+        total_active_v4: { type: integer }
+        total_active_v6: { type: integer }
+        by_set:
+          type: array
+          maxItems: 64
+          items: { $ref: '#/components/schemas/FirewallBanSetStat' }
+          description: |
+            Synthesised by matching the manifest's declared
+            `firewall.ban_sets` against the sets nft reported. A
+            declared set the host does not have simply does not appear.
+
+    FirewallBanSetStat:
+      type: object
+      required: [set, count, source]
+      properties:
+        set:    { type: string, maxLength: 128 }
+        count:  { type: integer }
+        source: { type: string, maxLength: 64 }
+
+    # --- firewall_lookup (1.14.0) ----------------------------------
+
+    FirewallLookupRequest:
+      type: object
+      additionalProperties: false
+      required: [query]
+      properties:
+        query:
+          type: string
+          maxLength: 128
+          description: An address, CIDR, or port to search for.
+        include_set_elements:
+          type: boolean
+
+    FirewallLookupData:
+      type: object
+      required:
+        [query, query_kind, matches, sets, searched_tables,
+         searched_chains, searched_rules, searched_sets]
+      properties:
+        query:      { type: string, maxLength: 128 }
+        query_kind: { type: string, maxLength: 32 }
+        matches:
+          type: array
+          maxItems: 1024
+          items: { $ref: '#/components/schemas/FirewallLookupMatch' }
+        sets:
+          type: array
+          maxItems: 1024
+          items: { $ref: '#/components/schemas/FirewallLookupSetHit' }
+        searched_tables: { type: integer }
+        searched_chains: { type: integer }
+        searched_rules:  { type: integer }
+        searched_sets:   { type: integer }
+        errors:
+          type: array
+          maxItems: 32
+          items: { $ref: '#/components/schemas/HelperOpError' }
+
+    FirewallLookupMatch:
+      type: object
+      required: [match_kind, family, table, chain, rule_handle, rule_text]
+      properties:
+        match_kind:    { type: string, maxLength: 32 }
+        family:        { type: string, maxLength: 16 }
+        table:         { type: string, maxLength: 128 }
+        chain:         { type: string, maxLength: 128 }
+        rule_handle:   { type: integer }
+        rule_text:     { type: string, maxLength: 4096 }
+        operator:      { type: string, maxLength: 16 }
+        matched_value: { type: string, maxLength: 256 }
+        set_name:      { type: string, maxLength: 128 }
+
+    FirewallLookupSetHit:
+      type: object
+      required: [match_kind, family, table, set, element_key]
+      properties:
+        match_kind:  { type: string, maxLength: 32 }
+        family:      { type: string, maxLength: 16 }
+        table:       { type: string, maxLength: 128 }
+        set:         { type: string, maxLength: 128 }
+        element_key: { type: string, maxLength: 256 }
+        expires_s:
+          oneOf: [{ type: integer, format: int64 }, { type: "null" }]
+        timeout_s:
+          oneOf: [{ type: integer, format: int64 }, { type: "null" }]

@@ -39,7 +39,7 @@ plugin's compiled `schema_version`. The columns are major / minor
 |------|---------|------------|--------|-------------------|--------------------------------------------------------------------------------------------|
 | C1   | P == D  | P == D     | any    | Compatible        | Normal operation.                                                                          |
 | C2   | P == D  | P  < D     | any    | Forward-compat    | Plugin proceeds. Daemon may emit fields the plugin doesn't know; plugin ignores them.      |
-| C3   | P == D  | P  > D     | any    | Tool-level check  | Plugin compares the daemon's `enabled_tools[]` against the set of tools the plugin needs. Missing tool: plugin fails that tool's calls with `schema_incompatible`. Tool present but emitted shape lacks a field the plugin needs: surfaces as `schema_incompatible` at parse time. No field-level pre-flight introspection exists; field-level mismatches are detected on first use of the tool. |
+| C3   | P == D  | P  > D     | any    | Detected on use   | The plugin performs no pre-flight check beyond the major comparison. A tool the daemon does not have enabled answers `unknown_tool` (HTTP 404) when called. A tool present but emitting a shape that lacks a field the plugin needs surfaces as `schema_incompatible` at parse time. Neither is detected before the call. |
 | C4   | P != D  | any        | any    | Incompatible      | The `manifest` call itself succeeds (it must, since it is how the plugin learns the daemon's `schema_version`). On observing the major mismatch, the plugin marks the session incompatible and returns `schema_incompatible` for every subsequent tool call. |
 
 # 4. Definitions
@@ -51,19 +51,28 @@ plugin's compiled `schema_version`. The columns are major / minor
   This is the common case for a slow-rolling plugin fleet against
   faster-moving daemons.
 
-- **Tool-level check (C3).** The plugin learns the daemon's
-  enabled tool set from the `manifest` call (the `enabled_tools[]`
-  field). The plugin does NOT have field-level introspection of
-  the daemon's schema; field-level pre-flight checking would
-  require the daemon to publish the per-tool field list, which the
-  manifest does not do and which would duplicate the schema
-  artefact. Two consequences:
+- **Detected on use (C3).** The plugin's only compatibility check is
+  the one described under C4: it calls `manifest`, reads
+  `schema_version` from the envelope, and compares major versions.
+  It does not read `enabled_tools[]`, and it has no field-level
+  introspection of the daemon's schema.
+
+  Earlier revisions of this document described a plugin-side
+  comparison of `enabled_tools[]` against the tools a plugin needs.
+  No such comparison exists in the plugin, and none has existed.
+  Field-level pre-flight checking would additionally require the
+  daemon to publish a per-tool field list, which the manifest does
+  not do and which would duplicate the schema artefact. Two
+  consequences:
 
   - A plugin tool whose underlying daemon tool is absent from the
-    daemon's `enabled_tools[]` is treated as unavailable for the
-    session; the plugin returns `tool_disabled` (a distinct error
-    code, see `schema-draft.yaml` `ErrorEnvelope.error.code` enum)
-    without making the call.
+    daemon's `enabled_tools[]` is **not** detected in advance. The
+    plugin does not read `enabled_tools[]`; it makes the call and the
+    daemon answers `unknown_tool` with HTTP 404. A tool the operator
+    did not enable is deliberately indistinguishable from one that
+    does not exist (REQ 8.2), so no error code identifies it as
+    disabled. `tool_disabled` exists in the wire enum but is never
+    emitted.
   - A plugin tool whose underlying daemon tool is present but
     whose emitted shape lacks a field the plugin requires is
     detected on first call: the plugin's response parser fails

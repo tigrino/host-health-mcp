@@ -301,9 +301,12 @@ Common diagnoses:
 - **TLS `bad_certificate` after upgrading to 1.12.0+** — the
   client cert is missing `extendedKeyUsage = clientAuth`. Pre-
   flight verification at install.md §2.2.
-- **Tool returns `tool_disabled`** — the tool name is not in
-  the host's `manifest.yml` `enabled_tools[]`. Add it and restart
-  (don't forget the caps templating step).
+- **Tool returns `unknown_tool` for a tool you know exists** — the
+  name is not in the host's `manifest.yml` `enabled_tools[]`. A tool
+  the operator did not enable is deliberately indistinguishable from
+  one that does not exist (REQ 8.2), so the error does not say
+  "disabled". Add the name and restart, remembering to re-run the
+  capability generator.
 - **Tool returns `rate_limited`** — caller exhausted the per-
   (caller, tool) bucket. Drop cadence or tune
   `expensive_tool_buckets` in `daemon.yml`.

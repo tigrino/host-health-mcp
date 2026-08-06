@@ -667,8 +667,14 @@ pinned Go toolchain. The script:
    set (REQ 10.2): `staticcheck`, `govulncheck`, and the custom
    forbidden-call linter described in §7.4, which rejects `os/exec`,
    the process-spawning calls, and the filesystem mutators from
-   every package except `internal/helperinvoke/` (in the daemon
-   source tree) and `internal/exec/` (in the helper source tree).
+   every package except two chokepoints — `internal/helperinvoke/`
+   (daemon side, the socket client to the helper) and
+   `internal/exec/` (helper side, the only place that invokes
+   underlying tools). `cmd/capstemplate/`, the install-time
+   capability generator, is additionally permitted three named
+   filesystem calls (`os.MkdirAll`, `os.WriteFile`, `os.Remove`);
+   naming the symbols rather than exempting the package keeps the
+   process-spawning rules in force there.
 4. Builds **both** the daemon and the helper for
    `GOOS=linux GOARCH=amd64` and `GOOS=linux GOARCH=arm64` with
    `CGO_ENABLED=0 -trimpath

@@ -414,7 +414,7 @@ func TestWalkCoversTheRootItself(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			got := walkRoot(root, map[string]bool{})
+			got := walkRoot(root, map[string]bool{}, nil)
 			if len(got) != 2 {
 				var syms []string
 				for _, f := range got {
@@ -441,7 +441,7 @@ func TestWalkSkipsHiddenAndVendorBelowTheRoot(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if got := walkRoot(root, map[string]bool{}); len(got) != 0 {
+	if got := walkRoot(root, map[string]bool{}, nil); len(got) != 0 {
 		t.Errorf("vendor/ and .git/ below the root should be skipped, got %d findings", len(got))
 	}
 }
@@ -459,10 +459,10 @@ func TestWalkSkipsChokepointPackages(t *testing.T) {
 	}
 	key := filepath.ToSlash(chokepoint)
 
-	if got := walkRoot(root, map[string]bool{key: true}); len(got) != 0 {
+	if got := walkRoot(root, map[string]bool{key: true}, nil); len(got) != 0 {
 		t.Errorf("chokepoint package was scanned: %d findings", len(got))
 	}
-	if got := walkRoot(root, map[string]bool{}); len(got) != 1 {
+	if got := walkRoot(root, map[string]bool{}, nil); len(got) != 1 {
 		t.Errorf("without the exemption the call should be reported, got %d findings", len(got))
 	}
 }
@@ -474,7 +474,6 @@ func TestChokepointKeysMatchTheRepoLayout(t *testing.T) {
 	for _, want := range []string{
 		"daemon/internal/daemon/helperinvoke",
 		"daemon/internal/helper/exec",
-		"daemon/cmd/capstemplate",
 	} {
 		if !chokepoints[want] {
 			t.Errorf("chokepoints is missing %q", want)
@@ -483,11 +482,108 @@ func TestChokepointKeysMatchTheRepoLayout(t *testing.T) {
 }
 
 // The exemption list is a security boundary, so it is pinned by size
-// as well as by content: a fourth entry added without a matching
-// change here means someone widened the read-only property's escape
-// hatch without anyone reviewing the reason.
+// as well as by content: a third entry added without a matching change
+// here means someone widened the read-only property's escape hatch to
+// a whole package without anyone reviewing the reason. That is what
+// happened in 2.4.0, and narrowChokepoints exists so the next case
+// does not have to.
 func TestChokepointsHasNoUnreviewedEntries(t *testing.T) {
-	if len(chokepoints) != 3 {
-		t.Errorf("chokepoints has %d entries, want 3: %v", len(chokepoints), chokepoints)
+	if len(chokepoints) != 2 {
+		t.Errorf("chokepoints has %d entries, want 2: %v", len(chokepoints), chokepoints)
+	}
+}
+
+// A narrow chokepoint drops exactly the symbols it names and nothing
+// else. The capability generator writes files; it must remain unable
+// to spawn a process, and the build must say so.
+func TestNarrowChokepointPermitsOnlyItsNamedSymbols(t *testing.T) {
+	root := t.TempDir()
+	pkg := filepath.Join(root, "cmd", "gen")
+	if err := os.MkdirAll(pkg, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	src := `package main
+import (
+	"os"
+	"syscall"
+)
+func f() {
+	os.WriteFile("x", nil, 0o644)
+	os.MkdirAll("d", 0o755)
+	os.Remove("y")
+	os.Chmod("z", 0o600)
+	syscall.Kill(1, 9)
+}`
+	if err := os.WriteFile(filepath.Join(pkg, "main.go"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	key := filepath.ToSlash(filepath.Join(filepath.Base(root), "cmd", "gen"))
+	_ = key
+
+	narrow := map[string]map[string]bool{
+		filepath.ToSlash(pkg): {
+			"os.MkdirAll":  true,
+			"os.WriteFile": true,
+			"os.Remove":    true,
+		},
+	}
+	got := symbols(walkRoot(root, map[string]bool{}, narrow))
+
+	// The three named writes are gone; the two unnamed calls remain.
+	want := []string{"os.Chmod", "syscall.Kill"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("finding %d: got %q, want %q (all: %v)", i, got[i], want[i], got)
+		}
+	}
+}
+
+// Without the narrow entry every call is reported, so the test above
+// is measuring the exemption rather than an empty directory.
+func TestNarrowChokepointAbsentReportsEverything(t *testing.T) {
+	root := t.TempDir()
+	pkg := filepath.Join(root, "cmd", "gen")
+	if err := os.MkdirAll(pkg, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	src := `package main
+import "os"
+func f() { os.WriteFile("x", nil, 0o644) }`
+	if err := os.WriteFile(filepath.Join(pkg, "main.go"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := walkRoot(root, map[string]bool{}, nil); len(got) != 1 {
+		t.Errorf("without the narrow entry the write should be reported, got %v", symbols(got))
+	}
+}
+
+// The generator is the reason this mechanism exists; pin what it is
+// allowed to do so widening it is a deliberate edit here.
+func TestCapstemplateNarrowEntryIsFilesystemOnly(t *testing.T) {
+	permitted, ok := narrowChokepoints["daemon/cmd/capstemplate"]
+	if !ok {
+		t.Fatal("narrowChokepoints is missing daemon/cmd/capstemplate")
+	}
+	want := map[string]bool{"os.MkdirAll": true, "os.WriteFile": true, "os.Remove": true}
+	if len(permitted) != len(want) {
+		t.Errorf("capstemplate may use %d symbols, want %d: %v", len(permitted), len(want), permitted)
+	}
+	for s := range want {
+		if !permitted[s] {
+			t.Errorf("capstemplate should be permitted %s", s)
+		}
+	}
+	// Anything that spawns, signals, or changes system state must not
+	// appear here, whatever else does.
+	for _, forbidden := range []string{
+		"os.StartProcess", "syscall.ForkExec", "syscall.Exec",
+		"syscall.Kill", "syscall.Mount", `import "os/exec"`,
+	} {
+		if permitted[forbidden] {
+			t.Errorf("capstemplate must never be permitted %s", forbidden)
+		}
 	}
 }

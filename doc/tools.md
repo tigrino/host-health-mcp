@@ -22,7 +22,11 @@ Tool failures surface as the structured error envelope per
 `schema.ErrorEnvelope` with one of the codes from
 `schema/errors.go`: `auth_required`, `auth_failed`, `unknown_tool`,
 `tool_disabled`, `bad_argument`, `rate_limited`, `tool_timeout`,
-`tool_failed`, `schema_incompatible`, `internal_error`. Three tools
+`tool_failed`, `schema_incompatible`, `internal_error`.
+`tool_disabled` is reserved and never emitted: a tool absent from the
+manifest's `enabled_tools[]` answers `unknown_tool`, so that a
+disabled tool is indistinguishable from one that does not exist
+(REQ 8.2). Three tools
 report per-source failures **within** the data block rather than
 failing the call: `storage.smart[].error`, `updates.apt_lock_state`,
 and `dns` (per-probe bool plus envelope warning). All other tools
