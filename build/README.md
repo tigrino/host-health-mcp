@@ -24,10 +24,13 @@ build/
 ├── systemd/
 │   ├── host-health-mcp.service        daemon unit (REQ 3.4, 9.2)
 │   └── host-health-mcp-helper.service helper unit (REQ 3.4, 9.2)
-├── postinst/                      post-install scriptlet sources
-│   └── caps-template.sh           generates /etc/systemd/system/
+├── postinst/                      maintainer scripts (postinst, prerm,
+│                                  postrm) and their test harnesses.
+│                                  The capability generator that writes
 │                                  host-health-mcp-helper.service.d/
-│                                  caps.conf from manifest.yml at install
+│                                  caps.conf from manifest.yml is a Go
+│                                  binary as of 2.4.0 and lives at
+│                                  daemon/cmd/capstemplate
 │                                  (design §7 cap-bounding-set templating)
 └── dist/                          build output; gitignored
 ```
@@ -67,7 +70,7 @@ set `NoNewPrivileges=yes`, `ProtectSystem=strict`, `ProtectHome=yes`,
 helper unit's `CapabilityBoundingSet` is `CAP_CHOWN` in the shipped unit
 file — enough to chown its socket and runtime directory at startup — and
 is extended by the install-time-generated drop-in (see
-`postinst/caps-template.sh`); the drop-in's set is `CAP_CHOWN` plus the
+`daemon/cmd/capstemplate`); the drop-in's set is `CAP_CHOWN` plus the
 union of caps required by the ops enabled in the operator's
 `manifest.yml`.
 

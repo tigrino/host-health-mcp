@@ -474,9 +474,20 @@ func TestChokepointKeysMatchTheRepoLayout(t *testing.T) {
 	for _, want := range []string{
 		"daemon/internal/daemon/helperinvoke",
 		"daemon/internal/helper/exec",
+		"daemon/cmd/capstemplate",
 	} {
 		if !chokepoints[want] {
 			t.Errorf("chokepoints is missing %q", want)
 		}
+	}
+}
+
+// The exemption list is a security boundary, so it is pinned by size
+// as well as by content: a fourth entry added without a matching
+// change here means someone widened the read-only property's escape
+// hatch without anyone reviewing the reason.
+func TestChokepointsHasNoUnreviewedEntries(t *testing.T) {
+	if len(chokepoints) != 3 {
+		t.Errorf("chokepoints has %d entries, want 3: %v", len(chokepoints), chokepoints)
 	}
 }

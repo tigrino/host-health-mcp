@@ -3,6 +3,116 @@ title: Host Health MCP - Changelog
 author: Albert 'Tigr' Zenkoff <albert@tigr.net>
 ---
 
+# 2.4.0 — one parser for manifest.yml (2026-08-06)
+
+The install-time capability generator now reads `manifest.yml` and
+`daemon.yml` with the same YAML decoder the daemon uses. No wire
+change; `schema_version` stays `1.2.0`. No tool, field, or helper op
+is added, removed, or renamed.
+
+**What was wrong.** `/usr/sbin/host-health-mcp-caps-template` was a
+POSIX shell script that scanned the configuration line by line with
+`grep` and `awk`. It understood one spelling of a YAML sequence. These
+are the same document to any YAML parser:
+
+```yaml
+workload_plugins: ["nginx_apache"]
+
+workload_plugins:
+  - nginx_apache
+```
+
+The scanner accepted the second and rejected the first, exiting 1 and
+aborting the package configure. A manifest that had never been
+malformed failed to install because a line scanner could not read
+valid YAML. Reported from an operator deployment, where diagnosing it
+needed a `dpkg` log because the error named the key and neither the
+file nor the line.
+
+**The worse case, which nobody had reported.** The guard that rejected
+flow form required a non-`]` character on the same line as the `[`, so
+a multi-line flow sequence went past it unnoticed:
+
+```yaml
+enabled_tools: [
+  storage
+]
+```
+
+The scanner then found no `- entry` lines, produced
+`CapabilityBoundingSet=CAP_CHOWN` alone, exited 0, and said nothing.
+Every privileged helper op on that host fails `EPERM` with no
+diagnostic anywhere. That is the exact failure the guard had been
+added to prevent.
+
+**What changed.**
+
+1. The generator is a Go binary built from `daemon/cmd/capstemplate`,
+   installed at the same path with the same flags (`--hint`, `-h`,
+   `--help`), the same four path environment variables, the same
+   messages, and byte-identical output. The capability rules live in
+   `daemon/internal/shared/capsplan`, which is pure and importable.
+
+2. **Unrecognised keys warn and are ignored** rather than failing.
+   A maintainer script that aborts over a key nobody read strands
+   `dpkg` half-configured across a fleet, and the capability set does
+   not depend on the key it did not understand. The daemon is
+   unchanged and still refuses to start on an unknown key: generation
+   and validation are two jobs, and the daemon remains the authority
+   on whether a configuration is valid.
+
+3. **Diagnostics name the file, the line, and the offending text.**
+   The old message named the key and nothing else, which is why
+   locating it took a `dpkg` log:
+
+   ```
+   caps-template: warning: /etc/host-health-mcp/manifest.yml: line 3:
+     field enabled_tolls not found in type config.Manifest (ignored)
+   ```
+
+4. The helper's `RequiredCap` table is now checked against the
+   generator's rules by importing them. The previous test scraped
+   `add CAP_...` out of the shell script with a regexp, which proved
+   a string appeared in a file rather than that the rules could
+   produce it.
+
+**Behaviour changes to be aware of before upgrading.**
+
+- A manifest indented with **tabs** now fails the generator. YAML
+  forbids tabs as indentation; the old scanner accepted them because
+  it was matching a regexp rather than parsing. Such a host's daemon
+  has never started, so this makes the generator agree with the daemon
+  rather than issue capabilities for a daemon that will not run.
+  Check with `grep -Pn '^\t' /etc/host-health-mcp/manifest.yml`.
+- A **malformed** manifest — one no YAML parser can read — now fails
+  the generator, where the scanner would have produced a capability
+  set from whatever lines happened to match. Failing is correct: a
+  bounding set derived from a file that could not be read is wrong,
+  not merely incomplete.
+- A plugin name listed in `enabled_tools[]` instead of
+  `workload_plugins[]` no longer widens the capability set. The
+  scanner conflated the two lists into one before matching, so it
+  did. Nothing documented relied on this.
+
+**Verification.** Old and new generators were run over a corpus of
+eighteen manifests before the shell script was deleted. Sixteen
+produced byte-identical drop-ins; the two that differed are the
+flow-form cases above, where the shell script was wrong. The
+capability rules and the loader carry fourteen mutation tests, every
+one of which was confirmed to fail when the behaviour it guards is
+broken. The shipped-interface suite at
+`build/postinst/tests/caps-template-test.sh` runs unchanged in
+substance against the new binary — its three "flow form must be
+refused" cases are now assertions that flow form is accepted, with the
+resulting capabilities checked rather than only the exit status.
+
+**Downstream packaging.** `build/postinst/caps-template.sh` is gone.
+The path a separate packaging pipeline reads is now
+`daemon/cmd/capstemplate`, built like the other binaries and installed
+to the unchanged `/usr/sbin/host-health-mcp-caps-template`. README
+section 9.1 and the contract test in `build/linter/contract` are
+updated together.
+
 # 2.3.1 — corrections to the 2.3.0 notes (2026-08-05)
 
 Documentation only. No code change, no schema change; `schema_version`

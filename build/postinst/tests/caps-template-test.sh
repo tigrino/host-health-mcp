@@ -3,7 +3,7 @@
 #
 # This generator writes the helper's CapabilityBoundingSet from
 # manifest.yml, and it runs from the postinst under `set -eu` on every
-# install and upgrade. Two properties matter and neither is checked by
+# install and upgrade. Three properties matter and none is checked by
 # any compiler:
 #
 #   1. It must never exit non-zero on operator config it can safely
@@ -12,12 +12,22 @@
 #      binary running from disk dpkg has already replaced.
 #   2. It must grant CAP_SYS_ADMIN and CAP_SYS_RAWIO only where the
 #      declared storage backends need them.
+#   3. It must read manifest.yml the way the daemon reads it. From
+#      2.4.0 it does, because it is the same decoder; before that it
+#      was grep and awk, and the two disagreed about what a YAML
+#      sequence is. The flow-form cases below were assertions that the
+#      generator REFUSED valid YAML; they now assert it accepts it.
+#
+# The suite exercises the shipped interface — argv, the four path
+# environment variables, exit status, and the generated drop-in — so it
+# is unchanged in substance by the move from shell to Go, which is the
+# point of keeping it.
 #
 # Run: sh build/postinst/tests/caps-template-test.sh
+#   or CAPS_TEMPLATE_BIN=/path/to/binary sh build/postinst/tests/...
 set -eu
 
 HERE=$(cd -- "$(dirname -- "$0")" && pwd)
-GEN="$HERE/../caps-template.sh"
 WORK=$(mktemp -d)
 # Guard BEFORE installing the cleanup trap. The trap is rm -rf "$WORK";
 # if WORK ever points somewhere real, the trap alone is destructive the
@@ -38,6 +48,25 @@ guard
 
 trap 'rm -rf "$WORK"' EXIT
 
+# build.sh has already built the generator and points at it. A
+# standalone run builds its own copy into the throwaway directory: a
+# suite that cannot be run by hand without a release build is a suite
+# nobody runs by hand.
+if [ -n "${CAPS_TEMPLATE_BIN:-}" ]; then
+    GEN=$CAPS_TEMPLATE_BIN
+    if [ ! -x "$GEN" ]; then
+        echo "CAPS_TEMPLATE_BIN is not executable: $GEN" >&2
+        exit 3
+    fi
+else
+    GEN="$WORK/host-health-mcp-caps-template"
+    if ! build_out=$(cd "$HERE/../../../daemon" && go build -o "$GEN" ./cmd/capstemplate 2>&1); then
+        echo "cannot build the generator:" >&2
+        echo "$build_out" | sed 's/^/  /' >&2
+        exit 3
+    fi
+fi
+
 fail=0
 pass=0
 
@@ -48,7 +77,7 @@ run() {
     printf '%b' "$body" > "$WORK/m.yml"
     set +e
     MANIFEST="$WORK/m.yml" DROPIN_DIR="$WORK/d" DAEMON_DROPIN_DIR="$WORK/dd" \
-        DAEMON_YML="$WORK/absent.yml" sh "$GEN" >"$WORK/out" 2>&1
+        DAEMON_YML="$WORK/absent.yml" "$GEN" >"$WORK/out" 2>&1
     rc=$?
     set -e
     if [ "$rc" != "$want_rc" ]; then
@@ -103,19 +132,75 @@ run "absent storage_backends"        0 'enabled_tools:\n  - storage\n'
 run "block form"                     0 'enabled_tools:\n  - storage\nstorage_backends:\n  - zfs\n'
 run "empty manifest"                 0 '\n'
 run "comments and blank lines"       0 '# c\nenabled_tools:\n\n  - storage   # spinning rust\n'
-run "tabs in list"                   0 'enabled_tools:\n\t- storage\n'
 run "quoted values"                  0 'enabled_tools:\n  - "storage"\n'
+
+# --- Flow form: the same document, and now read as such ------------
+#
+# These three were negative cases until 2.4.0: the shell scanner could
+# not read a flow sequence, so it refused one rather than generate a
+# capability set from a config it had not understood. Refusing aborted
+# the package configure on a valid manifest. They now assert the
+# capabilities themselves, not merely the exit status — the earlier
+# guard only ever proved the generator noticed, never that it was
+# right.
+run "flow form storage_backends" 0 \
+    'enabled_tools:\n  - storage\nstorage_backends: [smart, zfs]\n' && {
+    has    CAP_SYS_RAWIO      "flow form: smart declared"
+    has    CAP_SYS_ADMIN      "flow form: zfs declared"
+}
+run "flow form enabled_tools" 0 'enabled_tools: [storage, security]\n' && {
+    has    CAP_AUDIT_CONTROL  "flow form: security enabled"
+    has    CAP_DAC_READ_SEARCH "flow form: storage enabled"
+}
+run "flow form workload_plugins" 0 \
+    'enabled_tools:\n  - workload\nworkload_plugins: [wireguard]\n' && {
+    has    CAP_NET_ADMIN      "flow form: wireguard plugin"
+}
+# The multi-line spelling slipped past the old scanner's guard
+# altogether and produced CAP_CHOWN alone, in silence — every
+# privileged op then failing EPERM with nothing logged anywhere. It is
+# the same document as the two above.
+run "multi-line flow form" 0 \
+    'enabled_tools: [\n  storage\n]\nstorage_backends: [\n  zfs\n]\n' && {
+    has    CAP_SYS_ADMIN      "multi-line flow form: zfs declared"
+}
 
 # --- NEGATIVE: shapes that must be refused loudly ------------------
 
-# A non-empty flow form parses for the daemon but yields NOTHING here,
-# so accepting it silently would generate the default cap set from a
-# non-empty config.
-run "non-empty flow form storage_backends" 1 \
-    'enabled_tools:\n  - storage\nstorage_backends: [smart, zfs]\n'
-run "non-empty flow form enabled_tools"    1 'enabled_tools: [storage, security]\n'
-run "non-empty flow form workload_plugins" 1 \
-    'enabled_tools:\n  - workload\nworkload_plugins: [wireguard]\n'
+# A tab cannot indent a YAML block sequence. The old scanner accepted
+# one because it was matching a regexp, not parsing; the daemon has
+# always rejected it, so such a manifest produced a capability set for
+# a daemon that would not start. Failing here is the generator and the
+# daemon agreeing.
+run "tabs in list refused"           1 'enabled_tools:\n\t- storage\n'
+run "malformed document refused"     1 'enabled_tools:\n  - storage\n  bad: [unclosed\n'
+
+# --- Unrecognised keys: warn, and carry on -------------------------
+#
+# The daemon refuses to start on a key it does not recognise. The
+# generator must not refuse to INSTALL over one: the capability set is
+# unaffected by a key nobody read, and aborting the configure strands
+# dpkg across a fleet. Report it and continue.
+run "unknown key warns but installs" 0 \
+    'enabled_tools:\n  - storage\nenabled_tolls:\n  - security\n' && {
+    has    CAP_SYS_RAWIO      "unknown key: known keys still read"
+    hasnt  CAP_AUDIT_CONTROL  "unknown key: its value must NOT take effect"
+    if grep -q 'enabled_tolls' "$WORK/out"; then
+        pass=$((pass+1))
+    else
+        echo "FAIL [unknown key] the warning must name the key:"; sed 's/^/       /' "$WORK/out"
+        fail=$((fail+1))
+    fi
+    # An operator cannot fix what they cannot find. This is the
+    # complaint that started the 2.4.0 work: the old message named the
+    # key and nothing else, so locating it took a dpkg log.
+    if grep -q 'line 3' "$WORK/out"; then
+        pass=$((pass+1))
+    else
+        echo "FAIL [unknown key] the warning must carry the line number:"; sed 's/^/       /' "$WORK/out"
+        fail=$((fail+1))
+    fi
+}
 
 # Argument handling: --hint is opt-in, an unknown flag is a usage
 # error, and neither may change the generated drop-in.
@@ -125,7 +210,7 @@ argcheck() {
     printf 'enabled_tools:\n  - storage\n' > "$WORK/m.yml"
     set +e
     MANIFEST="$WORK/m.yml" DROPIN_DIR="$WORK/d" DAEMON_DROPIN_DIR="$WORK/dd" \
-        DAEMON_YML="$WORK/absent.yml" sh "$GEN" "$@" >"$WORK/out" 2>&1
+        DAEMON_YML="$WORK/absent.yml" "$GEN" "$@" >"$WORK/out" 2>&1
     rc=$?
     set -e
     if [ "$rc" != "$want_rc" ]; then
@@ -142,9 +227,9 @@ argcheck "--help accepted"           0 --help
 rm -rf "$WORK/d" "$WORK/dd"; mkdir -p "$WORK/d" "$WORK/dd"
 printf 'enabled_tools:\n  - storage\n' > "$WORK/m.yml"
 MANIFEST="$WORK/m.yml" DROPIN_DIR="$WORK/d" DAEMON_DROPIN_DIR="$WORK/dd" \
-    DAEMON_YML="$WORK/absent.yml" sh "$GEN" 2>"$WORK/plain" >"$WORK/plain_out"
+    DAEMON_YML="$WORK/absent.yml" "$GEN" 2>"$WORK/plain" >"$WORK/plain_out"
 MANIFEST="$WORK/m.yml" DROPIN_DIR="$WORK/d" DAEMON_DROPIN_DIR="$WORK/dd" \
-    DAEMON_YML="$WORK/absent.yml" sh "$GEN" --hint 2>"$WORK/hinted" >"$WORK/hinted_out"
+    DAEMON_YML="$WORK/absent.yml" "$GEN" --hint 2>"$WORK/hinted" >"$WORK/hinted_out"
 if grep -q 'systemctl' "$WORK/plain"; then
     echo "FAIL [--hint default] activation advice printed without --hint"; fail=$((fail+1))
 else

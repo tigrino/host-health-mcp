@@ -372,7 +372,7 @@ downstream, at package build or, worse, at install time on a host.
 | `plugin/` | `go build` of the client binary |
 | `build/systemd/host-health-mcp.service` | installed as the daemon unit |
 | `build/systemd/host-health-mcp-helper.service` | installed as the helper unit |
-| `build/postinst/caps-template.sh` | installed and invoked at configure time |
+| `daemon/cmd/capstemplate` | built as the capability generator, invoked at configure time |
 | `build/examples/*` | installed as the shipped example configs |
 | `build/workload-tags` | read to derive `go build -tags` |
 | `doc/*` | installed as package documentation |
@@ -380,8 +380,8 @@ downstream, at package build or, worse, at install time on a host.
 Treat this list as an interface. Adding a file to a directory already
 named here is safe. Relocating one, renaming it, or splitting it needs
 a release note — a downstream build has no way to notice on its own,
-and a missing `caps-template.sh` fails a host's `dpkg` configure while
-a missing build tag just makes a probe quietly disappear.
+and a missing capability generator fails a host's `dpkg` configure
+while a missing build tag just makes a probe quietly disappear.
 
 The rest of `build/` — `build.sh`, `nfpm/`, and the other
 `postinst/` scripts — serves the offline install path only

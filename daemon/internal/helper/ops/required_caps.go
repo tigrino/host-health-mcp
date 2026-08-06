@@ -3,10 +3,12 @@ package ops
 // RequiredCap maps an op token to the capability it needs, for the ops
 // where absence produces silence rather than an error.
 //
-// This mirrors the table in build/postinst/caps-template.sh, which
-// generates the grant. The two are separate by necessity — one runs at
-// install time in shell, one at runtime in Go — so a test pins them
-// together rather than a comment asking nicely.
+// This mirrors the rules in daemon/internal/shared/capsplan, which
+// decide the grant. The two are separate by necessity — one runs at
+// install time in the capability generator, one at runtime in the
+// helper — so a test pins them together rather than a comment asking
+// nicely. Since 2.4.0 that test imports the rules and asks them what
+// they can grant, instead of scraping the shell script they replaced.
 //
 // Only ops whose failure mode is a QUIET wrong answer are listed. An op
 // that returns a hard error without its capability does not need this;

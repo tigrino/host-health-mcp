@@ -52,7 +52,7 @@ var downstreamPaths = []struct {
 	{"plugin", "the client binary is built from this module"},
 	{"build/systemd/host-health-mcp.service", "installed as the daemon unit"},
 	{"build/systemd/host-health-mcp-helper.service", "installed as the helper unit"},
-	{"build/postinst/caps-template.sh", "invoked at dpkg configure time; its absence fails the install"},
+	{"daemon/cmd/capstemplate", "built as the capability generator the postinst invokes at dpkg configure time; its absence fails the install"},
 	{"build/examples", "installed as the shipped example configs"},
 	{"build/workload-tags", "read to derive `go build -tags`; its absence silently drops every workload probe"},
 	{"doc", "installed as package documentation"},

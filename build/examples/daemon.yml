@@ -95,9 +95,10 @@ max_concurrent_handshakes: 16
 # daemon unreachable. Leave it out entirely (the default) and no
 # drop-in is generated.
 #
-# Block form only, one entry per line. The generator rejects flow form
-# (ip_filter_allow: [a, b]) rather than silently producing an empty
-# filter from a non-empty config.
+# Any YAML spelling of the list works; from 2.4.0 the generator reads
+# this file with the same decoder the daemon uses. Block form is shown
+# because it is easier to comment and to diff, not because it is
+# required.
 #
 # ip_filter_allow:
 #   - localhost                  # loopback, and systemd-resolved

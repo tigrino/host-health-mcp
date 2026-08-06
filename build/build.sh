@@ -73,9 +73,16 @@ echo "==> go test"
 # enforcement is indistinguishable from none.
 ( cd "$REPO/build/linter" && go test ./... )
 # Same reasoning for the capability generator: it runs from the
-# postinst under `set -eu` on every install, it decides what the root
-# helper is allowed to do, and it is shell parsing YAML with awk. It
-# gets a test suite and the suite runs here.
+# postinst under `set -eu` on every install and it decides what the
+# root helper is allowed to do. It gets a test suite and the suite runs
+# here.
+#
+# The suite builds its own host-arch copy of the generator. That is
+# deliberate rather than a shortcut: the shipped artefacts are
+# cross-compiled for two architectures and only one of them can be
+# executed here, so a suite that insisted on testing "the shipped
+# binary" would silently test one arch and skip the other. Same source,
+# same toolchain, same decoder.
 echo "==> caps-template tests"
 sh "$REPO/build/postinst/tests/caps-template-test.sh"
 
@@ -146,6 +153,15 @@ for ARCH in amd64 arm64; do
         CGO_ENABLED=0 GOOS=linux GOARCH=$ARCH \
         go build -trimpath -ldflags="$LDFLAGS" \
         -o "$DIST/$ARCH/host-health-mcp-helper" ./cmd/helper )
+    # The capability generator. Built from the daemon module because it
+    # decodes manifest.yml with the daemon's own config package: that
+    # shared decoder is the whole point of it being a binary rather
+    # than the shell script it replaced in 2.4.0. No workload tags —
+    # it reads the plugin list, it does not link the plugins.
+    ( cd "$REPO/daemon" && \
+        CGO_ENABLED=0 GOOS=linux GOARCH=$ARCH \
+        go build -trimpath -ldflags="$LDFLAGS" \
+        -o "$DIST/$ARCH/host-health-mcp-caps-template" ./cmd/capstemplate )
     ( cd "$REPO/plugin" && \
         CGO_ENABLED=0 GOOS=linux GOARCH=$ARCH \
         go build -trimpath -ldflags="$LDFLAGS" \

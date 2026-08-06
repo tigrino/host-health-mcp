@@ -218,9 +218,29 @@ var dotImportBanned = map[string]bool{
 
 // chokepoints are the only packages design §7.4 permits to hold the
 // calls in forbiddenCalls.
+//
+// The first two are the process-execution chokepoints: the daemon's
+// socket client to the helper, and the helper's sole os/exec site.
+//
+// capstemplate is a different case and is listed for a different
+// reason. It is not part of the daemon or the helper and never runs in
+// the request path: it is the install-time generator invoked once by
+// the postinst, whose entire purpose is to write two systemd drop-ins
+// under /etc/systemd/system. Writing files is its job, not a leak in
+// the read-only property REQ 6.1 asserts about the SERVING binaries.
+// Naming it here states that once, where a reader looking for the
+// filesystem-mutation policy will find it; the alternative — half a
+// dozen scattered // forbidden:allow comments — buries the same fact
+// in six places and reads like an exception being argued rather than a
+// boundary being drawn.
+//
+// The scope is deliberately the command directory alone. Its
+// decision logic lives in plan.go and is pure; nothing that computes a
+// capability set is exempt from anything.
 var chokepoints = map[string]bool{
 	"daemon/internal/daemon/helperinvoke": true,
 	"daemon/internal/helper/exec":         true,
+	"daemon/cmd/capstemplate":             true,
 }
 
 // walkRoot scans every .go file under root except those in allowed,

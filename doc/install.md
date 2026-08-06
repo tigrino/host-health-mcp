@@ -56,7 +56,7 @@ pipeline from its own packaging sources. That packaging supplies its
 own maintainer scripts and its own toolchain pin, so nothing under
 `build/` runs on that path and no guarantee made there applies to it.
 The two are kept in step by what both consume from this repository —
-`build/systemd/*.service`, `build/postinst/caps-template.sh`,
+`build/systemd/*.service`, `daemon/cmd/capstemplate`,
 `build/examples/*`, and `build/workload-tags` — not by sharing a build.
 
 The `build/postinst/` scripts are therefore reference material as much
@@ -406,8 +406,12 @@ Absent or empty, it defaults to `smart lvm mdraid` — deliberately not
 "all", since defaulting an allow-list to everything is what produced
 the original problem. Declare `zfs` or `btrfs` explicitly if the host
 runs them; the generator prints which default it applied when
-`storage` is enabled. Flow form (`storage_backends: [a, b]`) is
-rejected; an empty `[]` is accepted and means "the default".
+`storage` is enabled. Any YAML spelling of the list is accepted —
+block form, flow form, and a multi-line flow sequence are the same
+document — and an empty `[]` means "the default". Before 2.4.0 the
+generator scanned this file with `grep` and `awk` and rejected flow
+form outright, which aborted the package configure on a valid
+manifest; see the 2.4.0 changelog entry.
 
 ## 4.1 IP filtering
 
@@ -434,8 +438,10 @@ keywords `any`, `localhost`, `link-local`, `multicast`. Entries are
 validated when the daemon loads its configuration, so a typo fails
 at startup rather than at the next restart.
 
-The key must be written in YAML block form, one `- entry` per line.
-Flow form (`ip_filter_allow: [a, b]`) is rejected by the generator:
+Any YAML spelling of the list is accepted; from 2.4.0 the generator
+reads this file with the same decoder the daemon uses. Block form is
+what the example shows because it is easier to comment and to diff,
+not because it is required:
 
 ```yaml
 ip_filter_allow:

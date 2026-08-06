@@ -1,69 +1,60 @@
 package ops
 
 import (
-	"os"
-	"path/filepath"
-	"regexp"
-	"strings"
 	"testing"
+
+	"host-health-mcp/daemon/internal/shared/capsplan"
 )
 
-// RequiredCap mirrors the grant table in caps-template.sh: one decides
-// what the helper GETS at install time, the other decides when to warn
-// that it did not get it. They are in different languages and run at
-// different times, so nothing but a test keeps them honest.
+// RequiredCap mirrors the grant rules in capsplan: one decides what the
+// helper GETS at install time, the other decides when to warn that it
+// did not get it. They run in different processes at different times,
+// so nothing but a test keeps them honest.
 //
-// A capability named here that the generator never grants would warn on
-// every host forever. A capability the generator grants for an op that
-// is missing here is a silence this warning was meant to break.
-func TestRequiredCapsAppearInTheGenerator(t *testing.T) {
-	gen := filepath.Join("..", "..", "..", "..", "build", "postinst", "caps-template.sh")
-	b, err := os.ReadFile(gen)
-	if err != nil {
-		t.Fatalf("read generator: %v", err)
+// Until 2.4.0 these two tests scraped `add CAP_...` out of the shell
+// generator with a regexp. That proved the string appeared in a file,
+// not that the rules could ever produce it — a grant moved behind a
+// condition that never fires would still have matched. The generator's
+// rules are now an importable package, so this asks them directly.
+func TestRequiredCapsAreGrantableByTheGenerator(t *testing.T) {
+	grantable := map[string]bool{}
+	for _, c := range capsplan.EveryGrantableCapability() {
+		grantable[c] = true
 	}
-	body := string(b)
+	if len(grantable) == 0 {
+		t.Fatal("the generator grants nothing; the test is not proving anything")
+	}
 
 	for op, capName := range RequiredCap {
-		if !strings.Contains(body, capName) {
-			t.Errorf("op %q requires %s, but the generator never grants it — "+
-				"this would warn on every host", op, capName)
+		if !grantable[capName] {
+			t.Errorf("op %q requires %s, but no combination of manifest entries "+
+				"causes the generator to grant it — the helper would warn about "+
+				"a missing capability on every host, forever", op, capName)
 		}
 	}
 }
 
 // Every capability the generator can grant should be reachable from
-// some op, or the grant is dead weight in the bounding set of a root
+// some op, or it is unnecessary privilege in the bounding set of a root
 // process.
 func TestGeneratorGrantsAreJustified(t *testing.T) {
-	gen := filepath.Join("..", "..", "..", "..", "build", "postinst", "caps-template.sh")
-	b, err := os.ReadFile(gen)
-	if err != nil {
-		t.Fatal(err)
-	}
-	granted := map[string]bool{}
-	for _, m := range regexp.MustCompile(`add (CAP_[A-Z_]+)`).FindAllStringSubmatch(string(b), -1) {
-		granted[m[1]] = true
-	}
-	if len(granted) == 0 {
-		t.Fatal("parsed no capabilities out of the generator")
-	}
-	// CAP_CHOWN is for the helper's own socket, not an op.
-	delete(granted, "CAP_CHOWN")
-	// CAP_DAC_READ_SEARCH covers file reads across many ops; it fails
-	// loudly (EACCES) rather than silently, so it is deliberately not
-	// in RequiredCap.
-	delete(granted, "CAP_DAC_READ_SEARCH")
-
 	used := map[string]bool{}
 	for _, c := range RequiredCap {
 		used[c] = true
 	}
-	for c := range granted {
+	// CAP_CHOWN is for the helper's own socket and runtime directory,
+	// not for any op.
+	used["CAP_CHOWN"] = true
+	// CAP_DAC_READ_SEARCH covers file reads across many ops and fails
+	// loudly (EACCES) rather than silently, so it is deliberately not
+	// in RequiredCap.
+	used["CAP_DAC_READ_SEARCH"] = true
+
+	for _, c := range capsplan.EveryGrantableCapability() {
 		if !used[c] {
-			t.Errorf("generator grants %s but no op declares needing it; either "+
-				"an op is missing from RequiredCap or the grant is unnecessary "+
-				"privilege in a root process", c)
+			t.Errorf("the generator can grant %s but no op declares needing it; "+
+				"either an op is missing from RequiredCap or the grant is "+
+				"unnecessary privilege in a root process", c)
 		}
 	}
 }

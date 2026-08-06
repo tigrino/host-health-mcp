@@ -329,11 +329,21 @@ The daemon maps these codes onto its own structured tool errors via
 The op set has grown by additive minor releases since the gate.
 The authoritative list is `daemon/internal/shared/proto/ops.go`
 (`AllOps`) and the per-op cap requirement is enumerated in
-`doc/tools.md` "Helper op reference"; the postinst
-`caps-template.sh` derives the helper unit's
+`doc/tools.md` "Helper op reference"; the install-time generator
+`daemon/cmd/capstemplate` derives the helper unit's
 `CapabilityBoundingSet` and `AmbientCapabilities` from the
-manifest's `enabled_tools[]` and `workload_plugins[]` against that
-table.
+manifest's `enabled_tools[]`, `workload_plugins[]` and
+`storage_backends[]` against that table.
+
+From 2.4.0 the generator is a Go binary rather than a POSIX shell
+script, and it reads `manifest.yml` through the daemon's own
+`config` package. Before that it scanned the file with `grep` and
+`awk`, which understood only block sequences: `enabled_tools:
+[storage]` is the same document as the block spelling to any YAML
+parser, but the scanner rejected it and aborted the package
+configure, and the multi-line flow spelling slipped past its guard
+entirely to yield a capability set of `CAP_CHOWN` alone with no
+diagnostic. One file must not have two grammars.
 
 The initial gate set was the twelve ops below; the additional
 ones added through 1.13.0–1.19.0 follow the same dispatch
@@ -362,8 +372,8 @@ rather than `CAP_AUDIT_READ`: on Debian 13 kernels (6.12.x) the
 `AUDIT_GET` netlink opcode shares its access check with the
 rule-modification opcodes, which gate on `CAP_AUDIT_CONTROL`.
 `CAP_AUDIT_READ` gates only multicast event-stream binding. The
-`caps-template.sh` postinst captures this in a comment alongside
-the mapping.
+capability generator captures this in a comment alongside the
+mapping (`daemon/cmd/capstemplate/plan.go`).
 
 For tools whose underlying source is accessible to an unprivileged
 user (4.1, 4.2 via D-Bus, 4.3 via `netlink-route`, 4.10 via the
@@ -598,8 +608,9 @@ Output — two binary packages per architecture:
 /usr/sbin/host-health-mcp-helper                        (Go ELF, no setuid;
                                                          runs as root via
                                                          its systemd unit)
-/usr/sbin/host-health-mcp-caps-template                 (capability drop-in
-                                                         generator, mode 0755)
+/usr/sbin/host-health-mcp-caps-template                 (Go ELF; capability
+                                                         drop-in generator,
+                                                         mode 0755)
 /usr/lib/systemd/system/host-health-mcp.service         (daemon unit)
 /usr/lib/systemd/system/host-health-mcp-helper.service  (helper unit)
 /usr/share/doc/host-health-mcp-server/examples/{daemon.yml,helper.yml,manifest.yml}   (mode 0644)
